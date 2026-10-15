@@ -1,6 +1,7 @@
 """Load explicitly selected operator policy; never discover policy inside a change."""
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +42,8 @@ class Config:
     max_findings: int
     claim_ttl_seconds: float
     wait_seconds: float
+    review_timeout_seconds: float = 180
+    review_budget_usd: float = 1
 
 
 def load_config(path):
@@ -69,19 +72,25 @@ def load_config(path):
         raise CirraError("required mode needs checks; an empty list requires review_only mode")
     identities = set()
     for check in ci["expected"]:
-        fields(check, ["kind", "source_id", "name"], label="expected check")
-        if check["kind"] not in ("check_run", "commit_status"):
+        fields(check, ["kind", "source_id", "name"], ["definition_digest"], label="expected check")
+        if "definition_digest" in check and not re.fullmatch(
+            r"[a-f0-9]{64}", str(check["definition_digest"])
+        ):
+            raise CirraError("CI definition_digest must be a lowercase SHA-256 digest")
+        if check["kind"] not in ("check_run", "commit_status", "pipeline_job"):
             raise CirraError("unsupported expected check kind")
         for name, value in check.items():
             string(value, name)
+        if check["source_id"] in ("not_exposed", "unknown"):
+            raise CirraError("expected checks need an exposed native source identity")
         identity = (check["kind"], check["source_id"], check["name"])
         if identity in identities or check["name"] == "cirra/review":
             raise CirraError("duplicate expected check or Cirra's own output in policy")
         identities.add(identity)
     reviewer = fields(data["reviewer"], ["kind", "endpoint", "model"], label="reviewer")
-    endpoints = {"fake": "fake://local", "session": "session://manual"}
+    endpoints = {"fake": "fake://local", "session": "session://manual", "claude": "cli://claude"}
     if not isinstance(reviewer["kind"], str) or reviewer["kind"] not in endpoints:
-        raise CirraError("reviewer kind must be fake or session")
+        raise CirraError("reviewer kind must be fake, session, or claude")
     if reviewer["endpoint"] != endpoints[reviewer["kind"]]:
         raise CirraError("reviewer endpoint does not match the selected kind")
     string(reviewer["model"], "model")
@@ -94,6 +103,7 @@ def load_config(path):
             "claim_ttl_seconds",
             "wait_seconds",
         ],
+        ["review_timeout_seconds", "review_budget_usd"],
         label="limits",
     )
     for name in ("max_diff_bytes", "max_response_bytes"):
@@ -101,6 +111,10 @@ def load_config(path):
     number(limits["max_findings"], "max_findings", 0, 1000, integral=True)
     number(limits["claim_ttl_seconds"], "claim_ttl_seconds", 0.2, 600)
     number(limits["wait_seconds"], "wait_seconds", 0, 600)
+    if "review_timeout_seconds" in limits:
+        number(limits["review_timeout_seconds"], "review_timeout_seconds", 1, 900)
+    if "review_budget_usd" in limits:
+        number(limits["review_budget_usd"], "review_budget_usd", 0.01, 20)
     return Config(
         path=str(path),
         digest=hashlib.sha256(raw).hexdigest(),

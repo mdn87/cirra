@@ -12,7 +12,9 @@ from cirra.domain import digest, utc_now
 def make_report(snapshot, ci, review, identity, run_id, config, *, collection=None):
     gaps = list(snapshot.coverage_gaps)
     ci_complete = all(
-        item["verified_revision"] and item["state"] in ("success", "failure")
+        item["verified_revision"]
+        and item.get("definition_verified", True)
+        and item["state"] in ("success", "failure")
         for item in ci["expected"]
     )
     complete = (
@@ -123,6 +125,9 @@ def render_markdown(report):
         else:
             lines.append("An agent session response has not been imported.")
         lines.append("Session usage, cost, and tool isolation are not verified by this report.")
+    elif review["model"]["kind"] == "claude":
+        lines.append("Automatic Claude Code review with tools and customizations disabled.")
+        lines.append(plain(review.get("cost_note", "Usage and cost unavailable.")))
     else:
         lines.append("The offline reviewer returns fixture data, not an AI quality assessment.")
     lines.append("")

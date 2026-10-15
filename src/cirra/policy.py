@@ -70,12 +70,19 @@ def assess_checks(checks, snapshot, config, collection_errors=()):
             "head_exact",
             "merge_exact",
         )
+        definition_verified = "definition_digest" not in expected or (
+            verified
+            and selected["provenance"].get("definition_digest") == expected["definition_digest"]
+        )
+        if not definition_verified:
+            reason = "trusted witness does not attest the expected CI definition"
         assessments.append(
             {
                 **expected,
                 "state": state,
                 "verified_revision": verified,
-                "satisfied": verified and state == "success",
+                "definition_verified": definition_verified,
+                "satisfied": verified and definition_verified and state == "success",
                 "reason": reason,
                 "evidence": selected,
             }
@@ -84,7 +91,10 @@ def assess_checks(checks, snapshot, config, collection_errors=()):
         outcome = "incomplete"
     elif config.ci_mode == "review_only":
         outcome = "review_only"
-    elif any(item["verified_revision"] and item["state"] == "failure" for item in assessments):
+    elif any(
+        item["verified_revision"] and item["definition_verified"] and item["state"] == "failure"
+        for item in assessments
+    ):
         outcome = "failed"
     elif all(item["satisfied"] for item in assessments):
         outcome = "verified"
