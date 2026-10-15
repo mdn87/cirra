@@ -1,6 +1,7 @@
 """Load explicitly selected operator policy; never discover policy inside a change."""
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,7 +72,11 @@ def load_config(path):
         raise CirraError("required mode needs checks; an empty list requires review_only mode")
     identities = set()
     for check in ci["expected"]:
-        fields(check, ["kind", "source_id", "name"], label="expected check")
+        fields(check, ["kind", "source_id", "name"], ["definition_digest"], label="expected check")
+        if "definition_digest" in check and not re.fullmatch(
+            r"[a-f0-9]{64}", str(check["definition_digest"])
+        ):
+            raise CirraError("CI definition_digest must be a lowercase SHA-256 digest")
         if check["kind"] not in ("check_run", "commit_status", "pipeline_job"):
             raise CirraError("unsupported expected check kind")
         for name, value in check.items():

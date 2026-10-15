@@ -47,7 +47,16 @@ def validate_statement(statement):
         raise CirraError("witness checks must be a bounded list")
     seen = set()
     for item in statement["checks"]:
-        fields(item, ["binding", "tested_sha", "parents", "evidence"], label="witness check")
+        fields(
+            item,
+            ["binding", "tested_sha", "parents", "evidence"],
+            ["definition_digest"],
+            label="witness check",
+        )
+        if "definition_digest" in item:
+            value = string(item["definition_digest"], "CI definition digest", 64)
+            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+                raise CirraError("CI definition digest must be lowercase SHA-256")
         if (
             not isinstance(item["binding"], str)
             or len(item["binding"]) != 64
@@ -105,5 +114,10 @@ def apply(data, path, key):
                 "witness": receipt["statement"]["witness"],
                 "receipt_digest": digest(receipt),
                 "evidence": item["evidence"],
+                **(
+                    {"definition_digest": item["definition_digest"]}
+                    if "definition_digest" in item
+                    else {}
+                ),
             }
     return data

@@ -106,7 +106,13 @@ class Publisher:
         self.objects, self.writes, self.lose_ack, self.hide = [], 0, False, False
 
     def find(self, report, slot):
-        return [] if self.hide else copy.deepcopy(self.objects)
+        return (
+            []
+            if self.hide
+            else copy.deepcopy(
+                [item for item in self.objects if item["metadata"].get("slot") == slot]
+            )
+        )
 
     def write(self, report, metadata, identifier):
         self.writes += 1
@@ -243,6 +249,13 @@ def test_release_refuses_incomplete_or_findings_and_lost_ack_requires_reconcile(
     fixture_data["reviewer_response"] = {"findings": [], "notes": []}
     provider, config = captured(inputs, fixture_data)
     store = Store(tmp_path / "state")
+    provider.checks[0]["provenance"]["definition_digest"] = "d" * 64
+    config = replace(
+        config,
+        expected_checks=tuple(
+            {**item, "definition_digest": "d" * 64} for item in config.expected_checks
+        ),
+    )
     report, _ = review(provider, config, store)
     request = release.plan(report, 12, "release-test")
 
@@ -253,8 +266,22 @@ def test_release_refuses_incomplete_or_findings_and_lost_ack_requires_reconcile(
             if method == "POST":
                 self.writes += 1
                 raise RemoteUncertain("lost acknowledgement")
-            if "/commits/" in route:
-                return {"sha": provider.snapshot.head_sha}, False
+            if "/pulls/" in route:
+                return {
+                    "merged": True,
+                    "head": {"sha": provider.snapshot.head_sha},
+                    "base": {
+                        "ref": "release-test",
+                        "repo": {"id": provider.snapshot.repository_id},
+                    },
+                }, False
+            if "/branches/" in route:
+                return {"protected": True, "commit": {"sha": provider.snapshot.head_sha}}, False
+            if "/compare/" in route:
+                return {
+                    "status": "identical",
+                    "merge_base_commit": {"sha": provider.snapshot.head_sha},
+                }, False
             return {"workflow_runs": []}, False
 
     http = HTTP()

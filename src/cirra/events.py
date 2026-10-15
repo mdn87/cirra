@@ -72,28 +72,37 @@ def event_hint(provider, instance, raw, headers, secret, config):
 
 
 def ingest(store, hint, capture):
-    key = digest([hint["provider"], hint["instance"], hint["delivery"]])
-    path = store.path.parent / "events" / f"{key}.json"
-    with store.lease("event:" + key, 30, 10) as claim:
-        previous = json.loads(path.read_text()) if path.exists() else None
-        if previous and previous["hint"] != hint:
-            raise CirraError("webhook delivery identity was reused with another payload")
-        if previous and previous["state"] == "captured":
-            return {**previous, "duplicate": True}
-        with store.transaction() as connection:
-            store._fence(connection, claim)
-            write_receipt(path, {"state": "accepted", "hint": hint, "accepted_at": utc_now()})
-        snapshot_path = (
-            capture()
-        )  # Always fetch current provider state, never the payload diff/SHA.
-        receipt = {
-            "state": "captured",
-            "hint": hint,
-            "snapshot_path": str(Path(snapshot_path).resolve()),
-            "observed_at": utc_now(),
-            "duplicate": False,
-        }
-        with store.transaction() as connection:
-            store._fence(connection, claim)
-            write_receipt(path, receipt)
-        return receipt
+    delivery_key = digest([hint["provider"], hint["instance"], hint["delivery"]])
+    payload_key = digest([hint["provider"], hint["instance"], hint["payload_digest"]])
+    path = store.path.parent / "events" / f"{delivery_key}.json"
+    payload_path = store.path.parent / "event-payloads" / f"{payload_key}.json"
+    # Delivery headers are not covered by GitHub/Forgejo body HMACs. Serialize
+    # and deduplicate the authenticated payload independently of those headers.
+    with store.lease("event:" + delivery_key, 30, 10) as claim:
+        with store.lease("payload:" + payload_key, 30, 10):
+            previous = json.loads(path.read_text()) if path.exists() else None
+            if previous and previous["hint"] != hint:
+                raise CirraError("webhook delivery identity was reused with another payload")
+            payload = json.loads(payload_path.read_text()) if payload_path.exists() else None
+            if payload and payload["state"] == "captured":
+                receipt = {**payload, "hint": hint, "duplicate": True}
+                with store.transaction() as connection:
+                    store._fence(connection, claim)
+                    write_receipt(path, receipt)
+                return receipt
+            with store.transaction() as connection:
+                store._fence(connection, claim)
+                write_receipt(path, {"state": "accepted", "hint": hint, "accepted_at": utc_now()})
+            snapshot_path = capture()
+            receipt = {
+                "state": "captured",
+                "hint": hint,
+                "snapshot_path": str(Path(snapshot_path).resolve()),
+                "observed_at": utc_now(),
+                "duplicate": False,
+            }
+            with store.transaction() as connection:
+                store._fence(connection, claim)
+                write_receipt(payload_path, receipt)
+                write_receipt(path, receipt)
+            return receipt

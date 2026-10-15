@@ -70,3 +70,39 @@ The parent applied these corrections after the single review; no second model
 review was run. Implementation acceptance checks in the plan are future work.
 This documentation change is checked through link resolution, whitespace/full
 diff inspection, and Lugos Audit. Local Autowork artifacts are excluded from Git.
+
+
+## Implementation cross-review, 2026-10-15
+
+Autowork run `20261015-224757-cross-review` completed successfully using its
+Claude Opus route. One packet covered `src/cirra` and the two initial new test
+files. Thirteen findings were adjudicated; the corrections are in PR #4.
+
+- CR-01: Replaced database-wide transactions across network calls with
+  process-lifetime per-change OS locks and short fenced checkpoints. An
+  unrelated review now completes while a publisher is deliberately stalled.
+- CR-02 and CR-08: Release requests require a merged candidate reachable from
+  a protected target branch, use that branch's workflow definition, and require
+  witness-verified native CI definition digests from operator policy.
+- CR-03: Kept an older remote generation uncertain because an eventually
+  consistent read cannot prove a PATCH failed. Explicit retry targets the known
+  ID and records no duplicate-create risk. The message explains this recovery.
+- CR-04: Local size refusals precede intent; definitive provider refusals become
+  `failed`, while transport/malformed-acknowledgement cases stay `uncertain`.
+- CR-05: GitLab slots are MR-scoped, maintaining one note across head changes.
+- CR-06 and CR-11: An acknowledged release cannot be redispatched by the
+  uncertain-retry flag. Stable request identity excludes observation timestamps.
+- CR-07: Webhook deduplication also binds the authenticated payload digest;
+  changing an unsigned delivery header does not cause another provider capture.
+- CR-09 and CR-12: Missing acknowledged publications can be explicitly replaced
+  after reconciliation/inspection. Canonical duplicate selection persists.
+- CR-10: Publisher read/write response shapes are checked; malformed write
+  acknowledgements remain uncertain rather than producing unsafe automatic retry.
+- CR-13: Added regressions for these paths, foreign App ownership, restricted
+  token grants and concurrent unrelated review work. Real local RSA JWT signing
+  was also exercised without minting a remote credential.
+
+The review's suggested automatic retry after an older PATCH read was not
+adopted; it would infer non-delivery from visibility alone. No additional model
+review was dispatched after the corrections. Credential-dependent live
+acceptance remains explicitly open in the implementation plan.

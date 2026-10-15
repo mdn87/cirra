@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cirra.domain import CirraError, canonical
+from cirra.locking import change_lock
 
 
 class LostClaim(CirraError):
@@ -131,6 +132,15 @@ class Store:
 
     @contextmanager
     def lease(self, change_key, ttl, wait_seconds):
+        # The kernel releases this lock on process exit. Remote calls hold only
+        # this change's lock, never a database-wide transaction. SQL generations
+        # still fence checkpoints, while other changes can keep heartbeating.
+        with change_lock(self.path.parent / "locks", change_key, wait_seconds):
+            with self._lease(change_key, ttl, wait_seconds) as claim:
+                yield claim
+
+    @contextmanager
+    def _lease(self, change_key, ttl, wait_seconds):
         deadline = time.monotonic() + wait_seconds
         while (claim := self.acquire(change_key, ttl)) is None:
             if time.monotonic() >= deadline:
@@ -144,6 +154,8 @@ class Store:
             while not stopped.wait(ttl / 3):
                 try:
                     self.heartbeat(claim, ttl)
+                except sqlite3.OperationalError:
+                    continue
                 except (CirraError, sqlite3.Error):
                     return  # Every later write still has to pass the transaction's fence.
 
@@ -155,6 +167,17 @@ class Store:
             stopped.set()
             thread.join(timeout=11)
             self.release(claim)
+
+    def latest_attempt_order(self, claim, run_id):
+        with self.transaction() as connection:
+            self._fence(connection, claim)
+            newest = connection.execute(
+                "SELECT run_id, rowid FROM attempts WHERE change_key=? ORDER BY rowid DESC LIMIT 1",
+                (claim.change_key,),
+            ).fetchone()
+            if not newest or newest["run_id"] != run_id:
+                raise CirraError("a newer review attempt supersedes this report")
+            return newest["rowid"]
 
     def attempt(self, claim, analysis_digest, identity, rereview=False):
         with self.transaction() as connection:

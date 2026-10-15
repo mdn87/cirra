@@ -55,7 +55,8 @@ records. A statement has this shape:
     "binding": "<64-character binding digest>",
     "tested_sha": "<full checkout SHA>",
     "parents": ["<full parent SHA>"],
-    "evidence": "<independent observation reference>"
+    "evidence": "<independent observation reference>",
+    "definition_digest": "<SHA-256 of the independently observed native CI definition>"
   }]
 }
 ```
@@ -71,6 +72,11 @@ untrusted CI artifact. Never put the witness key in a PR workflow, its tested
 code, or a reviewer. An ordinary artifact uploaded after tests can be modified
 by those tests and is insufficient. No independent live witness has yet been
 provisioned for Cirra's hosted CI; those checks remain `associated_only`.
+For release use, each expected check in the operator policy must include
+`definition_digest`: the SHA-256 of its trusted native CI definition, approved
+independently of the change. The witness must attest the actual definition's
+same digest. Missing/mismatched definitions cannot satisfy that policy. Checkout
+verification alone says nothing about whether a PR replaced tests with a no-op.
 Receipts from another attempt/state cannot satisfy a newer check. A changed
 target invalidates old synthetic merge parentage through the normal policy.
 
@@ -91,14 +97,16 @@ The model never receives either credential. The native check is `cirra/review`
 with a neutral conclusion. Keep it out of required merge checks.
 
 Publication refreshes CI without another model call and refuses changed
-snapshots, changed policy, or a superseded local attempt. Same-head rereviews
-and base changes use one owned slot; a new head gets a new slot. The check is
+snapshots, changed policy, or a superseded local attempt. GitHub same-head rereviews
+and base changes use one owned slot; a new head gets a new check slot. GitLab
+keeps one maintained note per MR across head changes. The check is
 matched by SHA, App, name and external slot marker. GitLab notes use the author
 and slot marker. Report text neutralizes mentions, links and GitLab quick actions.
 
 Intent and acknowledgement receipts live under `.cirra/publication/`, with
-immutable history. The existing SQLite claim and transaction serialize the
-remote write across local processes; no database migration is required.
+immutable history. A process-lifetime OS lock serializes each change while short SQLite
+transactions fence checkpoints; remote I/O holds no database-wide write lock.
+Unrelated reviews can keep renewing their claims. No database migration is required.
 Process crashes are recoverable. This does not promise exactly-once remote
 delivery, atomicity with a concurrent push, or coordination across independent
 state directories. Filesystem/power-loss durability depends on the platform.
@@ -110,9 +118,14 @@ cirra publish <same arguments> --canonical-id <verified-owned-object-id>
 ```
 
 After a lost acknowledgement, no matching object or multiple matches remain
-unresolved. Reconciliation performs reads and adopts a unique acknowledged
+unresolved. A definitive refusal is `failed` and permits an ordinary retry; a
+local size refusal occurs before the write intent. An unconfirmed update to a
+known ID can be explicitly retried without claiming duplicate-create risk. An
+older remote read alone does not prove that an update failed. Reconciliation performs reads and adopts a unique acknowledged
 intent. `--retry-uncertain` explicitly accepts residual duplicate risk for one
-more write after inspection. Multiple matches require a verified canonical ID.
+more write after inspection. Multiple matches require a verified canonical ID. That selection persists. A
+previously acknowledged object that disappears becomes uncertain; after
+inspection, the explicit retry can create a replacement with duplicate risk recorded.
 
 ## GitLab portability
 
@@ -173,8 +186,8 @@ without a native creator retains `source_id: not_exposed` and cannot satisfy
 expected-source policy. Forgejo publication is not enabled.
 
 Event intake verifies GitHub/Forgejo HMAC signatures or GitLab's secret-token
-header before parsing the bounded payload. It stores delivery IDs and detects
-conflicting replays. Events supply only repository/change hints: Cirra fetches
+header before parsing the bounded payload. It stores delivery IDs, detects conflicting reuse, and deduplicates authenticated
+payload digests as well. Delivery headers themselves are not covered by body HMACs. Events supply only repository/change hints: Cirra fetches
 current state, ignores payload SHAs/diffs, and saves a snapshot. A repeated
 delivery reuses its receipt. Existing webhook infrastructure must deliver the
 raw body and headers; Cirra does not run a public web server or job scheduler.
@@ -183,23 +196,28 @@ Review the resulting snapshot with the normal `review` command.
 ## Native release workflow requests
 
 ```text
-cirra plan-release --run <run-id> --workflow-id <native-workflow-id> --ref <branch-or-tag> --output <request.json>
+cirra plan-release --run <run-id> --workflow-id <native-workflow-id> --ref <protected-target-branch> --output <request.json>
 cirra dispatch-release --request <request.json> --config <policy> --app-id <app-id> --installation-id <installation-id> --app-key-env CIRRA_RELEASE_APP_KEY --provenance <receipt.json> --witness-key-env CIRRA_WITNESS_KEY
 ```
 
-Planning requires complete captured GitHub evidence, verified successful CI and
-a successful review with no findings. Dispatch refreshes evidence and validates
-the ref against the reviewed SHA. It mints a separate repository-scoped token
+Planning requires complete captured GitHub evidence, verified successful CI
+including trusted definition digests, and a successful review with no findings.
+Dispatch requires the PR to be merged into the selected protected target branch
+and its reviewed head to be reachable from that branch. The workflow definition
+runs from the protected branch; the candidate checkout is the reviewed SHA.
+Squash/rebase merges that do not preserve that head's ancestry require a new
+review of the release candidate; this prototype refuses those requests. It mints a separate repository-scoped token
 with Actions write and Metadata read; the reader handles commit lookup.
 The native workflow must accept `cirra_request_id` and `cirra_expected_sha`,
 name its run `cirra-release-<request-id>`, explicitly checkout the expected SHA,
 and enforce its own release approvals. `examples/release-request.yml` illustrates
 the contract; it only records evidence and does not deploy or publish a package.
 
-Accepted requests are not completed releases. Durable receipts and
+The request identity excludes timestamps, so replanning the same evidence does
+not bypass duplicate protection. Accepted requests are not completed releases. Durable receipts and
 `--reconcile` identify the native run; a lost acknowledgement never causes an
-automatic second dispatch. `--retry-uncertain` permits one explicit retry after
-inspection. No live release has been dispatched by this implementation session.
+automatic second dispatch. `--retry-uncertain` permits one explicit retry of an unacknowledged request after
+inspection; it never retries an acknowledged dispatch. No live release has been dispatched by this implementation session.
 
 ## References
 

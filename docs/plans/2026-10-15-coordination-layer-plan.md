@@ -18,7 +18,7 @@ The [review record](2026-10-15-planning-review.md) explains the original decisio
 | GitLab portability | Version-pinned MR collection, pipeline job normalization and maintained advisory notes implemented. Sandbox token cannot read repository content; no open test MR or separate note publisher is configured. |
 | Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
 | Event triggers | Authenticated saved webhook intake, replay detection and current-state capture implemented. Existing webhook infrastructure supplies deliveries; no resident scheduler. |
-| Release coordination | Evidence-bound requests, separate Actions-only token minting and explicit native workflow dispatch/reconciliation implemented. No live release dispatched. |
+| Release coordination | Evidence-bound requests, definition-verified CI, merged/protected-ref checks, separate Actions-only tokens and native dispatch/reconciliation implemented. No live release dispatched. |
 | Controlled live mutation cases | Local recovery/adapter cases cover them; new-head/base-only/fork publication demonstrations still require the scoped live setup. |
 
 The milestone sections below retain their acceptance requirements. Implementation

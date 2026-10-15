@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from cirra.domain import CirraError, canonical, digest, fields, number, timestamp, utc_now
-from cirra.github import API_VERSION, native_id, repository_name
+from cirra.github import API_VERSION, native_id, record, repository_name
 from cirra.policy import assess_checks
 from cirra.report import make_report, render_markdown
 from cirra.transport import JSONClient, RemoteUncertain, pages
@@ -98,7 +98,7 @@ def github_app_token(app_id, installation_id, key, repository_id, *, capability=
         {"Authorization": f"Bearer {signed}", "X-GitHub-Api-Version": API_VERSION},
     )
     installation, _ = app.request("GET", f"/app/installations/{installation_id}")
-    if str(installation.get("app_id")) != str(app_id):
+    if str(record(installation).get("app_id")) != str(app_id):
         raise CirraError("installation belongs to another GitHub App")
     if capability not in ("checks", "actions"):
         raise CirraError("unsupported GitHub App capability")
@@ -108,12 +108,16 @@ def github_app_token(app_id, installation_id, key, repository_id, *, capability=
         f"/app/installations/{installation_id}/access_tokens",
         body={"repository_ids": [int(repository_id)], "permissions": permissions},
     )
-    if token.get("permissions") != permissions:
+    if record(token).get("permissions") != permissions:
         raise CirraError("GitHub did not grant the exact restricted publisher permissions")
     repositories = token.get("repositories", [])
-    if [str(item.get("id")) for item in repositories] != [str(repository_id)]:
+    if not isinstance(repositories, list) or [
+        str(record(item).get("id")) for item in repositories
+    ] != [str(repository_id)]:
         raise CirraError("GitHub publisher token is not restricted to the selected repository")
-    return token["token"]
+    from cirra.domain import string
+
+    return string(token.get("token"), "GitHub installation token")
 
 
 class GitHubPublisher:
@@ -131,7 +135,7 @@ class GitHubPublisher:
 
         def get(route, params):
             data, more = self.http.request("GET", self.prefix + "/" + route, params)
-            return data["check_runs"], more
+            return record(data).get("check_runs"), more
 
         found = pages(
             get, f"commits/{head}/check-runs", params={"filter": "all", "check_name": NAME}
@@ -140,7 +144,7 @@ class GitHubPublisher:
             self.object(item)
             for item in found
             if item.get("head_sha") == head
-            and str(item.get("app", {}).get("id")) == self.principal_id
+            and str(record(item.get("app")).get("id")) == self.principal_id
             and item.get("name") == NAME
             and item.get("external_id") == slot
         ]
@@ -149,13 +153,11 @@ class GitHubPublisher:
     def object(item):
         return {
             "id": native_id(item.get("id")),
-            "metadata": metadata_from(item.get("output", {}).get("summary")),
+            "metadata": metadata_from(record(item.get("output")).get("summary")),
         }
 
     def write(self, report, metadata, identifier=None):
-        summary = marker(metadata) + "\n\n" + render_markdown(report)
-        if len(summary.encode()) > 60000:
-            raise CirraError("native summary exceeds 60 KiB; reduce review limits")
+        summary = summary_text(report, metadata)
         body = {
             "name": NAME,
             "status": "completed",
@@ -169,6 +171,14 @@ class GitHubPublisher:
         else:
             body["head_sha"] = report["snapshot"]["head_sha"]
         item, _ = self.http.request("PATCH" if identifier else "POST", route, body=body)
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("app"), dict)
+            or not isinstance(item.get("output"), dict)
+            or type(item.get("id")) is not int
+            or not 1 <= item["id"] <= 2**63 - 1
+        ):
+            raise RemoteUncertain("GitHub returned a malformed write acknowledgement")
         if (
             str(item.get("app", {}).get("id")) != self.principal_id
             or item.get("name") != NAME
@@ -189,16 +199,21 @@ class GitLabPublisher:
         return [
             {"id": native_id(item.get("id")), "metadata": metadata_from(item.get("body"))}
             for item in found
-            if str(item.get("author", {}).get("id")) == self.principal_id
+            if str(record(item.get("author")).get("id")) == self.principal_id
             and not item.get("system")
             and (metadata_from(item.get("body")) or {}).get("slot") == slot
         ]
 
     def write(self, report, metadata, identifier=None):
-        body = marker(metadata) + "\n\n" + render_markdown(report)
-        if len(body.encode()) > 60000:
-            raise CirraError("native summary exceeds 60 KiB; reduce review limits")
+        body = summary_text(report, metadata)
         item = self.client.note(int(report["snapshot"]["change_id"]), body, identifier)
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("author"), dict)
+            or type(item.get("id")) is not int
+            or not 1 <= item["id"] <= 2**63 - 1
+        ):
+            raise RemoteUncertain("GitLab returned a malformed write acknowledgement")
         if str(item.get("author", {}).get("id")) != self.principal_id or item.get("system"):
             raise RemoteUncertain("GitLab write acknowledgement failed ownership validation")
         return {"id": native_id(item.get("id")), "metadata": metadata_from(item.get("body"))}
@@ -223,6 +238,19 @@ def write_receipt(path, receipt):
     temporary.replace(path)
 
 
+def checkpoint(store, claim, path, receipt):
+    with store.transaction() as connection:
+        store._fence(connection, claim)
+        write_receipt(path, receipt)
+
+
+def summary_text(report, metadata):
+    body = marker(metadata) + "\n\n" + render_markdown(report)
+    if len(body.encode()) > 60000:
+        raise CirraError("native summary exceeds 60 KiB; reduce review limits")
+    return body
+
+
 def publish(
     store,
     config,
@@ -234,12 +262,7 @@ def publish(
     retry_uncertain=False,
     canonical_id=None,
 ):
-    """collector refreshes evidence using a separate reader; never invokes a reviewer.
-
-    Receipt files are serialized under the existing SQLite transaction/claim, so
-    existing databases need no migration. The transaction also fences the remote
-    write: a second owner cannot acquire a claim while a write is in flight.
-    """
+    """Refresh with the reader and serialize only this change across remote I/O."""
     original = store.latest_report(run_id)
     snap = original["snapshot"]
     change_key = digest(
@@ -254,6 +277,7 @@ def publish(
             raise CirraError(
                 "report snapshot or policy is obsolete; review the current change first"
             )
+        order = store.latest_attempt_order(claim, run_id)
         report = make_report(
             provider.snapshot,
             assess_checks(provider.checks, provider.snapshot, config, provider.check_errors),
@@ -264,109 +288,118 @@ def publish(
             collection=provider.collection,
         )
         store.save_report(claim, report)
+        keys = ("provider", "instance", "repository_id", "change_id")
+        if snap["provider"] != "gitlab":
+            keys += ("head_sha",)
         slot = digest(
             {
-                **{
-                    key: snap[key]
-                    for key in ("provider", "instance", "repository_id", "change_id", "head_sha")
-                },
+                **{key: snap[key] for key in keys},
                 "publisher_id": publisher.principal_id,
                 "report_kind": NAME,
             }
         )
         path = store.path.parent / "publication" / f"{slot}.json"
-        # Keep claim acquisition, intent checkpoint, external write and acknowledgement
-        # mutually exclusive across local processes, even if the lease time elapses.
-        with store.transaction() as connection:
-            store._fence(connection, claim)
-            newest = connection.execute(
-                "SELECT run_id, rowid FROM attempts WHERE change_key=? ORDER BY rowid DESC LIMIT 1",
-                (change_key,),
-            ).fetchone()
-            if not newest or newest["run_id"] != run_id:
-                raise CirraError("a newer review attempt supersedes this report")
-            receipt = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-            found = publisher.find(report, slot)
-            if any(not item["metadata"] or item["metadata"].get("slot") != slot for item in found):
+        receipt = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        selected_id = canonical_id or (receipt or {}).get("canonical_id")
+        found = publisher.find(report, slot)
+        if selected_id:
+            found = [item for item in found if item["id"] == selected_id]
+            if not found and canonical_id:
+                raise CirraError("canonical ID does not select one verified owned publication")
+        if len(found) > 1:
+            raise CirraError(
+                "multiple owned publications found; select --canonical-id after inspection"
+            )
+        remote = found[0] if found else None
+        if remote:
+            metadata = remote["metadata"]
+            if not isinstance(metadata, dict) or metadata.get("slot") != slot:
                 raise CirraError(
                     "owned publication has invalid metadata; inspect it before retrying"
                 )
-            if canonical_id:
-                found = [item for item in found if item["id"] == canonical_id]
-                if len(found) != 1:
-                    raise CirraError("canonical ID does not select one verified owned publication")
-            if len(found) > 1:
-                raise CirraError(
-                    "multiple owned publications found; select --canonical-id after inspection"
-                )
-            remote = found[0] if found else None
-            if receipt and receipt["state"] == "uncertain":
-                if remote and remote["metadata"] == receipt["metadata"]:
-                    receipt.update(
-                        state="published", native_id=remote["id"], acknowledged_at=utc_now()
-                    )
-                    write_receipt(path, receipt)
-                    return receipt
-                if not retry_uncertain:
-                    return {
-                        **receipt,
-                        "reason": "Acknowledgement unresolved; inspect and reconcile first.",
-                    }
-            elif reconcile:
-                if remote:
-                    result = {
-                        "state": "published",
-                        "native_id": remote["id"],
-                        "metadata": remote["metadata"],
-                        "acknowledged_at": utc_now(),
-                    }
-                    write_receipt(path, result)
-                    return result
-                return {
-                    "state": "unresolved",
-                    "reason": "No unique owned publication is visible; no write attempted.",
-                }
-            if receipt and receipt["state"] == "published" and not remote:
-                raise CirraError(
-                    "saved publication is not visible; reconcile without creating a replacement"
-                )
-            if remote and remote["metadata"].get("run_order", 0) > newest["rowid"]:
+            for field in ("run_order", "generation"):
+                number(metadata.get(field), "publication " + field, 1, 2**63 - 1, integral=True)
+            if metadata["run_order"] > order:
                 raise CirraError("remote publication supersedes this local review")
-            generation = (
-                max(
-                    (receipt or {}).get("metadata", {}).get("generation", 0),
-                    (remote or {}).get("metadata", {}).get("generation", 0),
+        if receipt and receipt["state"] == "uncertain":
+            if remote and remote["metadata"] == receipt["metadata"]:
+                receipt.update(
+                    state="published",
+                    native_id=remote["id"],
+                    canonical_id=selected_id,
+                    acknowledged_at=utc_now(),
                 )
-                + 1
-            )
-            metadata = {
-                "slot": slot,
-                "generation": generation,
-                "run_order": newest["rowid"],
-                "run_id": run_id,
-                "head_sha": snap["head_sha"],
-                "target_sha": snap["target_sha"],
-                "diff_base_sha": snap["diff_base_sha"],
-                "analysis_digest": report["analysis_digest"],
-                "report_digest": report["report_digest"],
-            }
-            receipt = {
-                "schema_version": 1,
-                "state": "uncertain",
-                "metadata": metadata,
-                "native_id": remote["id"] if remote else None,
-                "intent_at": utc_now(),
-                "duplicate_risk_accepted": bool(retry_uncertain),
-            }
-            write_receipt(path, receipt)
-            try:
-                result = publisher.write(report, metadata, receipt["native_id"])
-                if result["metadata"] != metadata:
-                    raise RemoteUncertain("native publication metadata does not match the intent")
-            except CirraError as exc:
-                receipt["reason"] = str(exc)
-                write_receipt(path, receipt)
+                checkpoint(store, claim, path, receipt)
                 return receipt
+            if not retry_uncertain:
+                reason = (
+                    "Known-object update remains unconfirmed; inspect and use --retry-uncertain "
+                    "to retry its ID. An older read does not prove the write failed."
+                    if remote and receipt.get("native_id") == remote["id"]
+                    else "Create unconfirmed; reconcile or inspect before --retry-uncertain."
+                )
+                return {**receipt, "reason": reason}
+        if receipt and receipt["state"] == "published" and not remote:
+            receipt.update(
+                state="uncertain",
+                reason="Saved object not visible; inspect before --retry-uncertain replaces it.",
+            )
+            checkpoint(store, claim, path, receipt)
+            if not retry_uncertain:
+                return receipt
+        if reconcile and not retry_uncertain:
+            if remote:
+                result = {
+                    "state": "published",
+                    "native_id": remote["id"],
+                    "canonical_id": selected_id,
+                    "metadata": remote["metadata"],
+                    "acknowledged_at": utc_now(),
+                }
+                checkpoint(store, claim, path, result)
+                return result
+            return {
+                "state": "unresolved",
+                "reason": "No unique owned publication is visible; no write attempted.",
+            }
+        generation = (
+            max(
+                (receipt or {}).get("metadata", {}).get("generation", 0),
+                (remote or {}).get("metadata", {}).get("generation", 0),
+            )
+            + 1
+        )
+        metadata = {
+            "slot": slot,
+            "generation": generation,
+            "run_order": order,
+            "run_id": run_id,
+            "head_sha": snap["head_sha"],
+            "target_sha": snap["target_sha"],
+            "diff_base_sha": snap["diff_base_sha"],
+            "analysis_digest": report["analysis_digest"],
+            "report_digest": report["report_digest"],
+        }
+        summary_text(report, metadata)  # A local size refusal is never an uncertain remote write.
+        receipt = {
+            "schema_version": 1,
+            "state": "uncertain",
+            "metadata": metadata,
+            "native_id": remote["id"] if remote else None,
+            "canonical_id": selected_id if remote else None,
+            "intent_at": utc_now(),
+            "duplicate_risk_accepted": bool(retry_uncertain and not remote),
+        }
+        checkpoint(store, claim, path, receipt)
+        try:
+            result = publisher.write(report, metadata, receipt["native_id"])
+            if not isinstance(result, dict) or result.get("metadata") != metadata:
+                raise RemoteUncertain("native publication metadata does not match the intent")
+        except RemoteUncertain as exc:
+            receipt["reason"] = str(exc)
+        except CirraError as exc:
+            receipt.update(state="failed", reason=str(exc))
+        else:
             receipt.update(state="published", native_id=result["id"], acknowledged_at=utc_now())
-            write_receipt(path, receipt)
-            return receipt
+        checkpoint(store, claim, path, receipt)
+        return receipt

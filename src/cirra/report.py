@@ -12,7 +12,9 @@ from cirra.domain import digest, utc_now
 def make_report(snapshot, ci, review, identity, run_id, config, *, collection=None):
     gaps = list(snapshot.coverage_gaps)
     ci_complete = all(
-        item["verified_revision"] and item["state"] in ("success", "failure")
+        item["verified_revision"]
+        and item.get("definition_verified", True)
+        and item["state"] in ("success", "failure")
         for item in ci["expected"]
     )
     complete = (

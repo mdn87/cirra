@@ -204,10 +204,10 @@ def validate_check(check):
     proof = fields(
         check["provenance"],
         ["trusted", "tested_sha", "parents"],
-        ["witness", "receipt_digest", "evidence"],
+        ["witness", "receipt_digest", "evidence", "definition_digest"],
         label="provenance",
     )
-    for key in ("witness", "receipt_digest", "evidence"):
+    for key in ("witness", "receipt_digest", "evidence", "definition_digest"):
         if key in proof:
             string(proof[key], key)
     if type(proof["trusted"]) is not bool or not isinstance(proof["parents"], list):
