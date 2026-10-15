@@ -30,9 +30,12 @@ class FixtureProvider:
             raise CirraError("fixture is not valid JSON") from exc
         fields(
             data,
-            ["schema_version", "change", "files", "coverage_gaps", "checks", "reviewer_response"],
+            ["schema_version", "change", "files", "coverage_gaps", "checks"],
+            ["reviewer_response"],
             label="fixture",
         )
+        if config.reviewer_kind == "fake" and "reviewer_response" not in data:
+            raise CirraError("fake reviewer requires reviewer_response in the fixture")
         if type(data["schema_version"]) is not int or data["schema_version"] != 1:
             raise CirraError("unsupported fixture schema version")
         change = fields(
@@ -111,7 +114,7 @@ class FixtureProvider:
         if not isinstance(data["checks"], list):
             raise CirraError("checks must be a list")
         self.checks = [validate_check(check) for check in data["checks"]]
-        response = data["reviewer_response"]
+        response = data.get("reviewer_response")
         self.response = response if isinstance(response, str) else canonical(response)
         self.response_digest = digest(self.response)
 

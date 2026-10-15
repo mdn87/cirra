@@ -33,6 +33,8 @@ class Config:
     repositories: tuple[dict, ...]
     ci_mode: str
     expected_checks: tuple[dict, ...]
+    reviewer_kind: str
+    reviewer_endpoint: str
     model: str
     max_diff_bytes: int
     max_response_bytes: int
@@ -77,8 +79,11 @@ def load_config(path):
             raise CirraError("duplicate expected check or Cirra's own output in policy")
         identities.add(identity)
     reviewer = fields(data["reviewer"], ["kind", "endpoint", "model"], label="reviewer")
-    if reviewer["kind"] != "fake" or reviewer["endpoint"] != "fake://local":
-        raise CirraError("this milestone supports only the offline fake://local reviewer")
+    endpoints = {"fake": "fake://local", "session": "session://manual"}
+    if not isinstance(reviewer["kind"], str) or reviewer["kind"] not in endpoints:
+        raise CirraError("reviewer kind must be fake or session")
+    if reviewer["endpoint"] != endpoints[reviewer["kind"]]:
+        raise CirraError("reviewer endpoint does not match the selected kind")
     string(reviewer["model"], "model")
     limits = fields(
         data["limits"],
@@ -102,6 +107,8 @@ def load_config(path):
         repositories=tuple(repositories),
         ci_mode=ci["mode"],
         expected_checks=tuple(ci["expected"]),
+        reviewer_kind=reviewer["kind"],
+        reviewer_endpoint=reviewer["endpoint"],
         model=reviewer["model"],
         **limits,
     )

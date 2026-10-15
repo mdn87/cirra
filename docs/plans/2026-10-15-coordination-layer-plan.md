@@ -2,7 +2,8 @@
 
 Date: 2026-10-15. Status: implementation plan, revised after Roundtable
 input and Autowork review. Milestone 1 is implemented as an offline foundation;
-milestones 2–5 remain planned. The
+milestone 2 has a local agent-session handoff, with live collection still planned.
+Milestones 3–5 remain planned. The
 [review record](2026-10-15-planning-review.md) explains the decisions and corrections.
 
 ## Governing decision
@@ -53,7 +54,7 @@ this PR once implementation adds its normal CI workflow.
 | Initial interface | A Python CLI with bounded polling during an invocation. No resident service is needed for the first workflow. |
 | Persistence | Standard-library SQLite for run checkpoints, work claims, and publication receipts; JSON and Markdown for exported reports. |
 | Configuration | Small, schema-validated, operator-local YAML for expected checks, provider endpoints, reviewer settings, and limits. Record its source path and content digest; repository-sourced configuration is deferred. |
-| Review backend | One configurable model client receiving a frozen, bounded input packet and returning structured findings. Tests use a deterministic fake reviewer. |
+| Review backend | Use an existing agent session first: export a frozen, bounded packet and import structured findings with session attribution. Automatic dispatch and a direct model API client are optional later adapters. Tests also use a deterministic fake reviewer. |
 | Publication | One GitHub check with a summary. Defer PR comments and inline review threads until they provide demonstrated value. |
 | Merge authority | Providers retain permissions and merge rules; maintainers judge findings and merge. Cirra's initial output is advisory. |
 
@@ -63,9 +64,9 @@ conventional checks. Cirra owns input collection, normalization, review
 invocation, evidence policy, reports, and evaluation. The reviewer proposes
 findings; it cannot publish, merge, or change policy.
 
-Autowork and Roundtable helped develop this plan. They are not required Cirra
-runtime dependencies; a future reviewer adapter can use them if their contracts
-fit the task.
+Autowork and Roundtable helped develop this plan. They remain optional development
+and reviewer-dispatch tools. The local session handoff accepts their output once
+it conforms to Cirra's response contract, without requiring either at runtime.
 
 ## Small architecture
 
@@ -166,9 +167,13 @@ review.
 
 Treat titles, descriptions, filenames, diffs, CI metadata, and model output as
 untrusted data. Review input is a bounded snapshot; Cirra does not check out,
-import, install, or execute PR code. The model has no shell, filesystem tools,
-provider credentials, or choice of publication destination. The model client
-handles transport authentication outside model-visible content.
+import, install, or execute PR code. An automatic reviewer adapter must enforce
+no shell/filesystem tools, provider credentials, or choice of publication
+destination, and handle transport authentication outside model-visible content.
+The implemented manual session handoff requests these restrictions but cannot
+enforce them in an existing session. Its reports explicitly leave tool isolation
+unverified; session ID and model labels are operator-supplied. This limitation
+must not be mistaken for completion of the automated isolation acceptance tests.
 
 Reader and publisher credentials stay in their respective trusted components.
 Provision a GitHub App for the selected test repository. Mint a read-only
@@ -196,8 +201,8 @@ and self-hosted runners require a later execution-isolation design.
 
 Implemented: see [offline workflow and acceptance coverage](../offline-workflow.md).
 The fixture adapter consumes normalized synthetic payloads; raw provider API
-collection remains in milestones 2 and 4. The real model and native publication
-commands shown above are still proposed commands.
+collection remains in milestones 2 and 4. Live provider review and native
+publication commands shown above are still proposed commands.
 
 Add package metadata, CLI commands, domain records, trusted configuration,
 SQLite checkpoints, report rendering, and deterministic fake provider/reviewer
@@ -214,13 +219,22 @@ checks and unsupported diff content are visible. Native tests exercise behavior.
 
 ### 2. GitHub collection and one real reviewer
 
+Implemented first: [session packet export and response import](../session-workflow.md).
+The operator can use an existing authenticated agent session, with no new model
+API key. Packets bind findings to a run, snapshot, policy, and prompt/schema;
+duplicate imports reuse the durable response, explicit rereview supersedes the
+previous attempt, and validation/report creation can resume after interruption.
+This is a manual handoff, not automatic attachment to or invocation of a session.
+
 Resolve a real PR snapshot, collect existing conventional checks, and create a
 local report through one configured reviewer. Add pagination, revision
 relationship handling, bounded retries, time/token/spend limits, and attribution.
 Runtime collection is read-only on GitHub. Its setup prerequisites are a
 designated test repository with CI, App registration/installation, stored
-reader credentials, an approved model endpoint and repository data scope, and
-configured time/token/spend caps. Complete setup before the live acceptance run.
+reader credentials, an approved agent session and repository data scope, and
+configured limits for any automatic dispatcher. The manual adapter reports
+session usage/cost as unknown; a direct API endpoint and key are optional later
+choices. Complete provider setup before the live collection acceptance run.
 
 Acceptance: compare evidence with three controlled PR cases, including a new
 head and a base-only change. Test old successes followed by a failed rerun,
@@ -328,6 +342,7 @@ the implementation; the product choices above are Cirra design decisions.
   requiring a new PR-code execution environment.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
-The next implementation stage is milestone 2. The local CLI, fixture review,
-SQLite recovery, and native repository CI are available. Live provider
-collection, model credentials, and publication remain future integration work.
+Milestone 2 continues with GitHub collection. The local CLI, fixture review,
+session handoff, SQLite recovery, and native repository CI are available.
+Automatic session dispatch, provider collection, and publication remain future
+integration work; direct model API credentials are not required for the handoff.
