@@ -14,4 +14,9 @@ The [original concept](docs/original-concept.md) records the motivation,
 architecture, research candidates, and initial milestones from the founding
 conversation.
 
-Current state: concept recorded; implementation has not started.
+The [coordination layer implementation plan](docs/plans/2026-10-15-coordination-layer-plan.md)
+turns that direction into staged work: a GitHub review-and-report prototype,
+followed by a GitLab portability proof and further provider integrations.
+
+Current state: concept and implementation plan recorded; implementation has not
+started.
