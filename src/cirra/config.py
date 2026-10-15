@@ -1,0 +1,107 @@
+"""Load explicitly selected operator policy; never discover policy inside a change."""
+
+import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+from cirra.domain import CirraError, fields, number, string
+
+
+class UniqueLoader(yaml.SafeLoader):
+    pass
+
+
+def unique_mapping(loader, node):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node)
+        if not isinstance(key, str) or key in mapping:
+            raise CirraError("policy keys must be unique strings")
+        mapping[key] = loader.construct_object(value_node)
+    return mapping
+
+
+UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, unique_mapping)
+
+
+@dataclass(frozen=True)
+class Config:
+    path: str
+    digest: str
+    repositories: tuple[dict, ...]
+    ci_mode: str
+    expected_checks: tuple[dict, ...]
+    model: str
+    max_diff_bytes: int
+    max_response_bytes: int
+    max_findings: int
+    claim_ttl_seconds: float
+    wait_seconds: float
+
+
+def load_config(path):
+    path = Path(path).resolve()
+    raw = path.read_bytes()
+    if len(raw) > 65536:
+        raise CirraError("operator policy exceeds 64 KiB")
+    try:
+        data = yaml.load(raw.decode("utf-8"), Loader=UniqueLoader)
+    except (yaml.YAMLError, UnicodeError, RecursionError) as exc:
+        raise CirraError("operator policy is not valid safe YAML") from exc
+    fields(data, ["version", "repositories", "ci", "reviewer", "limits"], label="policy")
+    if type(data["version"]) is not int or data["version"] != 1:
+        raise CirraError("only policy version 1 is supported")
+    repositories = data["repositories"]
+    if not isinstance(repositories, list) or not repositories:
+        raise CirraError("repositories must be an explicit nonempty allowlist")
+    for repo in repositories:
+        fields(repo, ["provider", "instance", "repository_id"], label="repository")
+        for name, value in repo.items():
+            string(value, name)
+    ci = fields(data["ci"], ["mode", "expected"], label="ci")
+    if ci["mode"] not in ("required", "review_only") or not isinstance(ci["expected"], list):
+        raise CirraError("ci requires mode required/review_only and an expected list")
+    if bool(ci["expected"]) != (ci["mode"] == "required"):
+        raise CirraError("required mode needs checks; an empty list requires review_only mode")
+    identities = set()
+    for check in ci["expected"]:
+        fields(check, ["kind", "source_id", "name"], label="expected check")
+        if check["kind"] not in ("check_run", "commit_status"):
+            raise CirraError("unsupported expected check kind")
+        for name, value in check.items():
+            string(value, name)
+        identity = (check["kind"], check["source_id"], check["name"])
+        if identity in identities or check["name"] == "cirra/review":
+            raise CirraError("duplicate expected check or Cirra's own output in policy")
+        identities.add(identity)
+    reviewer = fields(data["reviewer"], ["kind", "endpoint", "model"], label="reviewer")
+    if reviewer["kind"] != "fake" or reviewer["endpoint"] != "fake://local":
+        raise CirraError("this milestone supports only the offline fake://local reviewer")
+    string(reviewer["model"], "model")
+    limits = fields(
+        data["limits"],
+        [
+            "max_diff_bytes",
+            "max_response_bytes",
+            "max_findings",
+            "claim_ttl_seconds",
+            "wait_seconds",
+        ],
+        label="limits",
+    )
+    for name in ("max_diff_bytes", "max_response_bytes"):
+        number(limits[name], name, 1, 8 * 1024 * 1024, integral=True)
+    number(limits["max_findings"], "max_findings", 0, 1000, integral=True)
+    number(limits["claim_ttl_seconds"], "claim_ttl_seconds", 0.2, 600)
+    number(limits["wait_seconds"], "wait_seconds", 0, 600)
+    return Config(
+        path=str(path),
+        digest=hashlib.sha256(raw).hexdigest(),
+        repositories=tuple(repositories),
+        ci_mode=ci["mode"],
+        expected_checks=tuple(ci["expected"]),
+        model=reviewer["model"],
+        **limits,
+    )

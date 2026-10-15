@@ -1,0 +1,22 @@
+# Explicitly selected operator policy for synthetic offline fixtures only.
+version: 1
+repositories:
+  - provider: github
+    instance: https://github.com
+    repository_id: cirra-fixture
+ci:
+  mode: required
+  expected:
+    - kind: check_run
+      source_id: fixture-actions-app
+      name: test
+reviewer:
+  kind: fake
+  endpoint: fake://local
+  model: fixture-reviewer-v1
+limits:
+  max_diff_bytes: 131072
+  max_response_bytes: 32768
+  max_findings: 50
+  claim_ttl_seconds: 10
+  wait_seconds: 15

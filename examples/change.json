@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "change": {
+    "provider": "github",
+    "instance": "https://github.com",
+    "repository_id": "cirra-fixture",
+    "change_id": "1",
+    "head_sha": "2222222222222222222222222222222222222222",
+    "diff_base_sha": "1111111111111111111111111111111111111111",
+    "target_sha": "1111111111111111111111111111111111111111"
+  },
+  "files": [
+    {
+      "path": "src/arithmetic.py",
+      "old_path": null,
+      "status": "modified",
+      "patch": "@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a + b\n+    return a - b\n"
+    }
+  ],
+  "coverage_gaps": [],
+  "checks": [
+    {
+      "kind": "check_run",
+      "source_id": "fixture-actions-app",
+      "name": "test",
+      "native_id": "check-1",
+      "run_id": "workflow-1",
+      "attempt": 1,
+      "raw_state": "success",
+      "associated_sha": "2222222222222222222222222222222222222222",
+      "provenance": {
+        "trusted": true,
+        "tested_sha": "2222222222222222222222222222222222222222",
+        "parents": []
+      },
+      "trigger": "pull_request",
+      "url": "https://example.invalid/fixture/check/1",
+      "observed_at": "2026-10-15T00:00:00Z",
+      "started_at": "2026-10-15T00:00:00Z"
+    }
+  ],
+  "reviewer_response": {
+    "findings": [
+      {
+        "path": "src/arithmetic.py",
+        "side": "new",
+        "start_line": 2,
+        "end_line": 2,
+        "severity": "high",
+        "title": "Addition now subtracts its second operand",
+        "evidence": "add(2, 3) returns -1 instead of 5. Keep the addition operator."
+      }
+    ],
+    "notes": []
+  }
+}
