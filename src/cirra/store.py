@@ -44,8 +44,6 @@ class Store:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "cirra.sqlite3"
-        with self.connection() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
         with self.transaction() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
