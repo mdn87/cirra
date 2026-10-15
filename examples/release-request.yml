@@ -1,0 +1,31 @@
+# Copy into the native repository's .github/workflows/ only when configuring it.
+name: Cirra release evidence
+run-name: cirra-release-${{ inputs.cirra_request_id }}
+"on":
+  workflow_dispatch:
+    inputs:
+      cirra_request_id:
+        type: string
+        required: true
+      cirra_expected_sha:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.cirra_expected_sha }}
+          persist-credentials: false
+      - name: Verify expected checkout
+        env:
+          EXPECTED_SHA: ${{ inputs.cirra_expected_sha }}
+          REQUEST_ID: ${{ inputs.cirra_request_id }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          printf 'Cirra request: %s\nCheckout: %s\n' "$REQUEST_ID" "$EXPECTED_SHA"
+      # Continue using the repository's existing release jobs and approval rules.

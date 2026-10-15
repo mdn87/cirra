@@ -71,17 +71,22 @@ uses a synthetic diff and CI evidence, even when an actual agent reviews it.
 
 ## Current scope
 
-Milestone 1 implements local input validation, revision-aware CI assessment,
-bounded review inputs, SQLite checkpoints and expiring work claims, crash recovery,
-and JSON/Markdown reports. Milestone 2 now includes session packet export/import
-and read-only GitHub collection. Trusted checkout provenance, automatic agent
-dispatch, review-quality evaluation, native publication, and GitLab integration
-remain unfinished. The fake reviewer returns supplied fixture data; it does
-not demonstrate AI review quality.
-GitKraken, Autowork, and Roundtable are optional development tools.
+Cirra supports offline reviews, manual session handoffs, automatic tool-free
+Claude subscription reviews, and GitHub/GitLab/Forgejo capture. Explicit
+GitHub check and GitLab note publishing preserve intents, recovery receipts,
+and stale-review protection. Authenticated webhook intake refreshes native
+state; release requests dispatch existing GitHub workflows.
 
-See [the offline workflow](docs/offline-workflow.md) for schemas, exit codes,
-recovery behavior, test coverage, and the next integration steps.
+The [automation guide](docs/automation-workflow.md) covers commands, credentials,
+checkout witnesses and recovery. The [frozen evaluation](eval/README.md) records
+two real-reviewer runs: six of six seeded defects found and no clean-case
+findings in each. The fake reviewer is only a deterministic test aid.
+
+Native publishing and release demonstrations still need scoped credentials.
+Hosted CI remains association-only until an independent checkout observer
+provides trusted receipts. The private GitLab sandbox needs repository-read
+permission and a test MR. GitKraken, Autowork and Roundtable remain optional
+development tools.
 
 ## Collect a real GitHub change
 

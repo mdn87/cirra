@@ -1,0 +1,21 @@
+version: 1
+repositories:
+  - provider: gitlab
+    instance: https://gitlab.com
+    repository_id: '87658566'
+ci:
+  mode: required
+  expected:
+    - kind: pipeline_job
+      source_id: '87658566'
+      name: test
+reviewer:
+  kind: session
+  endpoint: session://manual
+  model: operator-selected
+limits:
+  max_diff_bytes: 262144
+  max_response_bytes: 32768
+  max_findings: 50
+  claim_ttl_seconds: 10
+  wait_seconds: 15

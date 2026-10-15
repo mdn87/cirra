@@ -1,12 +1,28 @@
 # Cirra coordination layer implementation plan
 
-Date: 2026-10-15. Status: implementation plan, revised after Roundtable
-input and Autowork review. Milestone 1 is implemented as an offline foundation;
-milestone 2 has a local agent-session handoff and read-only GitHub collection.
-Trusted checkout provenance, reviewer evaluation, and controlled live acceptance
-remain unfinished.
-Milestones 3–5 remain planned. The
-[review record](2026-10-15-planning-review.md) explains the decisions and corrections.
+Date: 2026-10-15. Status: implementation available across milestones 1–5;
+credential-dependent live demonstrations remain open. The
+[automation guide](../automation-workflow.md) describes the implemented CLI and
+[reviewer evaluation](../../eval/README.md) records two frozen real-agent runs.
+The [review record](2026-10-15-planning-review.md) explains the original decisions.
+
+## Implementation status
+
+| Planned outcome | Current state |
+| --- | --- |
+| Local foundation and manual session handoff | Implemented and previously landed. |
+| Automatic reviewer | Claude subscription dispatch with tools disabled, bounded execution, durable reuse and transport attribution. |
+| Trusted checkout provenance | Signed independent-witness statements and exact check/attempt binding implemented. A live independent witness is not provisioned; native hosted CI remains association-only. |
+| Review-quality evaluation | Ten frozen labelled cases, two runs; 6/6 defects and 0/4 clean-case findings each. Human usefulness adjudication remains open. |
+| GitHub advisory publication | Checks-only App token minting, neutral checks, durable intent history, reconciliation and supersession protection implemented. Live App setup remains open. |
+| GitLab portability | Version-pinned MR collection, pipeline job normalization and maintained advisory notes implemented. Sandbox token cannot read repository content; no open test MR or separate note publisher is configured. |
+| Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
+| Event triggers | Authenticated saved webhook intake, replay detection and current-state capture implemented. Existing webhook infrastructure supplies deliveries; no resident scheduler. |
+| Release coordination | Evidence-bound requests, separate Actions-only token minting and explicit native workflow dispatch/reconciliation implemented. No live release dispatched. |
+| Controlled live mutation cases | Local recovery/adapter cases cover them; new-head/base-only/fork publication demonstrations still require the scoped live setup. |
+
+The milestone sections below retain their acceptance requirements. Implementation
+availability does not imply that credential-dependent acceptance is complete.
 
 ## Governing decision
 
@@ -29,7 +45,7 @@ separately. An explicit publish command puts that report in one advisory native
 check on the examined commit. A retry updates the same publication where its
 identity can be recovered.
 
-Proposed commands, to be implemented:
+Primary workflow commands:
 
 ```text
 cirra review --provider github --repo mdn87/cirra --change <pr-number>
@@ -205,8 +221,8 @@ and self-hosted runners require a later execution-isolation design.
 Implemented: see [offline workflow and acceptance coverage](../offline-workflow.md).
 The fixture adapter consumes normalized synthetic payloads; raw provider API
 collection is now available for GitHub in milestone 2; GitLab remains in milestone 4.
-The combined live review and native publication commands shown above are still
-proposed commands; collection currently saves an input for the session commands.
+Combined automatic review and native publication commands are implemented;
+manual session policies continue to use collection, prepare and import.
 
 Add package metadata, CLI commands, domain records, trusted configuration,
 SQLite checkpoints, report rendering, and deterministic fake provider/reviewer
@@ -228,14 +244,15 @@ The operator can use an existing authenticated agent session, with no new model
 API key. Packets bind findings to a run, snapshot, policy, and prompt/schema;
 duplicate imports reuse the durable response, explicit rereview supersedes the
 previous attempt, and validation/report creation can resume after interruption.
-This is a manual handoff, not automatic attachment to or invocation of a session.
+This remains a manual handoff. The separate Claude CLI adapter now provides
+automatic tool-free invocation using the existing subscription login.
 
 Implemented next: [GitHub collection](../github-workflow.md) captures pinned
 head/target/merge-base revisions, available comparison patches, and paginated
 check runs and commit statuses. It retries moving snapshots, preserves coverage
 gaps and collection errors, and reuses reviews when only CI observations change.
-Native results retain association-only provenance; checkout attestation is not
-implemented. Cirra PR #2 supplied a live capture of 13 files and four checks.
+Native results retain association-only provenance unless supplied with a valid
+independent-witness receipt; no hosted CI witness has yet been provisioned. Cirra PR #2 supplied a live capture of 13 files and four checks.
 
 Resolve a real PR snapshot, collect existing conventional checks, and create a
 local report through one configured reviewer. Add pagination, revision
@@ -353,8 +370,9 @@ the implementation; the product choices above are Cirra design decisions.
   requiring a new PR-code execution environment.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
-Milestone 2 continues with trusted checkout provenance, controlled live acceptance,
-and reviewer evaluation. The local CLI, fixture review, GitHub collection,
-session handoff, SQLite recovery, and native repository CI are available.
-Automatic session dispatch, advisory publication, and GitLab integration remain
-unfinished; direct model API credentials are not required for the handoff.
+The remaining work is live setup and acceptance: independent checkout evidence,
+a GitHub publisher App, GitLab repository-read access/test MR/separate note
+publisher, controlled publication cases and operator usefulness adjudication.
+Automatic dispatch, both publishers, GitLab/Forgejo collection, evaluation,
+authenticated event intake and native release requests are implemented.
+No new model API credentials are required for subscription review.

@@ -134,7 +134,7 @@ class FixtureProvider:
                 ["source", "repository", "observed_at", "check_errors"],
                 label="collection",
             )
-            if self.collection["source"] != "github_rest":
+            if self.collection["source"] not in ("github_rest", "gitlab_rest", "forgejo_rest"):
                 raise CirraError("unsupported collection source")
             string(self.collection["repository"], "collection repository")
             timestamp(self.collection["observed_at"])
@@ -179,7 +179,7 @@ def validate_check(check):
     check = dict(check)
     for key in ("kind", "source_id", "name", "native_id", "raw_state", "trigger", "url"):
         string(check[key], key)
-    if check["kind"] not in ("check_run", "commit_status"):
+    if check["kind"] not in ("check_run", "commit_status", "pipeline_job"):
         raise CirraError("unsupported check kind")
     if check["run_id"] is not None:
         string(check["run_id"], "run_id")
@@ -201,7 +201,15 @@ def validate_check(check):
     for key in ("observed_at", "started_at"):
         if key != "started_at" or check[key] is not None:
             check[key] = timestamp(check[key])
-    proof = fields(check["provenance"], ["trusted", "tested_sha", "parents"], label="provenance")
+    proof = fields(
+        check["provenance"],
+        ["trusted", "tested_sha", "parents"],
+        ["witness", "receipt_digest", "evidence"],
+        label="provenance",
+    )
+    for key in ("witness", "receipt_digest", "evidence"):
+        if key in proof:
+            string(proof[key], key)
     if type(proof["trusted"]) is not bool or not isinstance(proof["parents"], list):
         raise CirraError("provenance requires a boolean trusted flag and parents list")
     if proof["tested_sha"] is not None:

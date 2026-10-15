@@ -3,6 +3,7 @@
 import json
 import time
 
+from cirra import dispatch
 from cirra.domain import CirraError, digest
 from cirra.policy import assess_checks
 from cirra.report import make_report
@@ -15,6 +16,21 @@ def failed_review(outcome, message):
 
 def analysis_identity(provider, config):
     packet = provider.packet()
+    if config.reviewer_kind == "claude":
+        return {
+            "snapshot_digest": digest(provider.snapshot.record()),
+            "input_digest": digest(packet),
+            "config_digest": config.digest,
+            "prompt_digest": digest(
+                {"protocol": dispatch.PROTOCOL, "instructions": dispatch.INSTRUCTIONS}
+            ),
+            "reviewer": {
+                "kind": "claude",
+                "endpoint": config.reviewer_endpoint,
+                "model": config.model,
+                "version": dispatch.PROTOCOL,
+            },
+        }
     return {
         "snapshot_digest": digest(provider.snapshot.record()),
         "input_digest": digest(packet),
@@ -31,16 +47,19 @@ def analysis_identity(provider, config):
 
 
 def review(provider, config, store, *, rereview=False, reviewer=None):
-    if config.reviewer_kind != "fake":
+    if config.reviewer_kind not in ("fake", "claude"):
         raise CirraError("session reviewers use prepare-review followed by import-review")
     snapshot = provider.snapshot
     identity = analysis_identity(provider, config)
-    reviewer = reviewer if reviewer is not None else FakeReviewer(provider.response)
+    if reviewer is None and config.reviewer_kind == "fake":
+        reviewer = FakeReviewer(provider.response)
     with store.lease(snapshot.change_key, config.claim_ttl_seconds, config.wait_seconds) as claim:
         attempt, reused = store.attempt(claim, digest(identity), identity, rereview)
         run_id = attempt["run_id"]
         duration = attempt["duration_seconds"]
         if attempt["state"] == "prepared":
+            if reviewer is None:
+                reviewer = dispatch.ClaudeReviewer(config, store.path.parent / "dispatch" / run_id)
             store.begin_call(claim, run_id)
             started = time.monotonic()
             try:
@@ -51,7 +70,7 @@ def review(provider, config, store, *, rereview=False, reviewer=None):
                         "message": "reviewer response byte/type limit exceeded",
                     }
                 else:
-                    envelope = {"raw": raw}
+                    envelope = {"raw": raw, "metadata": getattr(reviewer, "metadata", {})}
             except TimeoutError:
                 envelope = {"error": "timeout", "message": "reviewer deadline exceeded"}
             except Exception:
@@ -77,6 +96,7 @@ def review(provider, config, store, *, rereview=False, reviewer=None):
                 if "error" in envelope
                 else validate_response(envelope["raw"], snapshot, config)
             )
+            result.update(envelope.get("metadata", {}))
             store.finish(claim, run_id, result)
         else:
             result = json.loads(attempt["result_json"])
@@ -85,9 +105,9 @@ def review(provider, config, store, *, rereview=False, reviewer=None):
             "attempt": attempt["number"],
             "duration_seconds": duration,
             "model": identity["reviewer"],
-            "usage": None,
-            "cost": None,
-            "cost_note": "offline fixture; no billable model call",
+            "usage": result.get("usage"),
+            "cost": result.get("cost"),
+            "cost_note": result.get("cost_note", "No measured model cost available."),
         }
         ci = assess_checks(provider.checks, snapshot, config, provider.check_errors)
         report = make_report(

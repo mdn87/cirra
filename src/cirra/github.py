@@ -293,8 +293,8 @@ def collect(repository, change, config, *, client=None, max_pages=10):
     repository_name(repository)
     number(change, "pull request number", 1, 2**31 - 1, integral=True)
     number(max_pages, "check page limit", 1, 100, integral=True)
-    if config.reviewer_kind != "session":
-        raise CirraError("live collection requires a session reviewer policy")
+    if config.reviewer_kind not in ("session", "claude"):
+        raise CirraError("live collection requires a session or claude reviewer policy")
     client = client if client is not None else GitHubClient(repository)
     repo, _ = client.get()
     record(repo)
