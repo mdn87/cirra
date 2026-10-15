@@ -205,6 +205,27 @@ class Store:
     def begin_call(self, claim, run_id):
         self._transition(claim, run_id, "prepared", "calling")
 
+    def get_attempt(self, claim, run_id, analysis_digest):
+        with self.transaction() as connection:
+            self._fence(connection, claim)
+            row = connection.execute(
+                "SELECT * FROM attempts WHERE run_id=? AND change_key=?",
+                (run_id, claim.change_key),
+            ).fetchone()
+            if not row or row["analysis_digest"] != analysis_digest:
+                raise CirraError("run does not match the supplied snapshot or policy")
+            latest = connection.execute(
+                "SELECT MAX(number) FROM attempts WHERE analysis_digest=? AND change_key=?",
+                (analysis_digest, claim.change_key),
+            ).fetchone()[0]
+            if row["number"] != latest:
+                raise CirraError("review attempt was superseded by an explicit rereview")
+            return dict(row)
+
+    def record_session_response(self, claim, run_id, envelope):
+        # No external call to recover: accept the complete handoff in one transaction.
+        self._transition(claim, run_id, "prepared", "responded", response_json=canonical(envelope))
+
     def record_response(self, claim, run_id, envelope, duration):
         self._transition(
             claim,

@@ -18,8 +18,9 @@ tags, duplicate/unknown keys, invalid values, and policies over 64 KiB.
   identifies its kind (`check_run` or `commit_status`), source ID, and name.
   Version 1 accepts only verified `success` as satisfying an expected check.
   An empty set requires explicit `ci.mode: review_only`.
-- The only reviewer is `kind: fake`, `endpoint: fake://local`, with a recorded
-  model label. No configurable network endpoint is enabled yet.
+- This workflow uses `kind: fake`, `endpoint: fake://local`, with a recorded
+  model label. A separate [session workflow](session-workflow.md) supports
+  `kind: session`, `endpoint: session://manual`; neither enables network calls.
 - `limits` caps diff bytes, response bytes, and findings, and sets claim expiry
   and the bounded wait for another invocation. Oversized/unsupported patches
   are omitted whole and recorded as coverage gaps. Responses over the limit
@@ -122,9 +123,11 @@ records the checked-out SHA and parents for future controlled integration cases;
 the artifact alone is not a trusted provenance mechanism against a malicious
 workflow or code running in that job.
 
-Next is the plan's GitHub collection and one real reviewer milestone, followed
-by advisory publication, then GitLab portability. Before live model submission,
-select the test repository, read-only GitHub App credentials, model endpoint,
-approved repository data scope, and time/token/spend caps. Publisher permissions
-remain separate and come later. Local `.env` files are ignored by Git; this
-offline implementation never reads them.
+The session handoff now supplies the first reviewer integration for milestone 2.
+Next is GitHub collection, followed by advisory publication and GitLab portability.
+Live collection needs the test repository and read-only GitHub App credentials;
+review submission needs an operator-selected session and approved repository data
+scope. Session usage/cost remain unknown until a dispatcher can measure them.
+Direct model API integration is optional. Publisher permissions remain separate
+and come later. Local `.env` files are ignored by Git; the local workflows never
+read them.

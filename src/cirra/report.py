@@ -95,14 +95,21 @@ def render_markdown(report):
     lines.extend(f"- {plain(item)}" for item in limitations)
     if not limitations:
         lines.append("All supplied textual diff hunks were available; no reviewer errors recorded.")
-    lines.extend(
-        [
-            "",
-            f"Run: `{report['run_id']}`; attempt {review['attempt']}. "
-            "The offline reviewer returns fixture data, not an AI quality assessment.",
-            "",
-        ]
-    )
+    lines.extend(["", f"Run: `{report['run_id']}`; attempt {review['attempt']}."])
+    if review["model"]["kind"] == "session":
+        session = review.get("session")
+        if session:
+            lines.append(
+                f"Session: {plain(session['tool'])} / {plain(session['id'])}; "
+                f"reported model: {plain(session['model'])}. "
+                "Session attribution is operator-supplied and is not independently verified."
+            )
+        else:
+            lines.append("An agent session response has not been imported.")
+        lines.append("Session usage, cost, and tool isolation are not verified by this report.")
+    else:
+        lines.append("The offline reviewer returns fixture data, not an AI quality assessment.")
+    lines.append("")
     return "\n".join(lines)
 
 

@@ -3,7 +3,7 @@
 import json
 import time
 
-from cirra.domain import digest
+from cirra.domain import CirraError, digest
 from cirra.policy import assess_checks
 from cirra.report import make_report
 from cirra.reviewer import PROTOCOL, FakeReviewer, validate_response
@@ -31,6 +31,8 @@ def analysis_identity(provider, config):
 
 
 def review(provider, config, store, *, rereview=False, reviewer=None):
+    if config.reviewer_kind != "fake":
+        raise CirraError("session reviewers use prepare-review followed by import-review")
     snapshot = provider.snapshot
     identity = analysis_identity(provider, config)
     reviewer = reviewer if reviewer is not None else FakeReviewer(provider.response)

@@ -4,8 +4,8 @@
 
 Cirra coordinates existing Git providers, CI evidence, and advisory code reviews.
 Providers retain repository hosting, workflow execution, permissions, and merge
-enforcement. Cirra's first implementation is an offline Python CLI that validates
-this coordination flow using synthetic fixtures and a deterministic reviewer.
+enforcement. Cirra's Python CLI validates this coordination flow using local
+snapshots, a deterministic test reviewer, or findings from an existing agent session.
 
 The project began with a question about alternatives to GitHub and grew into an
 idea for an independent layer coordinating Git hosting, CI/CD, and automated
@@ -48,14 +48,36 @@ Use the same `.cirra/` state directory for concurrent invocations; `--state-dir`
 selects an explicit location. A complete report may contain defects or failed CI:
 **complete describes available evidence, not approval to merge**.
 
+## Use an existing agent session
+
+Prepare a fixed packet for a live Codex, Claude, or other agent session:
+
+```text
+cirra prepare-review --config examples/session-policy.yaml --fixture examples/change.json
+```
+
+Give the exported packet to your session and save its JSON response. Import it
+using the same policy, snapshot, and state directory:
+
+```text
+cirra import-review --config examples/session-policy.yaml --fixture examples/change.json --run <run-id> --response response.json
+```
+
+This is a local handoff: Cirra does not start an agent process or require a model
+API key. The session uses its existing authentication. See the
+[session workflow](docs/session-workflow.md) for the response format, revision
+binding, recovery, and the limits of session attribution. The example still
+uses a synthetic diff and CI evidence, even when an actual agent reviews it.
+
 ## Current scope
 
 Milestone 1 implements local input validation, revision-aware CI assessment,
 bounded review inputs, SQLite checkpoints and expiring work claims, crash recovery,
-and JSON/Markdown reports. The example reviewer returns supplied fixture data;
-it does not use an AI model or demonstrate review quality. GitHub collection,
-real model review, native publication, and GitLab integration remain later
-milestones. GitKraken, Autowork, and Roundtable are optional development tools.
+and JSON/Markdown reports. The first part of milestone 2 adds session packet
+export and response import. GitHub collection, automatic agent dispatch, native
+publication, and GitLab integration remain later work. The fake reviewer
+returns supplied fixture data; it does not demonstrate AI review quality.
+GitKraken, Autowork, and Roundtable are optional development tools.
 
 See [the offline workflow](docs/offline-workflow.md) for schemas, exit codes,
 recovery behavior, test coverage, and the next integration steps.
