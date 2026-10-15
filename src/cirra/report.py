@@ -9,13 +9,18 @@ from pathlib import Path
 from cirra.domain import digest, utc_now
 
 
-def make_report(snapshot, ci, review, identity, run_id, config):
+def make_report(snapshot, ci, review, identity, run_id, config, *, collection=None):
     gaps = list(snapshot.coverage_gaps)
     ci_complete = all(
         item["verified_revision"] and item["state"] in ("success", "failure")
         for item in ci["expected"]
     )
-    complete = not gaps and ci_complete and review["outcome"] == "succeeded"
+    complete = (
+        not gaps
+        and ci_complete
+        and not ci.get("collection_errors")
+        and review["outcome"] == "succeeded"
+    )
     report = {
         "schema_version": 1,
         "run_id": run_id,
@@ -30,6 +35,8 @@ def make_report(snapshot, ci, review, identity, run_id, config):
         "review": review,
         "coverage": {"complete": not gaps, "gaps": gaps},
     }
+    if collection is not None:
+        report["collection"] = collection
     report["report_digest"] = digest(report)
     return report
 
@@ -65,6 +72,15 @@ def render_markdown(report):
         "## CI evidence",
         "",
     ]
+    if report.get("collection"):
+        collection = report["collection"]
+        lines.extend(
+            [
+                f"Captured from {plain(collection['source'])} for "
+                f"{plain(collection['repository'])} at {plain(collection['observed_at'])}.",
+                "",
+            ]
+        )
     if not ci["expected"]:
         lines.append("Review-only policy: no conventional CI checks are required.")
     for expected in ci["expected"]:
@@ -91,7 +107,7 @@ def render_markdown(report):
         lines.extend(["", "## Unlocated notes", ""])
         lines.extend(f"- {plain(note)}" for note in review["notes"])
     lines.extend(["", "## Coverage and errors", ""])
-    limitations = report["coverage"]["gaps"] + review["errors"]
+    limitations = report["coverage"]["gaps"] + review["errors"] + ci.get("collection_errors", [])
     lines.extend(f"- {plain(item)}" for item in limitations)
     if not limitations:
         lines.append("All supplied textual diff hunks were available; no reviewer errors recorded.")

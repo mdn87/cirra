@@ -73,14 +73,28 @@ uses a synthetic diff and CI evidence, even when an actual agent reviews it.
 
 Milestone 1 implements local input validation, revision-aware CI assessment,
 bounded review inputs, SQLite checkpoints and expiring work claims, crash recovery,
-and JSON/Markdown reports. The first part of milestone 2 adds session packet
-export and response import. GitHub collection, automatic agent dispatch, native
-publication, and GitLab integration remain later work. The fake reviewer
-returns supplied fixture data; it does not demonstrate AI review quality.
+and JSON/Markdown reports. Milestone 2 now includes session packet export/import
+and read-only GitHub collection. Trusted checkout provenance, automatic agent
+dispatch, review-quality evaluation, native publication, and GitLab integration
+remain unfinished. The fake reviewer returns supplied fixture data; it does
+not demonstrate AI review quality.
 GitKraken, Autowork, and Roundtable are optional development tools.
 
 See [the offline workflow](docs/offline-workflow.md) for schemas, exit codes,
 recovery behavior, test coverage, and the next integration steps.
+
+## Collect a real GitHub change
+
+```text
+cirra collect --provider github --repo mdn87/cirra --change 2 --config examples/github-policy.yaml
+cirra prepare-review --snapshot <snapshot-path-from-collect> --config examples/github-policy.yaml
+```
+
+Public repositories work without a token. Collection records the pinned head,
+comparison base, target, patches, check runs, and commit statuses. Native CI
+success remains unverified until trusted checkout provenance is available.
+The [GitHub workflow guide](docs/github-workflow.md) covers permissions, limits,
+CI refresh, and importing the session response.
 
 ## Development
 

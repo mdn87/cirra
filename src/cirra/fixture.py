@@ -1,4 +1,4 @@
-"""Offline input adapter. Fixture provenance simulates trust; it is not live attestation."""
+"""Load and validate local snapshots. Supplied provenance is not independent attestation."""
 
 import json
 from pathlib import Path
@@ -28,10 +28,19 @@ class FixtureProvider:
             data = json.loads(raw)
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise CirraError("fixture is not valid JSON") from exc
+        self._load(data, config)
+
+    @classmethod
+    def from_data(cls, data, config):
+        provider = cls.__new__(cls)
+        provider._load(data, config)
+        return provider
+
+    def _load(self, data, config):
         fields(
             data,
             ["schema_version", "change", "files", "coverage_gaps", "checks"],
-            ["reviewer_response"],
+            ["reviewer_response", "collection"],
             label="fixture",
         )
         if config.reviewer_kind == "fake" and "reviewer_response" not in data:
@@ -117,6 +126,23 @@ class FixtureProvider:
         response = data.get("reviewer_response")
         self.response = response if isinstance(response, str) else canonical(response)
         self.response_digest = digest(self.response)
+        self.collection = data.get("collection")
+        self.check_errors = []
+        if self.collection is not None:
+            fields(
+                self.collection,
+                ["source", "repository", "observed_at", "check_errors"],
+                label="collection",
+            )
+            if self.collection["source"] != "github_rest":
+                raise CirraError("unsupported collection source")
+            string(self.collection["repository"], "collection repository")
+            timestamp(self.collection["observed_at"])
+            if not isinstance(self.collection["check_errors"], list):
+                raise CirraError("collection check_errors must be a list")
+            self.check_errors = [
+                string(item, "collection error") for item in self.collection["check_errors"]
+            ]
 
     def packet(self):
         return {
@@ -147,17 +173,34 @@ def validate_check(check):
             "observed_at",
             "started_at",
         ],
+        ["normalized_state", "check_suite_id"],
         label="check",
     )
     check = dict(check)
-    for key in ("kind", "source_id", "name", "native_id", "run_id", "raw_state", "trigger", "url"):
+    for key in ("kind", "source_id", "name", "native_id", "raw_state", "trigger", "url"):
         string(check[key], key)
     if check["kind"] not in ("check_run", "commit_status"):
         raise CirraError("unsupported check kind")
-    number(check["attempt"], "attempt", 1, 1_000_000, integral=True)
+    if check["run_id"] is not None:
+        string(check["run_id"], "run_id")
+    if check["attempt"] is not None:
+        number(check["attempt"], "attempt", 1, 1_000_000, integral=True)
+    if "check_suite_id" in check and check["check_suite_id"] is not None:
+        string(check["check_suite_id"], "check_suite_id")
+    if "normalized_state" in check and check["normalized_state"] not in (
+        "success",
+        "failure",
+        "pending",
+        "skipped",
+        "cancelled",
+        "inaccessible",
+        "unknown",
+    ):
+        raise CirraError("unsupported normalized check state")
     sha(check["associated_sha"])
     for key in ("observed_at", "started_at"):
-        check[key] = timestamp(check[key])
+        if key != "started_at" or check[key] is not None:
+            check[key] = timestamp(check[key])
     proof = fields(check["provenance"], ["trusted", "tested_sha", "parents"], label="provenance")
     if type(proof["trusted"]) is not bool or not isinstance(proof["parents"], list):
         raise CirraError("provenance requires a boolean trusted flag and parents list")

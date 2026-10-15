@@ -115,6 +115,7 @@ repositories. Credentials embedded in supplied patch text are not automatically
 redacted. Do not copy subscription authentication into repository files or CI.
 
 The supplied example and its CI provenance are synthetic. A live agent reviewing
-it demonstrates the handoff, not live GitHub collection or reviewer accuracy.
-The next integration collects real GitHub snapshots and conventional checks;
-automatic agent invocation can then reuse this response contract.
+it demonstrates the handoff, not reviewer accuracy. The
+[GitHub collector](github-workflow.md) now supplies real snapshots and conventional
+check associations through `--snapshot`. Its checkout provenance remains
+unverified. Automatic agent invocation can later reuse this response contract.

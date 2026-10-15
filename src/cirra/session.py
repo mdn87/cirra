@@ -139,11 +139,12 @@ def save_result(provider, config, store, claim, identity, attempt):
     }
     report = make_report(
         provider.snapshot,
-        assess_checks(provider.checks, provider.snapshot, config),
+        assess_checks(provider.checks, provider.snapshot, config, provider.check_errors),
         result,
         identity,
         attempt["run_id"],
         config,
+        collection=provider.collection,
     )
     store.save_report(claim, report)
     return report
