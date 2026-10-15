@@ -23,11 +23,13 @@ def relationship(check, snapshot):
     return "unrelated"
 
 
-def assess_checks(checks, snapshot, config):
+def assess_checks(checks, snapshot, config, collection_errors=()):
     evidence = []
     for check in checks:
         item = dict(check)
-        item["state"] = check["raw_state"] if check["raw_state"] in STATES else "unknown"
+        item["state"] = check.get(
+            "normalized_state", check["raw_state"] if check["raw_state"] in STATES else "unknown"
+        )
         item["relationship"] = relationship(check, snapshot)
         item["excluded"] = check["name"] == "cirra/review"
         evidence.append(item)
@@ -43,10 +45,16 @@ def assess_checks(checks, snapshot, config):
         reason = "expected source has no evidence"
         state = "missing"
         if candidates:
-            newest = max((item["started_at"], item["attempt"]) for item in candidates)
-            latest = [
-                item for item in candidates if (item["started_at"], item["attempt"]) == newest
-            ]
+            if len(candidates) == 1:
+                latest = candidates
+            elif any(item["started_at"] is None for item in candidates):
+                latest = candidates  # Missing timestamps cannot safely order competing runs.
+            else:
+                newest = max(item["started_at"] for item in candidates)
+                latest = [item for item in candidates if item["started_at"] == newest]
+                if all(item["attempt"] is not None for item in latest):
+                    attempt = max(item["attempt"] for item in latest)
+                    latest = [item for item in latest if item["attempt"] == attempt]
             distinct = {canonical(item) for item in latest}
             if len(distinct) != 1:
                 state, reason = "unknown", "ambiguous latest check evidence"
@@ -72,7 +80,9 @@ def assess_checks(checks, snapshot, config):
                 "evidence": selected,
             }
         )
-    if config.ci_mode == "review_only":
+    if collection_errors:
+        outcome = "incomplete"
+    elif config.ci_mode == "review_only":
         outcome = "review_only"
     elif any(item["verified_revision"] and item["state"] == "failure" for item in assessments):
         outcome = "failed"
@@ -80,4 +90,9 @@ def assess_checks(checks, snapshot, config):
         outcome = "verified"
     else:
         outcome = "incomplete"
-    return {"outcome": outcome, "expected": assessments, "evidence": evidence}
+    return {
+        "outcome": outcome,
+        "expected": assessments,
+        "evidence": evidence,
+        "collection_errors": list(collection_errors),
+    }

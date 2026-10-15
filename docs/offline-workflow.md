@@ -27,8 +27,9 @@ tags, duplicate/unknown keys, invalid values, and policies over 64 KiB.
   fail validation. These limits do not claim to be live token/spend controls.
 
 Fixture JSON has `schema_version: 1`, `change`, `files`, `coverage_gaps`,
-`checks`, and `reviewer_response`. `change` records provider/instance/repository/
-change identity and full head, diff-base, and target Git object IDs. Each file
+`checks`, and `reviewer_response` (optional for session reviewers). Live captures
+also contain `collection` metadata and check collection errors. `change` records
+provider/instance/repository/change identity and full head, diff-base, and target Git object IDs. Each file
 has a relative POSIX `path`, optional `old_path` (otherwise null), `status`, and
 unified hunk `patch` (otherwise null). File headers are not part of the patch.
 Binary files, unavailable patches, malformed hunks, and collection omissions
@@ -39,9 +40,12 @@ The example check includes native run/check/attempt IDs, raw state, source ID,
 association SHA, checkout provenance, trigger, URL, and observation/start times.
 Fixture provenance is a **simulation of trusted evidence**, not an attestation:
 setting `trusted: true` in arbitrary JSON proves nothing about a real CI run.
-The future live adapter must establish provenance independently. It must map
-native app/creator IDs and states into this contract; the fixture adapter does
-not parse raw GitHub or GitLab API responses.
+The live GitHub collector maps native app/creator IDs and states into this
+contract, but does not yet establish trusted checkout provenance. Native run IDs,
+attempts, and start times may be null when the provider does not expose them.
+`normalized_state` preserves interpretation separately from `raw_state`, and
+`check_suite_id` is distinct from a workflow run ID. The local input adapter
+does not parse raw GitHub or GitLab API responses.
 
 ## Reports and reuse
 
@@ -123,11 +127,11 @@ records the checked-out SHA and parents for future controlled integration cases;
 the artifact alone is not a trusted provenance mechanism against a malicious
 workflow or code running in that job.
 
-The session handoff now supplies the first reviewer integration for milestone 2.
-Next is GitHub collection, followed by advisory publication and GitLab portability.
-Live collection needs the test repository and read-only GitHub App credentials;
-review submission needs an operator-selected session and approved repository data
-scope. Session usage/cost remain unknown until a dispatcher can measure them.
-Direct model API integration is optional. Publisher permissions remain separate
-and come later. Local `.env` files are ignored by Git; the local workflows never
-read them.
+The [session handoff](session-workflow.md) and [GitHub collector](github-workflow.md)
+now supply the first milestone 2 integrations. Public collection needs no token;
+authenticated reads use an explicitly selected reader credential. Trusted checkout
+provenance, reviewer evaluation, and controlled live acceptance remain unfinished.
+Session usage/cost remain unknown until a dispatcher can measure them. Direct
+model API integration is optional. Publisher permissions remain separate and
+come later, followed by GitLab portability. Local `.env` files are ignored by
+Git; these workflows never read them.

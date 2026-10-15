@@ -1,0 +1,31 @@
+# Explicit policy for this repository. Native associations remain unverified CI evidence.
+version: 1
+repositories:
+  - provider: github
+    instance: https://github.com
+    repository_id: '1420239911'
+ci:
+  mode: required
+  expected:
+    - kind: check_run
+      source_id: '15368'
+      name: test (ubuntu-latest, Python 3.11)
+    - kind: check_run
+      source_id: '15368'
+      name: test (ubuntu-latest, Python 3.14)
+    - kind: check_run
+      source_id: '15368'
+      name: test (windows-latest, Python 3.11)
+    - kind: check_run
+      source_id: '15368'
+      name: test (windows-latest, Python 3.14)
+reviewer:
+  kind: session
+  endpoint: session://manual
+  model: operator-selected
+limits:
+  max_diff_bytes: 262144
+  max_response_bytes: 32768
+  max_findings: 50
+  claim_ttl_seconds: 10
+  wait_seconds: 15

@@ -89,7 +89,9 @@ def review(provider, config, store, *, rereview=False, reviewer=None):
             "cost": None,
             "cost_note": "offline fixture; no billable model call",
         }
-        ci = assess_checks(provider.checks, snapshot, config)
-        report = make_report(snapshot, ci, result, identity, run_id, config)
+        ci = assess_checks(provider.checks, snapshot, config, provider.check_errors)
+        report = make_report(
+            snapshot, ci, result, identity, run_id, config, collection=provider.collection
+        )
         store.save_report(claim, report)
     return report, reused

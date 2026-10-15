@@ -2,7 +2,9 @@
 
 Date: 2026-10-15. Status: implementation plan, revised after Roundtable
 input and Autowork review. Milestone 1 is implemented as an offline foundation;
-milestone 2 has a local agent-session handoff, with live collection still planned.
+milestone 2 has a local agent-session handoff and read-only GitHub collection.
+Trusted checkout provenance, reviewer evaluation, and controlled live acceptance
+remain unfinished.
 Milestones 3–5 remain planned. The
 [review record](2026-10-15-planning-review.md) explains the decisions and corrections.
 
@@ -176,7 +178,8 @@ unverified; session ID and model labels are operator-supplied. This limitation
 must not be mistaken for completion of the automated isolation acceptance tests.
 
 Reader and publisher credentials stay in their respective trusted components.
-Provision a GitHub App for the selected test repository. Mint a read-only
+Public collection can use anonymous GitHub reads. For authenticated collection,
+provision a GitHub App for the selected test repository and mint a read-only
 installation token for collection: Metadata, Contents, Pull requests, Checks,
 Actions, and Commit statuses read as required by enabled endpoints. The separate
 publisher token has Checks write and Metadata read; it consumes the validated
@@ -201,8 +204,9 @@ and self-hosted runners require a later execution-isolation design.
 
 Implemented: see [offline workflow and acceptance coverage](../offline-workflow.md).
 The fixture adapter consumes normalized synthetic payloads; raw provider API
-collection remains in milestones 2 and 4. Live provider review and native
-publication commands shown above are still proposed commands.
+collection is now available for GitHub in milestone 2; GitLab remains in milestone 4.
+The combined live review and native publication commands shown above are still
+proposed commands; collection currently saves an input for the session commands.
 
 Add package metadata, CLI commands, domain records, trusted configuration,
 SQLite checkpoints, report rendering, and deterministic fake provider/reviewer
@@ -226,13 +230,20 @@ duplicate imports reuse the durable response, explicit rereview supersedes the
 previous attempt, and validation/report creation can resume after interruption.
 This is a manual handoff, not automatic attachment to or invocation of a session.
 
+Implemented next: [GitHub collection](../github-workflow.md) captures pinned
+head/target/merge-base revisions, available comparison patches, and paginated
+check runs and commit statuses. It retries moving snapshots, preserves coverage
+gaps and collection errors, and reuses reviews when only CI observations change.
+Native results retain association-only provenance; checkout attestation is not
+implemented. Cirra PR #2 supplied a live capture of 13 files and four checks.
+
 Resolve a real PR snapshot, collect existing conventional checks, and create a
 local report through one configured reviewer. Add pagination, revision
 relationship handling, bounded retries, time/token/spend limits, and attribution.
 Runtime collection is read-only on GitHub. Its setup prerequisites are a
-designated test repository with CI, App registration/installation, stored
-reader credentials, an approved agent session and repository data scope, and
-configured limits for any automatic dispatcher. The manual adapter reports
+designated test repository with CI, a read-only credential for authenticated
+reads (public anonymous reads need none), an approved agent session and repository
+data scope, and configured limits for any automatic dispatcher. The manual adapter reports
 session usage/cost as unknown; a direct API endpoint and key are optional later
 choices. Complete provider setup before the live collection acceptance run.
 
@@ -342,7 +353,8 @@ the implementation; the product choices above are Cirra design decisions.
   requiring a new PR-code execution environment.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
-Milestone 2 continues with GitHub collection. The local CLI, fixture review,
+Milestone 2 continues with trusted checkout provenance, controlled live acceptance,
+and reviewer evaluation. The local CLI, fixture review, GitHub collection,
 session handoff, SQLite recovery, and native repository CI are available.
-Automatic session dispatch, provider collection, and publication remain future
-integration work; direct model API credentials are not required for the handoff.
+Automatic session dispatch, advisory publication, and GitLab integration remain
+unfinished; direct model API credentials are not required for the handoff.
