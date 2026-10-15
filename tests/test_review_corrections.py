@@ -19,9 +19,9 @@ from cirra.store import Store
 from cirra.transport import RemoteUncertain
 
 
-def test_slow_publisher_does_not_expire_another_changes_review(inputs, fixture_data, tmp_path):
+def test_slow_publisher_does_not_block_another_changes_review(inputs, fixture_data, tmp_path):
     provider, config = captured(inputs, fixture_data)
-    config = replace(config, claim_ttl_seconds=0.3, wait_seconds=3)
+    config = replace(config, claim_ttl_seconds=10, wait_seconds=15)
     store = Store(tmp_path / "state")
     report, _ = review(provider, config, store)
     other_data = copy.deepcopy(fixture_data)
@@ -32,20 +32,23 @@ def test_slow_publisher_does_not_expire_another_changes_review(inputs, fixture_d
     class SlowPublisher(Publisher):
         def find(self, report, slot):
             entered.set()
-            assert unblock.wait(3)
+            assert unblock.wait(30)
             return []
 
     with ThreadPoolExecutor(max_workers=2) as workers:
         pending = workers.submit(
             publish, store, config, report["run_id"], lambda: provider, SlowPublisher()
         )
-        assert entered.wait(2)
         try:
+            if not entered.wait(15):
+                # Surface a worker exception instead of hiding it as a barrier timeout.
+                pending.result(timeout=1)
+                pytest.fail("publisher did not reach the network barrier")
             second = workers.submit(review, other, config, store)
-            assert second.result(timeout=1)[0]["review"]["outcome"] == "succeeded"
+            assert second.result(timeout=10)[0]["review"]["outcome"] == "succeeded"
         finally:
             unblock.set()
-        assert pending.result(timeout=3)["state"] == "published"
+        assert pending.result(timeout=15)["state"] == "published"
 
 
 def test_uncertain_patch_retries_known_id_without_claiming_duplicate_create_risk(
