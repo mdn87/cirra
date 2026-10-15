@@ -3,3 +3,16 @@
 .lugos-audit/
 .autowork/
 .roundtable/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.cirra/
+.env
+.env.*
+!.env.example
+build/
+dist/
+cirra-checkout.json

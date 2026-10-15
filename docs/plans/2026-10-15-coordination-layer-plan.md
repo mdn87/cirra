@@ -1,7 +1,8 @@
 # Cirra coordination layer implementation plan
 
-Date: 2026-10-15. Status: proposed implementation plan, revised after Roundtable
-input and Autowork review; product implementation has not started. The
+Date: 2026-10-15. Status: implementation plan, revised after Roundtable
+input and Autowork review. Milestone 1 is implemented as an offline foundation;
+milestones 2–5 remain planned. The
 [review record](2026-10-15-planning-review.md) explains the decisions and corrections.
 
 ## Governing decision
@@ -193,6 +194,11 @@ and self-hosted runners require a later execution-isolation design.
 
 ### 1. Local executable foundation
 
+Implemented: see [offline workflow and acceptance coverage](../offline-workflow.md).
+The fixture adapter consumes normalized synthetic payloads; raw provider API
+collection remains in milestones 2 and 4. The real model and native publication
+commands shown above are still proposed commands.
+
 Add package metadata, CLI commands, domain records, trusted configuration,
 SQLite checkpoints, report rendering, and deterministic fake provider/reviewer
 implementations. Use local Git fixtures and recorded payloads. Add Cirra's normal
@@ -322,6 +328,6 @@ the implementation; the product choices above are Cirra design decisions.
   requiring a new PR-code execution environment.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
-The implementation starting point is milestone 1. Product code, provider
-configuration, model credentials, and live reports are future implementation
-work; this planning change does not provision them.
+The next implementation stage is milestone 2. The local CLI, fixture review,
+SQLite recovery, and native repository CI are available. Live provider
+collection, model credentials, and publication remain future integration work.
