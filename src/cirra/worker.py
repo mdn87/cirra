@@ -6,7 +6,7 @@ from pathlib import Path
 
 from cirra import gitlab, provenance
 from cirra.coordinator import review
-from cirra.domain import CirraError, utc_now
+from cirra.domain import CirraError, digest, utc_now
 from cirra.fixture import FixtureProvider
 from cirra.github import GitHubClient, export_capture, native_id, record
 from cirra.job_queue import Queue
@@ -18,6 +18,7 @@ from cirra.publish import (
     github_app_token,
     publish,
     verify_gitlab_permission_receipt,
+    write_receipt,
 )
 from cirra.report import export_report
 from cirra.store import Store
@@ -69,12 +70,21 @@ class Processor:
     def __call__(self, route, hint):
         reader = self.credential(route.reader_env)
         change = hint["change"]
-        if not is_open(route, change, reader):
-            return {"state": "skipped", "reason": "change is closed or a draft"}
-        data = self.capture(route.provider, route.repository, change, route.policy, token=reader)
+        branch = hint.get("branch")
+        if branch:
+            from cirra.reconcile import capture_branch
+
+            data = capture_branch(route, branch, reader)
+        else:
+            if not is_open(route, change, reader):
+                return {"state": "skipped", "reason": "change is closed or a draft"}
+            data = self.capture(
+                route.provider, route.repository, change, route.policy, token=reader
+            )
         if data["change"]["repository_id"] != route.repository_id:
             raise CirraError("captured repository differs from the configured worker route")
         receipt_path, witness_key = None, None
+        ci_result = None
         if route.observer:
             policy = load_observer(route.observer)
             expected = {
@@ -90,16 +100,45 @@ class Processor:
                     "review policy must pin the observer source, check name, and definition digest"
                 )
             witness_key = self.credential(route.witness_env)
+
+            def record_execution(path):
+                nonlocal ci_result
+                statement = json.loads(path.read_text())["statement"]
+                ci_result = {
+                    "route": route.name,
+                    "repository": route.repository,
+                    "change": change,
+                    "head_sha": data["change"]["head_sha"],
+                    "conclusion": statement["checks"][0]["check"]["raw_state"],
+                    "receipt_path": str(path),
+                    "observed_at": utc_now(),
+                    "publication": "pending" if route.provider == "github" else "local",
+                    "branch": branch,
+                }
+                write_receipt(
+                    self.directory / "ci" / f"{route.name}-{digest(change)}.json", ci_result
+                )
+
             receipt_path = observe(
                 data,
                 policy,
                 self.directory,
                 witness_key,
-                ObserverCheck(route.repository, route.publisher["app_id"], self.app_token(route))
+                ObserverCheck(
+                    route.repository, route.publisher["app_id"], lambda: self.app_token(route)
+                )
                 if route.provider == "github"
                 else None,
                 token=reader,
+                on_execution=record_execution,
             )
+            if ci_result and route.provider == "github":
+                ci_result["publication"] = "published"
+                write_receipt(
+                    self.directory / "ci" / f"{route.name}-{digest(change)}.json", ci_result
+                )
+            if branch or not getattr(route, "review_enabled", True):
+                return {"state": "done", "ci": ci_result, "review": "disabled"}
             # Re-read native CI and the snapshot. GitHub receipts attest a native
             # check; GitLab receipts add explicitly separate observer evidence.
             refreshed = self.capture(
@@ -124,6 +163,7 @@ class Processor:
                 "state": "attention",
                 "run_id": report["run_id"],
                 "reason": "review did not succeed; inspect the report before an explicit rereview",
+                "ci": ci_result,
             }
         # A PR can close while tests/review run. It must still be open before a write.
         if not is_open(route, change, reader):
@@ -165,6 +205,7 @@ class Processor:
             "reused": reused,
             "publication": receipt["state"],
             "native_id": receipt.get("native_id"),
+            "ci": ci_result,
         }
 
 
@@ -190,7 +231,11 @@ def work_once(config, queue, process):
         except (CirraError, OSError, ValueError) as exc:
             job.update(
                 state="retry" if job["attempts"] < config.max_attempts else "attention",
-                not_before=time.time() + config.retry_seconds,
+                not_before=time.time()
+                + min(
+                    config.retry_seconds * 2 ** (job["attempts"] - 1),
+                    getattr(config, "max_retry_seconds", 3600),
+                ),
                 error=str(exc) if isinstance(exc, CirraError) else "local worker I/O failed",
             )
     job["updated_at"] = utc_now()
@@ -206,7 +251,26 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
     # The OS releases this lock after process death. An abandoned running job
     # resumes through the existing review/publisher recovery mechanisms.
     with change_lock(queue.directory / "locks", "worker", 0):
+        next_reconcile = 0
         while not stopped.is_set():
+            interval = getattr(config, "reconcile_seconds", 0)
+            if interval and time.monotonic() >= next_reconcile:
+                from cirra.reconcile import sync
+
+                results = sync(config, queue, process.credential)
+                write_receipt(
+                    queue.directory.parent / "reconciliation.json",
+                    {"observed_at": utc_now(), "routes": results},
+                )
+                next_reconcile = time.monotonic() + interval
+            write_receipt(
+                queue.directory.parent / "worker-status.json",
+                {
+                    "state": "running",
+                    "heartbeat_at": utc_now(),
+                    "daily_usage": queue.usage(),
+                },
+            )
             job = work_once(config, queue, process)
             if job:
                 print(

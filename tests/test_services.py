@@ -372,6 +372,7 @@ def test_gitlab_worker_observes_reviews_and_updates_one_note_with_separate_crede
     )
     route = SimpleNamespace(
         provider="gitlab",
+        name="gitlab",
         repository="example/repo",
         repository_id="42",
         policy=policy,

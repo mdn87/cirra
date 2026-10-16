@@ -12,7 +12,6 @@ SupplementaryGroups=docker
 Environment=HOME=/home/matt
 Environment=PATH=/home/matt/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/srv/lugos/services/cirra/current
-ExecStartPre=/bin/sh -c '/home/matt/.local/bin/claude auth status --json >/dev/null'
 ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -m cirra worker --service-config /srv/lugos/services/cirra/config/service.yaml --env-file /srv/lugos/services/cirra/config/worker.env --state-dir /srv/lugos/state/cirra
 Restart=on-failure
 RestartSec=30

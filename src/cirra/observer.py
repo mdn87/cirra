@@ -204,10 +204,10 @@ class DockerExecutor:
 class ObserverCheck:
     def __init__(self, repository, app_id, token, *, http=None):
         self.repository, self.app_id = repository, str(app_id)
+        self.token = token
         self.http, self.headers = (
             http,
             {
-                "Authorization": "Bearer " + token,
                 "X-GitHub-Api-Version": API_VERSION,
             },
         )
@@ -215,6 +215,9 @@ class ObserverCheck:
     def request(self, *args, **kwargs):
         # Execution can take minutes. Start transport deadlines after execution,
         # not when the observer publisher is constructed.
+        if "Authorization" not in self.headers:
+            token = self.token() if callable(self.token) else self.token
+            self.headers["Authorization"] = "Bearer " + token
         return (self.http or JSONClient("https://api.github.com", self.headers)).request(
             *args, **kwargs
         )
@@ -273,7 +276,16 @@ class ObserverCheck:
 
 
 def observe(
-    data, policy, state_dir, key, publisher=None, *, token=None, executor=None, source=None
+    data,
+    policy,
+    state_dir,
+    key,
+    publisher=None,
+    *,
+    token=None,
+    executor=None,
+    source=None,
+    on_execution=None,
 ):
     change = data["change"]
     provider = change["provider"]
@@ -310,13 +322,15 @@ def observe(
             saved = None
         if not saved:
             directory = root / (identifier + "-" + uuid.uuid4().hex)
+            branch = data["collection"].get("branch")
             archive, parents = (source or export_source)(
                 data["collection"]["repository"],
-                int(change["change_id"]),
+                None if branch else int(change["change_id"]),
                 change["head_sha"],
                 directory,
                 token,
                 provider=provider,
+                **({"branch": branch} if branch else {}),
             )
             name = "cirra-observer-" + uuid.uuid4().hex
             saved = {
@@ -332,27 +346,65 @@ def observe(
             saved.update(state="executed", execution=execution)
             write_receipt(path, saved)
         result = "success" if saved["execution"]["exit_code"] == 0 else "failure"
+        # Preserve signed execution evidence BEFORE any provider write. A Checks
+        # outage must not erase a completed test result or require reexecution.
+        standalone = {
+            "kind": "observer_run",
+            "source_id": "cirra/docker",
+            "name": NAME,
+            "native_id": saved["execution"]["container_id"],
+            "run_id": identifier,
+            "attempt": None,
+            "raw_state": result,
+            "normalized_state": result,
+            "associated_sha": change["head_sha"],
+            "provenance": {"trusted": False, "tested_sha": None, "parents": []},
+            "trigger": "independent_observer",
+            "url": f"https://{provider}.com/{data['collection']['repository']}/"
+            + ("pull/" if provider == "github" else "-/merge_requests/")
+            + change["change_id"],
+            "observed_at": utc_now(),
+            "started_at": saved["started_at"],
+        }
+        if data["collection"].get("branch"):
+            standalone["url"] = (
+                f"https://{provider}.com/{data['collection']['repository']}/"
+                + ("commit/" if provider == "github" else "-/commit/")
+                + change["head_sha"]
+            )
+        local_receipt = root / (identifier + "-execution-witness.json")
+        write_receipt(
+            local_receipt,
+            provenance.sign(
+                {
+                    "version": 2,
+                    "change": change,
+                    "witness": "Cirra independent Docker supervisor",
+                    "observed_at": utc_now(),
+                    "checks": [
+                        {
+                            "check": standalone,
+                            "binding": provenance.binding(change, standalone),
+                            "tested_sha": change["head_sha"],
+                            "parents": saved["parents"],
+                            "definition_digest": policy["definition_digest"],
+                            "evidence": "Docker execution "
+                            + saved["execution"]["container_id"]
+                            + "; source archive SHA-256 "
+                            + saved["archive_sha256"],
+                        }
+                    ],
+                },
+                key,
+            ),
+        )
+        if on_execution:
+            on_execution(local_receipt)
         if provider == "gitlab":
             # GitLab commit-status writes can create pipelines and affect merge
             # eligibility. Retain our own signed execution instead; the maintained
             # advisory MR note is the only remote publication.
-            check = {
-                "kind": "observer_run",
-                "source_id": "cirra/docker",
-                "name": NAME,
-                "native_id": saved["execution"]["container_id"],
-                "run_id": identifier,
-                "attempt": None,
-                "raw_state": result,
-                "normalized_state": result,
-                "associated_sha": change["head_sha"],
-                "provenance": {"trusted": False, "tested_sha": None, "parents": []},
-                "trigger": "independent_observer",
-                "url": f"https://gitlab.com/{data['collection']['repository']}/-/merge_requests/"
-                + change["change_id"],
-                "observed_at": utc_now(),
-                "started_at": saved["started_at"],
-            }
+            check = standalone
         else:
             check = publish_observation(publisher, change, identifier, result, saved, path, policy)
         statement = {

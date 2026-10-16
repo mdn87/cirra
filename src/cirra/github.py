@@ -16,7 +16,7 @@ from cirra.reviewer import unique_object
 API_VERSION = "2026-03-10"
 OID = r"(?:[a-f0-9]{40}|[a-f0-9]{64})"
 ROUTE = re.compile(
-    rf"(?:pulls/[1-9][0-9]*|branches/(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{{2}})+"
+    rf"(?:pulls(?:/[1-9][0-9]*)?|branches/(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{{2}})+"
     rf"|compare/{OID}\.\.\.{OID}|commits/{OID}/(?:check-runs|statuses))?"
 )
 
