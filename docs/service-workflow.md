@@ -171,22 +171,23 @@ Observed results:
 
 The repository webhook is configured for pull-request events at
 `https://lugos-host.tail099c37.ts.net:8443/hooks/cirra-github`, with TLS verification
-and a separate HMAC secret. Public delivery is awaiting the account owner's
-Tailscale Funnel enablement. The existing HTTPS service on port 443 is unchanged.
-After enabling Funnel, apply the dedicated 8443 command above and verify GitHub's
-delivery response is HTTP 202.
+and a separate HMAC secret. Tailscale Funnel now forwards public HTTPS port 8443
+to the loopback receiver. Public health requests return HTTP 200, unsigned
+deliveries return HTTP 401, and GitHub's authenticated ping returns HTTP 202.
+The existing HTTPS service on port 443 remains private to the tailnet.
 
-The worker startup check is awaiting the operator's Claude login on the host:
+The operator completed Claude subscription login on the host. Both Cirra
+services are running and enabled at boot. If the login expires, renew it with:
 
 ```text
 ssh lugos-host
 /home/matt/.local/bin/claude auth login
 ```
 
-The service retries startup after login. Full automatic webhook-to-review
-acceptance remains unfinished until both account steps are complete. The public
-repository currently uses anonymous collection; configure a separate read-only
-reader credential for sustained traffic to avoid anonymous API rate limits.
+The service retries startup after login. The public repository currently uses
+anonymous collection; configure a separate read-only reader credential for
+sustained traffic to avoid anonymous API rate limits. Opening or updating an
+open, non-draft PR queues its current revision for isolated tests and review.
 
 To inspect the deployment without printing credentials:
 
