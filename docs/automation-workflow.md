@@ -340,9 +340,21 @@ This demonstrates the limits of review from bounded diff context.
 
 Local captures, reports, operator receipt, before/after API evidence and screenshots
 are under `.cirra/gitlab-demo/`. No credentials are included in tracked evidence.
-Independent checkout observation, human usefulness assessment of the frozen
-reviewer cases, and separate native release setup remain open alongside the
-GitHub cases above.
+
+The subsequent [sandbox MR !2](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/2)
+completed independent checkout observation on lugos-host after replacing the
+reader with a token that permits Code Download. Run
+`b56dccee200a4cf8b9596dcd79e590c3` is `complete`, with verified independent CI,
+a successful review and zero findings. A repeat event reused the same Docker
+execution and model attempt while updating
+[note 4026211013](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/2#note_4026211013).
+Native pipelines, jobs and merge eligibility were unchanged by publication.
+MR !2 is merged and its main pipeline passed. The
+[service acceptance record](service-workflow.md#gitlab-observer-rollout) explains
+the provider delivery, explicit recovery and operator-generated replay test.
+
+Human usefulness assessment of the frozen reviewer cases and separate native
+release setup remain open alongside the GitHub fork case above.
 
 ## References
 

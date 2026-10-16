@@ -94,6 +94,10 @@ on [PR #5](https://github.com/mdn87/cirra/pull/5). GitLab sandbox MR !1 demonstr
 automatic review, one maintained advisory note across head changes, and unchanged
 native pipeline and merge requirements during publication. Its native pipelines
 passed and the sandbox setup is merged.
+GitLab [MR !2](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/2) also
+completed the live webhook/worker flow with isolated tests, verified checkout
+evidence, successful review, and one maintained note. Repeat processing reused
+the execution and review; the MR is merged and its main pipeline passed.
 Hosted CI remains association-only until an independent checkout observer
 provides trusted receipts. Live release dispatch still needs its separate setup.
 See the [live acceptance results](docs/automation-workflow.md#live-acceptance-results).

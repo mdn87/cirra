@@ -145,6 +145,14 @@ operator permission receipt. Neither the observer nor the publisher needs
 repository-write or merge permission. The webhook uses Merge request events,
 TLS verification and `CIRRA_GITLAB_WEBHOOK_SECRET` at `/hooks/cirra-gitlab`.
 
+To change reader permissions, create a replacement fine-grained token with the
+existing reads and Code Download, then replace `GITLAB_TOKEN` in the local and
+worker credential files. Keep `GITLAB_PUBLISHER_TOKEN` unchanged. GitLab's
+[Rotate operation](https://docs.gitlab.com/user/profile/personal_access_tokens/#rotate-a-personal-access-token)
+preserves the original permissions. Verify the replacement before revoking the
+old token. Restart the worker to load the replacement; a delivery that exhausted
+its retries also needs explicit operator recovery with its prior record retained.
+
 Native pipeline-dependent merge rules stay authoritative. Requiring the local
 observer in Cirra policy does not replace those rules or attest existing native
 jobs. Source fetching, Docker isolation, retry limits and review recovery are
@@ -252,12 +260,34 @@ Public health returned HTTP 200 and an unsigned GitLab request returned HTTP 401
 
 The [sandbox MR !2](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/2)
 uses head `c00a1992bb259577f13ec653de0e831c22efa38d`. Both native pipelines
-`2953727183` and `2953726032` passed. Its independent checkout is **not yet
-accepted**: GitLab permits API reads but returns HTTP 403 for Git downloads
-using `GITLAB_TOKEN`. The user was asked to add Code Download for this project.
-The worker stopped after three bounded attempts; it has not run the GitLab
-tests, invoked its reviewer, or published a note for this MR. Keep the MR open
-until that permission is available and the live flow can be completed.
+`2953727183` and `2953726032` passed. Git downloads initially returned HTTP 403,
+and the worker stopped after three bounded attempts. On 2026-10-16 the operator
+provided a replacement reader with Code Download. After verifying API and Git
+reads, the host reader was replaced, the failed delivery was archived and
+requeued, and the worker restarted. The publisher and witness key were unchanged.
+
+The recovered provider delivery completed on its first new attempt. The isolated
+README-heading test exited 0, its signed version 2 receipt verified against the
+current snapshot and execution definition, and Claude returned zero findings.
+Run `b56dccee200a4cf8b9596dcd79e590c3` reports `complete`, CI `verified`, and
+review `succeeded` in [note 4026211013](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/2#note_4026211013).
+The native GitLab jobs remain `associated_only`; the receipt authenticates only
+Cirra's independent execution.
+
+A separate operator-generated authenticated refresh through the public endpoint
+returned HTTP 202, reused the same model attempt and Docker execution, and updated
+the same note to generation 2. Sending that identical payload again returned
+`duplicate: true` and created no additional job. This repeat was an operator test,
+not a second delivery from GitLab. Before/after API reads confirmed unchanged
+pipeline and job IDs/statuses, merge eligibility and the required-pipeline setting.
+
+Repository-owner access then merged MR !2 as
+`167404555d1d9cdaeec22da951b6dd598d9723d6`.
+[Main pipeline 2953821104](https://gitlab.com/mdn87/cirra-sandbox/-/pipelines/2953821104)
+passed, and GitLab deleted the merged source branch. Both services remained
+active and public health returned HTTP 200.
+Local recovery, publication, repeat-event and merge evidence is retained under
+`.cirra/deploy/gitlab-observer/`; no credentials are included in tracked evidence.
 
 After the rollout, a real GitHub PR edit exercised the updated service on
 head `e104fd0f212c7b4a849a4aa332a06fcb669cfb51`. Run
