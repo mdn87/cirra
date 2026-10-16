@@ -83,9 +83,10 @@ two real-reviewer runs: six of six seeded defects found and no clean-case
 findings in each. The fake reviewer is only a deterministic test aid.
 
 GitHub App publishing, recovery and revision-change handling have been exercised
-on [PR #5](https://github.com/mdn87/cirra/pull/5). GitLab sandbox collection and
-automatic review now work on MR !1; note publication needs a separate scoped
-publisher token, and GitLab requires account identity verification to run CI.
+on [PR #5](https://github.com/mdn87/cirra/pull/5). GitLab sandbox MR !1 demonstrated
+automatic review, one maintained advisory note across head changes, and unchanged
+native pipeline and merge requirements during publication. Its native pipelines
+passed and the sandbox setup is merged.
 Hosted CI remains association-only until an independent checkout observer
 provides trusted receipts. Live release dispatch still needs its separate setup.
 See the [live acceptance results](docs/automation-workflow.md#live-acceptance-results).
