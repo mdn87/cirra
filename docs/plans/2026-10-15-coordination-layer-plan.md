@@ -12,12 +12,13 @@ The [review record](2026-10-15-planning-review.md) explains the original decisio
 | --- | --- |
 | Local foundation and manual session handoff | Implemented and previously landed. |
 | Automatic reviewer | Claude subscription dispatch with tools disabled, bounded execution, durable reuse and transport attribution. |
-| Trusted checkout provenance | Signed independent-witness statements and exact check/attempt binding implemented. A live independent witness is not provisioned; native hosted CI remains association-only. |
+| Trusted checkout provenance | Signed witness statements and exact check/attempt binding implemented. The independent Docker observer on lugos-host tested PR #7 and published a verified native check; other hosted CI retains its original provenance. |
 | Review-quality evaluation | Ten frozen labelled cases, two runs; 6/6 defects and 0/4 clean-case findings each. Human usefulness adjudication remains open. |
 | GitHub advisory publication | PR #5 is merged after live neutral-check publication, repeat/re-review, process-exit recovery, and base-only/new-head cases. The live base-only case exposed stale PR metadata; the collector now resolves the target branch independently. All 134 tests passed in the four native CI jobs. |
 | GitLab portability | Sandbox MR !1 is merged after pinned collection, automatic review, a maintained note across head changes/repeats/reconciliation, and successful native MR/push pipelines. Separate publisher scope was operator-confirmed. Publication preserved pipeline/job identity and the enabled requirement for successful CI before merging. Independent checkout evidence remains open. |
 | Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
-| Event triggers | Authenticated saved webhook intake, replay detection and current-state capture implemented. Existing webhook infrastructure supplies deliveries; no resident scheduler. |
+| Event triggers | Authenticated saved intake and HTTP webhook reception, replay detection, durable jobs, and current-state capture implemented. A persistent worker processes supported PR/MR events. |
+| Always-running services | Receiver and restartable worker installed on lugos-host, with bounded retries and daily admission. The receiver and independent observer passed live checks; public delivery and automatic review await Tailscale Funnel enablement and host Claude login. See the service guide for the deployment record. |
 | Release coordination | Evidence-bound requests, definition-verified CI, merged/protected-ref checks, separate Actions-only tokens and native dispatch/reconciliation implemented. No live release dispatched. |
 | Controlled live mutation cases | GitHub recovery, delayed-read fault injection, obsolete-attempt refusal, base-only change, new-head publication and refusal of a delayed old-target report after newer-target publication exercised. A real fork remains open. GitLab note identity, stale-head refusal and native merge requirements were verified live. |
 

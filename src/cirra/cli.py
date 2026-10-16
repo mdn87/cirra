@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from cirra import __version__, extensions, gitlab, provenance
+from cirra import __version__, extensions, gitlab, provenance, service_cli
 from cirra.config import load_config
 from cirra.coordinator import review
 from cirra.domain import CirraError
@@ -100,6 +100,7 @@ def main(argv=None):
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
     extensions.register(commands)
+    service_cli.register(commands)
     for name, help_text in (
         ("review", "review a captured change with the configured fake or automatic reviewer"),
         ("prepare-review", "export a packet for an existing agent session"),
@@ -162,6 +163,9 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
+        service_result = service_cli.run(args, token_from, capture_change)
+        if service_result is not None:
+            return service_result
         extension_result = extensions.run(args, token_from, capture_change)
         if extension_result is not None:
             return extension_result

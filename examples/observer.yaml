@@ -1,0 +1,11 @@
+version: 1
+# Build examples/observer.Dockerfile from a trusted checkout, then replace this
+# with docker image inspect --format '{{.Id}}' cirra-observer:local.
+image: 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+timeout_seconds: 600
+memory_mb: 1024
+cpus: 2
+commands:
+  - [python, -m, ruff, check, .]
+  - [python, -m, ruff, format, --check, .]
+  - [python, -m, pytest, -q]

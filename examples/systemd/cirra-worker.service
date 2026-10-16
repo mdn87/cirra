@@ -1,0 +1,31 @@
+[Unit]
+Description=Cirra review worker and independent checkout observer
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=matt
+Group=matt
+SupplementaryGroups=docker
+Environment=HOME=/home/matt
+Environment=PATH=/home/matt/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/srv/lugos/services/cirra/current
+ExecStartPre=/bin/sh -c '/home/matt/.local/bin/claude auth status --json >/dev/null'
+ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -m cirra worker --service-config /srv/lugos/services/cirra/config/service.yaml --env-file /srv/lugos/services/cirra/config/worker.env --state-dir /srv/lugos/state/cirra
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/lugos/state/cirra -/home/matt/.claude -/home/matt/.claude.json
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=1536M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

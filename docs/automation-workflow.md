@@ -4,6 +4,10 @@ Cirra captures provider evidence, runs a bounded reviewer, and publishes an
 advisory result. GitHub, GitLab and Forgejo retain repositories, permissions,
 native workflows, runners and merge decisions.
 
+For an always-running receiver/worker and independently observed Docker tests,
+see the [service workflow](service-workflow.md). The sections below also cover
+the original operator-invoked commands and their acceptance history.
+
 ## Automatic subscription review
 
 An installed Claude Code CLI can use its existing subscription login. No new

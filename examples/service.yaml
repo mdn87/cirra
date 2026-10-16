@@ -1,0 +1,23 @@
+version: 1
+worker:
+  poll_seconds: 2
+  retry_seconds: 30
+  max_attempts: 3
+  max_jobs: 10000
+  max_jobs_per_day: 30
+routes:
+  - name: cirra-github
+    provider: github
+    repository: mdn87/cirra
+    repository_id: '1420239911'
+    policy: github-worker-policy.yaml
+    webhook_secret_env: CIRRA_GITHUB_WEBHOOK_SECRET
+    # Public repositories can use anonymous collection. Private repositories
+    # require a distinct read-only token with API AND Git repository access.
+    # reader_token_env: CIRRA_GITHUB_READER_TOKEN
+    publisher:
+      app_id: 5339263
+      installation_id: 171924634
+      private_key_file: ../.cirra/credentials/mdn87-cirra-reviewer.2026-10-15.private-key.pem
+    observer: observer.yaml
+    witness_key_env: CIRRA_WITNESS_KEY
