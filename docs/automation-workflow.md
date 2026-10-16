@@ -83,7 +83,12 @@ target invalidates old synthetic merge parentage through the normal policy.
 ## GitHub advisory publication
 
 Install a GitHub App on the selected repository with **Checks: write** and
-**Metadata: read**. Keep its private PEM key in a local environment variable.
+**Metadata: read**. Record the numeric App ID and installation ID separately;
+the installation ID is not a secret key, and the App ID is not the Client ID.
+Keep the downloaded private PEM file under the ignored `.cirra/credentials/`
+directory. PEM files are also ignored throughout this repository. Load the file
+contents into a process environment variable when publishing; do not commit the
+key or paste its contents into chat. Existing `.env` files are not implicitly loaded.
 Install the optional signing dependency locally with `pip install 'cirra[publish]'`.
 
 ```text

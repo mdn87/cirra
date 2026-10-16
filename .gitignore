@@ -13,6 +13,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+*.pem
 build/
 dist/
 cirra-checkout.json
