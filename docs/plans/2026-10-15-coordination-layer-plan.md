@@ -14,7 +14,7 @@ The [review record](2026-10-15-planning-review.md) explains the original decisio
 | Automatic reviewer | Claude subscription dispatch with tools disabled, bounded execution, durable reuse and transport attribution. |
 | Trusted checkout provenance | Signed independent-witness statements and exact check/attempt binding implemented. A live independent witness is not provisioned; native hosted CI remains association-only. |
 | Review-quality evaluation | Ten frozen labelled cases, two runs; 6/6 defects and 0/4 clean-case findings each. Human usefulness adjudication remains open. |
-| GitHub advisory publication | Checks-only App token minting, neutral checks, durable intent history, reconciliation and supersession protection implemented. Live App setup remains open. |
+| GitHub advisory publication | Scoped App credentials verified. PR #5 demonstrates a neutral check, repeat publication, explicit re-review, lost-acknowledgement recovery and refusal of an older attempt. Revision-change cases are in progress. |
 | GitLab portability | Version-pinned MR collection, pipeline job normalization and maintained advisory notes implemented. Sandbox token cannot read repository content; no open test MR or separate note publisher is configured. |
 | Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
 | Event triggers | Authenticated saved webhook intake, replay detection and current-state capture implemented. Existing webhook infrastructure supplies deliveries; no resident scheduler. |
@@ -371,8 +371,8 @@ the implementation; the product choices above are Cirra design decisions.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
 The remaining work is live setup and acceptance: independent checkout evidence,
-a GitHub publisher App, GitLab repository-read access/test MR/separate note
-publisher, controlled publication cases and operator usefulness adjudication.
+GitLab repository-read access/test MR/separate note publisher, the remaining
+controlled publication cases and operator usefulness adjudication.
 Automatic dispatch, both publishers, GitLab/Forgejo collection, evaluation,
 authenticated event intake and native release requests are implemented.
 No new model API credentials are required for subscription review.
