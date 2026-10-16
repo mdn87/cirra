@@ -6,8 +6,10 @@ runs the selected tests in an isolated Docker container, obtains an AI review,
 and publishes the results. GitHub still owns the repository, checks, branch
 rules, and merge decision. Cirra never merges a PR.
 
-The worker also supports GitLab merge-request reviews and maintained advisory
-notes. The independent Docker observer currently publishes GitHub checks only.
+The worker also supports GitLab merge-request reviews, isolated tests, and
+maintained advisory notes. GitHub observations attest the supervisor's native
+check. GitLab observations use a signed `observer_run` record retained by Cirra;
+the maintained MR note reports its result without creating a GitLab pipeline.
 Existing GitHub Actions and GitLab pipeline observations retain their original
 provenance; this observer does not certify those other runners.
 
@@ -36,7 +38,8 @@ Relative paths resolve against the service configuration file.
    when dependencies need to change.
 3. Run `cirra observer-definition --config <observer.yaml>`. Put its
    `definition_digest` in the review policy's expected `cirra/isolated-tests`
-   check, together with the exact publisher App ID. The digest binds the image,
+   check, together with the exact publisher App ID for GitHub or the
+   `observer_run` kind and `cirra/docker` source for GitLab. The digest binds the image,
    commands, limits, launcher, and supervisor implementation. Recompute it after
    an observer upgrade or a move to another installation.
 4. Configure `examples/service.yaml` with that review policy and observer file.
@@ -92,8 +95,11 @@ identities and supported PR/MR actions. GitHub ping deliveries are acknowledged.
 
 ## What the observer verifies
 
-The trusted supervisor fetches the PR ref from the configured GitHub base
+The trusted supervisor fetches the PR/MR head ref from the configured target
 repository, verifies its full commit ID, and reads its Git objects directly.
+GitHub uses `refs/pull/<number>/head`; GitLab uses
+`refs/merge-requests/<number>/head`. Credentials are restricted to that target
+repository's HTTPS URL; redirects and fork-supplied clone URLs are not used.
 It never checks out or executes PR code on the host. Hooks, filters, replacement
 objects, submodules, and attribute-based export rewriting are not used.
 Exports are limited to 64 MiB and 5,000 regular files; symlinks and submodules
@@ -111,14 +117,41 @@ boundary. No fleet scheduler or repository workflow interpreter is introduced.
 
 Only the supervisor signs the statement. It observes the actual Docker result
 and binds the verified source commit, parents, and execution definition to its
-own native `cirra/isolated-tests` check, including identity, start time, and
-conclusion. A failing test produces a verified failure. Uncertain execution or
+own `cirra/isolated-tests` result, including identity, start time, and
+conclusion. GitHub's version 1 receipt attests the current native check. GitLab's
+version 2 receipt carries its own standalone check and binds the entire captured
+MR snapshot, including repository, MR number, head, target and diff base. Only a
+valid signature from the selected witness key can introduce this separate CI
+evidence; it never authenticates a GitLab pipeline job. A failing test produces
+a verified failure. Uncertain execution or
 publication cannot produce a successful witness. PR code can change its own
 tests; a verified checkout is not an assessment of test quality.
 
 The worker re-reads the provider after observation and before publication. A
 moving head/target causes a refresh and retry. Closed/draft changes are skipped.
 The `cirra/review` result remains advisory even when all evidence is complete.
+
+## GitLab setup
+
+`examples/gitlab-service.yaml` and `examples/gitlab-worker-policy.yaml` show the
+corresponding route. It can be added to the same service configuration as GitHub;
+both routes share the durable worker. Select sandbox-appropriate test commands
+in a separate observer policy and pin its computed definition digest.
+
+The private sandbox reader needs API reads for project/MR/diff/pipeline/job
+collection plus **Code → Download** for Git-over-HTTPS. The publisher remains a
+separate project-scoped token with Work Item Create/Read/Update and an explicit
+operator permission receipt. Neither the observer nor the publisher needs
+repository-write or merge permission. The webhook uses Merge request events,
+TLS verification and `CIRRA_GITLAB_WEBHOOK_SECRET` at `/hooks/cirra-gitlab`.
+
+Native pipeline-dependent merge rules stay authoritative. Requiring the local
+observer in Cirra policy does not replace those rules or attest existing native
+jobs. Source fetching, Docker isolation, retry limits and review recovery are
+the same as the GitHub route.
+
+GitLab documents the [MR head ref](https://docs.gitlab.com/user/project/merge_requests/merge_request_troubleshooting/)
+and the [Code Download permission for Git operations](https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens_other/).
 
 ## Recovery and operating limits
 

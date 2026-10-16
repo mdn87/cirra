@@ -77,8 +77,12 @@ def load_config(path):
             r"[a-f0-9]{64}", str(check["definition_digest"])
         ):
             raise CirraError("CI definition_digest must be a lowercase SHA-256 digest")
-        if check["kind"] not in ("check_run", "commit_status", "pipeline_job"):
+        if check["kind"] not in ("check_run", "commit_status", "pipeline_job", "observer_run"):
             raise CirraError("unsupported expected check kind")
+        if check["kind"] == "observer_run" and (
+            check["source_id"] != "cirra/docker" or "definition_digest" not in check
+        ):
+            raise CirraError("local observer checks must pin cirra/docker and its definition")
         for name, value in check.items():
             string(value, name)
         if check["source_id"] in ("not_exposed", "unknown"):

@@ -70,7 +70,7 @@ class Executor:
         self.recovered = saved["container_name"]
 
 
-def source(repository, change, expected, directory, token):
+def source(repository, change, expected, directory, token, *, provider="github"):
     directory.mkdir()
     archive = directory / "source.tar"
     archive.write_bytes(b"verified archive")
@@ -197,7 +197,10 @@ def test_docker_launch_isolated_and_pinned(observer_policy, tmp_path, monkeypatc
     assert result["exit_code"] == 0 and calls[-1][1:3] == ["rm", "--force"]
 
 
-def test_real_git_export_ignores_attributes_and_never_checks_out_code(tmp_path, monkeypatch):
+@pytest.mark.parametrize("provider,ref", [("github", "pull"), ("gitlab", "merge-requests")])
+def test_real_git_export_ignores_attributes_and_never_checks_out_code(
+    tmp_path, monkeypatch, provider, ref
+):
     repository = tmp_path / "repo"
     repository.mkdir()
 
@@ -231,6 +234,11 @@ def test_real_git_export_ignores_attributes_and_never_checks_out_code(tmp_path, 
 
     def redirected(argv, directory, **kwargs):
         if "fetch" in argv:
+            assert argv[-2:] == [f"https://{provider}.com/example/repo.git", f"refs/{ref}/1/head"]
+            assert "reader-canary" not in str(argv)
+            env = kwargs["env"]
+            headers = [env[f"GIT_CONFIG_KEY_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))]
+            assert f"http.https://{provider}.com/example/repo.git.extraHeader" in headers
             # Keep the real git export; only replace the transport for this local fixture.
             argv = [
                 "git",
@@ -244,14 +252,18 @@ def test_real_git_export_ignores_attributes_and_never_checks_out_code(tmp_path, 
         return real_run(argv, directory, **kwargs)
 
     monkeypatch.setattr("cirra.observer_source.run_control", redirected)
-    archive, parents = export_source("example/repo", 1, head, tmp_path / "export")
+    archive, parents = export_source(
+        "example/repo", 1, head, tmp_path / "export", "reader-canary", provider=provider
+    )
     assert parents == []
     with tarfile.open(archive) as tar:
         assert "test.py" in tar.getnames()
         assert tar.extractfile("test.py").read().startswith(b"raise RuntimeError")
     assert not (archive.parent / "git" / "test.py").exists()
     with pytest.raises(CirraError, match="head moved"):
-        export_source("example/repo", 1, "f" * 40, tmp_path / "wrong-head")
+        export_source(
+            "example/repo", 1, "f" * 40, tmp_path / "wrong-head", "reader-canary", provider=provider
+        )
 
 
 def test_source_symlinks_rejected_before_container_execution(tmp_path, monkeypatch):
@@ -280,3 +292,80 @@ def test_policy_definition_changes_with_image_or_commands(observer_policy, tmp_p
     path.write_text(yaml.safe_dump(value))
     with pytest.raises(CirraError, match="immutable"):
         load_observer(path)
+
+
+@pytest.mark.parametrize("exit_code,outcome", [(0, "verified"), (1, "failed")])
+def test_gitlab_observer_verifies_own_result_without_attesting_native_pipeline(
+    fixture_data, observer_policy, tmp_path, inputs, policy_data, exit_code, outcome
+):
+    from cirra.policy import assess_checks
+
+    data = data_for_observer(fixture_data)
+    data["change"].update(provider="gitlab", instance="https://gitlab.com")
+    data["collection"].update(
+        source="gitlab_rest", observed_at="2026-10-16T00:00:00Z", check_errors=[]
+    )
+    data["checks"][0].update(
+        kind="pipeline_job", provenance={"trusted": False, "tested_sha": None, "parents": []}
+    )
+    executor = Executor(exit_code)
+    receipt = observe(data, observer_policy, tmp_path, KEY, executor=executor, source=source)
+    verified = provenance.apply(data, receipt, KEY)
+    assert verified["checks"][0] == data["checks"][0]
+    assert verified["checks"][1]["kind"] == "observer_run"
+    assert verified["checks"][1]["provenance"]["trusted"]
+    assert provenance.apply(verified, receipt, KEY) == verified
+    policy_data["repositories"] = [
+        {key: data["change"][key] for key in ("provider", "instance", "repository_id")}
+    ]
+    policy_data["ci"]["expected"] = [
+        {
+            "kind": "observer_run",
+            "source_id": "cirra/docker",
+            "name": NAME,
+            "definition_digest": observer_policy["definition_digest"],
+        }
+    ]
+    provider, config = inputs(data=verified, policy=policy_data)
+    assert assess_checks(provider.checks, provider.snapshot, config)["outcome"] == outcome
+    observe(data, observer_policy, tmp_path, KEY, executor=executor, source=source)
+    assert executor.calls == 1
+    for field, value in (
+        ("head_sha", "f" * 40),
+        ("target_sha", "e" * 40),
+        ("diff_base_sha", "d" * 40),
+        ("repository_id", "99"),
+        ("change_id", "2"),
+        ("instance", "https://other.invalid"),
+        ("provider", "github"),
+    ):
+        moved = copy.deepcopy(data)
+        moved["change"][field] = value
+        with pytest.raises(CirraError, match="snapshot"):
+            provenance.apply(moved, receipt, KEY)
+    with pytest.raises(CirraError, match="signature"):
+        provenance.apply(data, receipt, KEY + "wrong")
+    raw = json.loads(receipt.read_text())
+    raw["statement"]["checks"][0]["evidence"] = "forged execution"
+    receipt.write_text(json.dumps(raw))
+    with pytest.raises(CirraError, match="signature"):
+        provenance.apply(data, receipt, KEY)
+
+
+def test_standalone_witness_cannot_invent_a_native_pipeline_or_omit_execution_definition(
+    fixture_data, observer_policy, tmp_path
+):
+    data = data_for_observer(fixture_data)
+    data["change"].update(provider="gitlab", instance="https://gitlab.com")
+    receipt = observe(data, observer_policy, tmp_path, KEY, executor=Executor(), source=source)
+    original = json.loads(receipt.read_text())["statement"]
+    for kind in ("pipeline_job", "commit_status", "check_run"):
+        value = copy.deepcopy(original)
+        item = value["checks"][0]
+        item["check"]["kind"] = kind
+        item["binding"] = provenance.binding(value["change"], item["check"])
+        with pytest.raises(CirraError, match="own exact observer"):
+            provenance.sign(value, KEY)
+    del original["checks"][0]["definition_digest"]
+    with pytest.raises(CirraError, match="own exact observer"):
+        provenance.sign(original, KEY)

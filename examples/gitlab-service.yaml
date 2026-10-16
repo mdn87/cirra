@@ -1,0 +1,17 @@
+version: 1
+worker:
+  max_jobs_per_day: 30
+routes:
+  - name: cirra-gitlab
+    provider: gitlab
+    repository: mdn87/cirra-sandbox
+    repository_id: '87658566'
+    policy: gitlab-worker-policy.yaml
+    webhook_secret_env: CIRRA_GITLAB_WEBHOOK_SECRET
+    reader_token_env: GITLAB_TOKEN
+    publisher:
+      principal_id: 43389411
+      token_env: GITLAB_PUBLISHER_TOKEN
+      permission_receipt: publisher-permissions.json
+    observer: observer.yaml
+    witness_key_env: CIRRA_WITNESS_KEY

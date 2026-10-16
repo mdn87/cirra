@@ -85,7 +85,9 @@ findings in each. The fake reviewer is only a deterministic test aid.
 The [service guide](docs/service-workflow.md) describes the authenticated HTTP
 receiver, durable background worker, and independent Docker checkout observer.
 It includes explicit configuration, Linux service units, credential separation,
-and the HTTPS webhook setup for reviews triggered by an open pull request.
+and the HTTPS webhook setup for reviews triggered by an open pull or merge request.
+The isolated observer supports both GitHub and GitLab; GitLab test receipts stay
+separate from native pipelines and are summarized in the maintained MR note.
 
 GitHub App publishing, recovery and revision-change handling have been exercised
 on [PR #5](https://github.com/mdn87/cirra/pull/5). GitLab sandbox MR !1 demonstrated

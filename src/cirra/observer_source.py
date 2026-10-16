@@ -1,4 +1,4 @@
-"""Fetch an exact GitHub PR revision into a fresh bare repository and export its blobs.
+"""Fetch an exact PR/MR revision into a fresh bare repository and export its blobs.
 
 No worktree, hooks, filters, LFS, attributes, submodules, or repository-supplied
 programs run on the observer host. The only export is a bounded regular-file tar.
@@ -10,15 +10,24 @@ import os
 import tarfile
 from pathlib import Path
 
-from cirra.domain import CirraError, path_name, sha
+from cirra.domain import CirraError, number, path_name, sha
 from cirra.github import repository_name
+from cirra.gitlab import project_name
 from cirra.observer_process import control_environment, run_control
 
 MAX_SOURCE = 64 * 1024 * 1024
 
 
-def export_source(repository, change, expected_sha, directory, token=None):
-    repository_name(repository)
+def export_source(repository, change, expected_sha, directory, token=None, *, provider="github"):
+    if provider == "github":
+        repository_name(repository)
+        origin, username, ref = "https://github.com", "x-access-token", "pull"
+    elif provider == "gitlab":
+        project_name(repository)
+        origin, username, ref = "https://gitlab.com", "oauth2", "merge-requests"
+    else:
+        raise CirraError("independent checkout requires GitHub or GitLab")
+    number(change, "change number", 1, 2**31 - 1, integral=True)
     sha(expected_sha)
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=False)
@@ -45,8 +54,10 @@ def export_source(repository, change, expected_sha, directory, token=None):
         ("core.autocrlf", "false"),
     ]
     if token:
-        auth = base64.b64encode(("x-access-token:" + token).encode()).decode()
-        values.append(("http.https://github.com/.extraHeader", "Authorization: Basic " + auth))
+        auth = base64.b64encode((username + ":" + token).encode()).decode()
+        values.append(
+            (f"http.{origin}/{repository}.git.extraHeader", "Authorization: Basic " + auth)
+        )
     env["GIT_CONFIG_COUNT"] = str(len(values))
     for index, (key, value) in enumerate(values):
         env[f"GIT_CONFIG_KEY_{index}"] = key
@@ -56,19 +67,19 @@ def export_source(repository, change, expected_sha, directory, token=None):
         return run_control(["git", *args], bare, env=env, maximum=maximum, data=data)
 
     git("init", "--bare", "--template=")
-    # GitHub's base repository exposes the PR ref, including fork PRs. Never use a
+    # The target repository exposes the change ref, including forks. Never use a
     # webhook-supplied clone URL or send a reader token to a fork's remote.
     git(
         "fetch",
         "--no-tags",
         "--depth=1",
         "--no-recurse-submodules",
-        "https://github.com/" + repository + ".git",
-        f"refs/pull/{int(change)}/head",
+        origin + "/" + repository + ".git",
+        f"refs/{ref}/{change}/head",
     )
     actual = git("rev-parse", "--verify", "FETCH_HEAD^{commit}").decode().strip()
     if actual != expected_sha:
-        raise CirraError("PR head moved before the independent checkout; refresh and retry")
+        raise CirraError("change head moved before the independent checkout; refresh and retry")
     commit = git("cat-file", "commit", actual)
     parents = [
         sha(line[7:].decode())

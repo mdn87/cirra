@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from cirra.domain import CirraError, canonical, digest, fields, sha, string, timestamp
+from cirra.fixture import validate_check
 from cirra.reviewer import unique_object
 
 
@@ -38,9 +39,35 @@ def binding(change, check):
 
 
 def validate_statement(statement):
-    fields(statement, ["version", "witness", "observed_at", "checks"], label="witness statement")
-    if type(statement["version"]) is not int or statement["version"] != 1:
+    fields(
+        statement,
+        ["version", "witness", "observed_at", "checks"],
+        ["change"],
+        label="witness statement",
+    )
+    version = statement["version"]
+    if type(version) is not int or version not in (1, 2):
         raise CirraError("unsupported witness statement version")
+    if (version == 2) != ("change" in statement):
+        raise CirraError("standalone observer receipts require an exact change snapshot")
+    if version == 2:
+        change = fields(
+            statement["change"],
+            [
+                "provider",
+                "instance",
+                "repository_id",
+                "change_id",
+                "head_sha",
+                "diff_base_sha",
+                "target_sha",
+            ],
+            label="witness change",
+        )
+        for name in ("provider", "instance", "repository_id", "change_id"):
+            string(change[name], name)
+        for name in ("head_sha", "diff_base_sha", "target_sha"):
+            sha(change[name])
     string(statement["witness"], "witness identity", 200)
     timestamp(statement["observed_at"])
     if not isinstance(statement["checks"], list) or len(statement["checks"]) > 1000:
@@ -49,7 +76,7 @@ def validate_statement(statement):
     for item in statement["checks"]:
         fields(
             item,
-            ["binding", "tested_sha", "parents", "evidence"],
+            ["binding", "tested_sha", "parents", "evidence"] + (["check"] if version == 2 else []),
             ["definition_digest"],
             label="witness check",
         )
@@ -70,6 +97,21 @@ def validate_statement(statement):
         for parent in item["parents"]:
             sha(parent)
         string(item["evidence"], "independent witness evidence")
+        if version == 2:
+            check = validate_check(item["check"])
+            if (
+                check["kind"] != "observer_run"
+                or check["source_id"] != "cirra/docker"
+                or check["name"] != "cirra/isolated-tests"
+                or check["raw_state"] not in ("success", "failure")
+                or check.get("normalized_state") != check["raw_state"]
+                or check["associated_sha"] != change["head_sha"]
+                or item["tested_sha"] != change["head_sha"]
+                or check["provenance"] != {"trusted": False, "tested_sha": None, "parents": []}
+                or "definition_digest" not in item
+                or binding(change, check) != item["binding"]
+            ):
+                raise CirraError("standalone receipt must describe its own exact observer run")
     return statement
 
 
@@ -103,6 +145,15 @@ def apply(data, path, key):
     ):
         raise CirraError("checkout witness signature does not match the selected trusted key")
     data = copy.deepcopy(data)
+    if receipt["statement"]["version"] == 2:
+        if receipt["statement"]["change"] != data["change"]:
+            raise CirraError("standalone observer receipt does not match the current snapshot")
+        # Only authenticated standalone observations can introduce these checks.
+        # Never turn a local execution into an attestation of a provider pipeline.
+        data["checks"] = [item for item in data["checks"] if item["kind"] != "observer_run"]
+        data["checks"].extend(
+            copy.deepcopy(item["check"]) for item in receipt["statement"]["checks"]
+        )
     witnesses = {item["binding"]: item for item in receipt["statement"]["checks"]}
     for check in data["checks"]:
         item = witnesses.get(binding(data["change"], check))
