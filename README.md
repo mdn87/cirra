@@ -82,11 +82,14 @@ checkout witnesses and recovery. The [frozen evaluation](eval/README.md) records
 two real-reviewer runs: six of six seeded defects found and no clean-case
 findings in each. The fake reviewer is only a deterministic test aid.
 
-Native publishing and release demonstrations still need scoped credentials.
+GitHub App publishing, recovery and revision-change handling have been exercised
+on [PR #5](https://github.com/mdn87/cirra/pull/5). GitLab sandbox collection and
+automatic review now work on MR !1; note publication needs a separate scoped
+publisher token, and GitLab requires account identity verification to run CI.
 Hosted CI remains association-only until an independent checkout observer
-provides trusted receipts. The private GitLab sandbox needs repository-read
-permission and a test MR. GitKraken, Autowork and Roundtable remain optional
-development tools.
+provides trusted receipts. Live release dispatch still needs its separate setup.
+See the [live acceptance results](docs/automation-workflow.md#live-acceptance-results).
+GitKraken, Autowork and Roundtable remain optional development tools.
 
 ## Collect a real GitHub change
 

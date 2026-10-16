@@ -173,10 +173,11 @@ server attestation. Cirra never probes forbidden mutations to discover scope.
 The publisher maintains an advisory MR note; it does not create commit statuses
 or external pipelines. Existing `.env` files are not implicitly loaded.
 
-On 2026-10-15 the supplied sandbox token could read the project, MR list and
-pipelines, but repository-tree reads returned HTTP 403. There was no open MR.
-Repository/diff read permission, a sandbox test MR and a separate scoped note
-publisher are needed to complete the private live demonstration.
+The replacement sandbox reader token now supports the branch and MR diff-version
+reads required by collection. [Sandbox MR !1](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/1)
+has been collected and reviewed automatically. A separate scoped note publisher
+is still required. GitLab also requires account identity verification before
+its pipelines can run. See the live results below for the exact limits.
 
 ## Forgejo and authenticated event intake
 
@@ -223,6 +224,81 @@ not bypass duplicate protection. Accepted requests are not completed releases. D
 `--reconcile` identify the native run; a lost acknowledgement never causes an
 automatic second dispatch. `--retry-uncertain` permits one explicit retry of an unacknowledged request after
 inspection; it never retries an acknowledged dispatch. No live release has been dispatched by this implementation session.
+
+## Live acceptance results
+
+Recorded on 2026-10-15 America/New_York (2026-10-16 UTC). These are observed
+results from the live providers; the implementation plan retains acceptance
+requirements that still need external setup.
+
+### GitHub
+
+[PR #5](https://github.com/mdn87/cirra/pull/5) is merged. Its final reviewed head
+was `66af347998f4ec3e3fa1f0485659b86fbd01f982` against target
+`f1c10f8fb9e02bf88ba2878e8b5e0878759b5e7b`.
+[Native CI](https://github.com/mdn87/cirra/actions/runs/38839480302) passed all
+134 tests, lint and formatting on Windows/Linux with Python 3.11/3.14.
+
+| Live case | Observed result |
+| --- | --- |
+| Process exit before create | Durable intent remained uncertain; read-only reconciliation found no remote check and made no write. |
+| Process exit after the remote create but before saving acknowledgement | Reconciliation recovered the unique owned check. |
+| Delayed read visibility | Suppressing the discovery result left the intent uncertain without creating a duplicate. This was controlled fault injection around a real remote object. |
+| Repeat publication and explicit re-review | Both retained the same check on the same head. A superseded local review attempt was refused. |
+| Target branch advances with unchanged head | The live case exposed stale GitHub PR `base.sha` metadata. After the fix, Cirra refused the old-target report; a fresh review updated the same check. |
+| Head advances | A fresh review created a new check for the new commit. Read-only CLI reconciliation recovered that exact check. |
+
+The original-head check is
+[`116772324382`](https://github.com/mdn87/cirra/runs/116772324382); the final-head
+check is [`116776873598`](https://github.com/mdn87/cirra/runs/116776873598).
+Both belong to App `5339263` and are neutral. All four automatic reviewer
+attempts succeeded with no findings. Publication and recovery left saved model
+responses unchanged; they did not invoke the model again.
+
+The target-change defect was reproduced before the fix: GitHub's PR metadata
+still reported target `2fb685a` after `main` advanced to `f1c10f8`, so an outdated
+report could be republished. Cirra now independently resolves the target branch
+before and after collection and refuses failed or inconsistent reads. Regression
+coverage also checks branch movement, denied/malformed reads, encoded names and
+fork target identity. The actual live fork scenario still needs a controlled
+fork under another owner. Delivering an old-target report after publishing a
+newer-target report on the same head has not been exercised as a separate live case.
+
+Fault injection used the saved capture and a live revision check around the
+publisher; final ordinary CLI publication performed fresh collection. Local
+case receipts and response hashes are under `.cirra/github-acceptance/cases/`.
+No independent checkout witness is configured, so native CI success remains
+association evidence and the Cirra reports remain `incomplete`.
+
+### GitLab
+
+The private [sandbox MR !1](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/1)
+adds its README on head `e6dc68741f5c6505a85cda744aff430d54c7aa2a`, with target
+`652a4c8d39a048ba918fe06c0e4f992c1d2f9013`. Its pinned diff-version collection
+succeeded, and automatic review `051f553198614931a13bca84d5eec5e3` returned no
+findings. The report is `incomplete` because the expected native job is missing.
+A repeated review reused that attempt with identical saved model-response hashes.
+
+The provider exposes failed push pipeline `2953418816` and failed MR pipeline
+`2953420191`, both with zero jobs. The MR page requires account identity
+verification to run a pipeline. Before publication, the API reported the MR as
+mergeable and `only_allow_merge_if_pipeline_succeeds: false`. Consequently this
+setup cannot yet demonstrate preservation of a requirement for successful CI
+before merging. The current example policy's expected `test` job must also
+be matched to an actual native job once CI is configured and can run.
+
+Only the reader credential is configured. No advisory note has been published,
+and no publisher permission receipt has been asserted. The remaining note case
+needs a different token scoped to this project with note read/create/update
+permissions, verified by the operator. Publication, repeat/reconcile behavior,
+and the before/after pipeline and merge-setting comparison then remain to run.
+The open MR is deliberately retained as that acceptance target.
+
+Local captures, reports, the API baseline and a screenshot of the provider
+restriction are under `.cirra/gitlab-demo/`. No credentials are included in
+tracked evidence. Independent checkout observation, human usefulness assessment
+of the frozen reviewer cases, and the separately authorized native release
+setup remain open alongside the provider cases above.
 
 ## References
 

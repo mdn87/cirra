@@ -14,15 +14,17 @@ The [review record](2026-10-15-planning-review.md) explains the original decisio
 | Automatic reviewer | Claude subscription dispatch with tools disabled, bounded execution, durable reuse and transport attribution. |
 | Trusted checkout provenance | Signed independent-witness statements and exact check/attempt binding implemented. A live independent witness is not provisioned; native hosted CI remains association-only. |
 | Review-quality evaluation | Ten frozen labelled cases, two runs; 6/6 defects and 0/4 clean-case findings each. Human usefulness adjudication remains open. |
-| GitHub advisory publication | Scoped App credentials verified. PR #5 demonstrates a neutral check, repeat publication, explicit re-review, lost-acknowledgement recovery and refusal of an older attempt. Revision-change cases are in progress. |
-| GitLab portability | Version-pinned MR collection, pipeline job normalization and maintained advisory notes implemented. Sandbox token cannot read repository content; no open test MR or separate note publisher is configured. |
+| GitHub advisory publication | PR #5 is merged after live neutral-check publication, repeat/re-review, process-exit recovery, and base-only/new-head cases. The live base-only case exposed stale PR metadata; the collector now resolves the target branch independently. All 134 tests passed in the four native CI jobs. |
+| GitLab portability | Replacement reader token collected sandbox MR !1 and automatic review succeeded. A separate scoped note publisher is still absent. GitLab requires account identity verification to run CI; both observed pipelines failed with zero jobs. The sandbox does not require successful CI before merging yet. |
 | Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
 | Event triggers | Authenticated saved webhook intake, replay detection and current-state capture implemented. Existing webhook infrastructure supplies deliveries; no resident scheduler. |
 | Release coordination | Evidence-bound requests, definition-verified CI, merged/protected-ref checks, separate Actions-only tokens and native dispatch/reconciliation implemented. No live release dispatched. |
-| Controlled live mutation cases | Local recovery/adapter cases cover them; new-head/base-only/fork publication demonstrations still require the scoped live setup. |
+| Controlled live mutation cases | GitHub recovery, delayed-read fault injection, obsolete-attempt refusal, base-only change and new-head publication exercised. A real fork and delivery of an old-target report after publishing a newer-target report on the same head remain open. GitLab note acceptance awaits publisher setup. |
 
 The milestone sections below retain their acceptance requirements. Implementation
 availability does not imply that credential-dependent acceptance is complete.
+The [live acceptance record](../automation-workflow.md#live-acceptance-results)
+distinguishes observed provider behavior, injected faults and remaining setup.
 
 ## Governing decision
 
@@ -370,9 +372,10 @@ the implementation; the product choices above are Cirra design decisions.
   requiring a new PR-code execution environment.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
-The remaining work is live setup and acceptance: independent checkout evidence,
-GitLab repository-read access/test MR/separate note publisher, the remaining
-controlled publication cases and operator usefulness adjudication.
+The remaining work is live setup and acceptance: independent checkout evidence;
+GitLab scoped note publication, account identity verification, native CI and merge
+requirements; a controlled GitHub fork and delayed old-target publication case;
+operator assessment of review usefulness; and separate native release setup.
 Automatic dispatch, both publishers, GitLab/Forgejo collection, evaluation,
 authenticated event intake and native release requests are implemented.
 No new model API credentials are required for subscription review.
