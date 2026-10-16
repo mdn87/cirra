@@ -255,12 +255,13 @@ passed all four jobs; production lease behavior was unchanged.
 | Repeat publication and explicit re-review | Both retained the same check on the same head. A superseded local review attempt was refused. |
 | Target branch advances with unchanged head | The live case exposed stale GitHub PR `base.sha` metadata. After the fix, Cirra refused the old-target report; a fresh review updated the same check. |
 | Head advances | A fresh review created a new check for the new commit. Read-only CLI reconciliation recovered that exact check. |
+| Older-target report arrives after newer-target publication | PR #6 retained one check with identical output and ownership metadata after the old report was refused. |
 
 The original-head check is
 [`116772324382`](https://github.com/mdn87/cirra/runs/116772324382); the final-head
 check is [`116776873598`](https://github.com/mdn87/cirra/runs/116776873598).
 Both belong to App `5339263` and are neutral. All four automatic reviewer
-attempts succeeded with no findings. Publication and recovery left saved model
+attempts on PR #5 succeeded with no findings. Publication and recovery left saved model
 responses unchanged; they did not invoke the model again.
 
 The target-change defect was reproduced before the fix: GitHub's PR metadata
@@ -269,8 +270,17 @@ report could be republished. Cirra now independently resolves the target branch
 before and after collection and refuses failed or inconsistent reads. Regression
 coverage also checks branch movement, denied/malformed reads, encoded names and
 fork target identity. The actual live fork scenario still needs a controlled
-fork under another owner. Delivering an old-target report after publishing a
-newer-target report on the same head has not been exercised as a separate live case.
+fork under another owner.
+
+[PR #6](https://github.com/mdn87/cirra/pull/6) exercised the delayed-report case
+on unchanged head `cd29046d9efe8f871ab9da0a8ff2aa54d6b3a4bc`. The first review
+captured target `14a8cca`; after `main` advanced to `1e3b136`, a fresh review was
+published as [check 116786898954](https://github.com/mdn87/cirra/runs/116786898954).
+Trying to publish the older report afterward was refused. Before/after reads
+confirmed one owned check, the same native ID and marker, and identical output
+hashes. Both reviews succeeded with no findings; publication did not invoke the
+model again. The receipt is `cases/delayed-target-ordering.json` in the local
+acceptance directory.
 
 Fault injection used the saved capture and a live revision check around the
 publisher; final ordinary CLI publication performed fresh collection. Local

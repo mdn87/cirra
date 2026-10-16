@@ -19,7 +19,7 @@ The [review record](2026-10-15-planning-review.md) explains the original decisio
 | Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
 | Event triggers | Authenticated saved webhook intake, replay detection and current-state capture implemented. Existing webhook infrastructure supplies deliveries; no resident scheduler. |
 | Release coordination | Evidence-bound requests, definition-verified CI, merged/protected-ref checks, separate Actions-only tokens and native dispatch/reconciliation implemented. No live release dispatched. |
-| Controlled live mutation cases | GitHub recovery, delayed-read fault injection, obsolete-attempt refusal, base-only change and new-head publication exercised. A real fork and delivery of an old-target report after publishing a newer-target report on the same head remain open. GitLab note identity, stale-head refusal and native merge requirements were verified live. |
+| Controlled live mutation cases | GitHub recovery, delayed-read fault injection, obsolete-attempt refusal, base-only change, new-head publication and refusal of a delayed old-target report after newer-target publication exercised. A real fork remains open. GitLab note identity, stale-head refusal and native merge requirements were verified live. |
 
 The milestone sections below retain their acceptance requirements. Implementation
 availability does not imply that credential-dependent acceptance is complete.
@@ -373,7 +373,7 @@ the implementation; the product choices above are Cirra design decisions.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
 The remaining work is live setup and acceptance: independent checkout evidence;
-a controlled GitHub fork and delayed old-target publication case;
+a controlled GitHub fork;
 operator assessment of review usefulness; and separate native release setup.
 Automatic dispatch, both publishers, GitLab/Forgejo collection, evaluation,
 authenticated event intake and native release requests are implemented.
