@@ -175,9 +175,10 @@ or external pipelines. Existing `.env` files are not implicitly loaded.
 
 The replacement sandbox reader token now supports the branch and MR diff-version
 reads required by collection. [Sandbox MR !1](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/1)
-has been collected and reviewed automatically. A separate scoped note publisher
-is still required. GitLab also requires account identity verification before
-its pipelines can run. See the live results below for the exact limits.
+has been collected, reviewed automatically and merged. A separate scoped token
+published one maintained note using the operator-confirmed permission receipt.
+The account's identity verification is complete and native pipelines now run.
+See the live results below for the exact limits.
 
 ## Forgejo and authenticated event intake
 
@@ -239,6 +240,13 @@ was `66af347998f4ec3e3fa1f0485659b86fbd01f982` against target
 [Native CI](https://github.com/mdn87/cirra/actions/runs/38839480302) passed all
 134 tests, lint and formatting on Windows/Linux with Python 3.11/3.14.
 
+Subsequent runs on `main` exposed test-only timing assumptions: 200–600 ms leases
+could expire during setup on shared runners. Commit `14a8cca` uses a controlled
+clock for the expiry test and gives real child processes a five-second lease.
+Their reviewer still runs longer than that lease, so heartbeat coverage remains.
+[Native CI for that correction](https://github.com/mdn87/cirra/actions/runs/38841307296)
+passed all four jobs; production lease behavior was unchanged.
+
 | Live case | Observed result |
 | --- | --- |
 | Process exit before create | Durable intent remained uncertain; read-only reconciliation found no remote check and made no write. |
@@ -247,12 +255,13 @@ was `66af347998f4ec3e3fa1f0485659b86fbd01f982` against target
 | Repeat publication and explicit re-review | Both retained the same check on the same head. A superseded local review attempt was refused. |
 | Target branch advances with unchanged head | The live case exposed stale GitHub PR `base.sha` metadata. After the fix, Cirra refused the old-target report; a fresh review updated the same check. |
 | Head advances | A fresh review created a new check for the new commit. Read-only CLI reconciliation recovered that exact check. |
+| Older-target report arrives after newer-target publication | PR #6 retained one check with identical output and ownership metadata after the old report was refused. |
 
 The original-head check is
 [`116772324382`](https://github.com/mdn87/cirra/runs/116772324382); the final-head
 check is [`116776873598`](https://github.com/mdn87/cirra/runs/116776873598).
 Both belong to App `5339263` and are neutral. All four automatic reviewer
-attempts succeeded with no findings. Publication and recovery left saved model
+attempts on PR #5 succeeded with no findings. Publication and recovery left saved model
 responses unchanged; they did not invoke the model again.
 
 The target-change defect was reproduced before the fix: GitHub's PR metadata
@@ -261,8 +270,17 @@ report could be republished. Cirra now independently resolves the target branch
 before and after collection and refuses failed or inconsistent reads. Regression
 coverage also checks branch movement, denied/malformed reads, encoded names and
 fork target identity. The actual live fork scenario still needs a controlled
-fork under another owner. Delivering an old-target report after publishing a
-newer-target report on the same head has not been exercised as a separate live case.
+fork under another owner.
+
+[PR #6](https://github.com/mdn87/cirra/pull/6) exercised the delayed-report case
+on unchanged head `cd29046d9efe8f871ab9da0a8ff2aa54d6b3a4bc`. The first review
+captured target `14a8cca`; after `main` advanced to `1e3b136`, a fresh review was
+published as [check 116786898954](https://github.com/mdn87/cirra/runs/116786898954).
+Trying to publish the older report afterward was refused. Before/after reads
+confirmed one owned check, the same native ID and marker, and identical output
+hashes. Both reviews succeeded with no findings; publication did not invoke the
+model again. The receipt is `cases/delayed-target-ordering.json` in the local
+acceptance directory.
 
 Fault injection used the saved capture and a live revision check around the
 publisher; final ordinary CLI publication performed fresh collection. Local
@@ -273,32 +291,54 @@ association evidence and the Cirra reports remain `incomplete`.
 ### GitLab
 
 The private [sandbox MR !1](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/1)
-adds its README on head `e6dc68741f5c6505a85cda744aff430d54c7aa2a`, with target
-`652a4c8d39a048ba918fe06c0e4f992c1d2f9013`. Its pinned diff-version collection
-succeeded, and automatic review `051f553198614931a13bca84d5eec5e3` returned no
-findings. The report is `incomplete` because the expected native job is missing.
-A repeated review reused that attempt with identical saved model-response hashes.
+adds the README and a native `test` job. Its final reviewed head was
+`8f41554687c46a998114f0895b3c0ac5fbfcdfc5`, against target
+`652a4c8d39a048ba918fe06c0e4f992c1d2f9013`. Repository-owner credentials merged
+it as `e79cff5f0a4685c0fd4d0a72b54d1150452a2032`; the note publisher has no merge
+or repository-write permission.
 
-The provider exposes failed push pipeline `2953418816` and failed MR pipeline
-`2953420191`, both with zero jobs. The MR page requires account identity
-verification to run a pipeline. Before publication, the API reported the MR as
-mergeable and `only_allow_merge_if_pipeline_succeeds: false`. Consequently this
-setup cannot yet demonstrate preservation of a requirement for successful CI
-before merging. The current example policy's expected `test` job must also
-be matched to an actual native job once CI is configured and can run.
+The initial README review `051f553198614931a13bca84d5eec5e3` succeeded with no
+findings and was reused on repeat invocation. At that point GitLab required
+account identity verification: pipelines `2953418816` and `2953420191` failed
+with zero jobs. The operator completed verification and supplied a different
+publisher token, confirming project-only Work Item Create/Read/Update permissions
+and no code-write or merge permissions. A local token-bound receipt records that
+operator assertion; it is not server attestation of token scope.
 
-Only the reader credential is configured. No advisory note has been published,
-and no publisher permission receipt has been asserted. The remaining note case
-needs a different token scoped to this project with note read/create/update
-permissions, verified by the operator. Publication, repeat/reconcile behavior,
-and the before/after pipeline and merge-setting comparison then remain to run.
-The open MR is deliberately retained as that acceptance target.
+The native README test initially failed on CRLF line endings. After correcting
+the check to accept LF and CRLF, both final-head pipelines passed:
 
-Local captures, reports, the API baseline and a screenshot of the provider
-restriction are under `.cirra/gitlab-demo/`. No credentials are included in
-tracked evidence. Independent checkout observation, human usefulness assessment
-of the frozen reviewer cases, and the separately authorized native release
-setup remain open alongside the provider cases above.
+| Native pipeline | Job | Result |
+| --- | --- | --- |
+| [MR pipeline 2953467071](https://gitlab.com/mdn87/cirra-sandbox/-/pipelines/2953467071) | `test`, ID `17220571846` | success |
+| [Push pipeline 2953467045](https://gitlab.com/mdn87/cirra-sandbox/-/pipelines/2953467045) | `secret_detection`, ID `17220571675` | success |
+
+After the merge, [main pipeline 2953471825](https://gitlab.com/mdn87/cirra-sandbox/-/pipelines/2953471825)
+also passed both jobs, and GitLab deleted the merged source branch.
+
+The sandbox now requires successful pipelines before merging. While the test
+failed, GitLab reported `detailed_merge_status: ci_must_pass`. With the corrected
+head it became mergeable. Cirra refused publication of the obsolete-head report;
+fresh review `0c08e81b72e2436a9ce0f99b1bc3cc39` returned no findings.
+
+Initial publication, repeat publication, read-only reconciliation and the new
+head all maintained [note 4025547155](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/1#note_4025547155).
+Only one owned note existed, reaching generation 4. Before/after captures proved
+unchanged pipeline and job IDs/statuses, merge eligibility, and the enabled
+`only_allow_merge_if_pipeline_succeeds` setting. Saved model-response hashes
+were unchanged by publication. No commit status or external pipeline was created.
+
+The final report remains `incomplete`: native success is `associated_only`
+until an independent checkout witness is available. The reviewer also flagged
+uncertainty about a `stages` declaration outside the supplied diff; direct file
+inspection and the successful native job confirmed that `test` is declared.
+This demonstrates the limits of review from bounded diff context.
+
+Local captures, reports, operator receipt, before/after API evidence and screenshots
+are under `.cirra/gitlab-demo/`. No credentials are included in tracked evidence.
+Independent checkout observation, human usefulness assessment of the frozen
+reviewer cases, and separate native release setup remain open alongside the
+GitHub cases above.
 
 ## References
 

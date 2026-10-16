@@ -15,11 +15,11 @@ The [review record](2026-10-15-planning-review.md) explains the original decisio
 | Trusted checkout provenance | Signed independent-witness statements and exact check/attempt binding implemented. A live independent witness is not provisioned; native hosted CI remains association-only. |
 | Review-quality evaluation | Ten frozen labelled cases, two runs; 6/6 defects and 0/4 clean-case findings each. Human usefulness adjudication remains open. |
 | GitHub advisory publication | PR #5 is merged after live neutral-check publication, repeat/re-review, process-exit recovery, and base-only/new-head cases. The live base-only case exposed stale PR metadata; the collector now resolves the target branch independently. All 134 tests passed in the four native CI jobs. |
-| GitLab portability | Replacement reader token collected sandbox MR !1 and automatic review succeeded. A separate scoped note publisher is still absent. GitLab requires account identity verification to run CI; both observed pipelines failed with zero jobs. The sandbox does not require successful CI before merging yet. |
+| GitLab portability | Sandbox MR !1 is merged after pinned collection, automatic review, a maintained note across head changes/repeats/reconciliation, and successful native MR/push pipelines. Separate publisher scope was operator-confirmed. Publication preserved pipeline/job identity and the enabled requirement for successful CI before merging. Independent checkout evidence remains open. |
 | Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
 | Event triggers | Authenticated saved webhook intake, replay detection and current-state capture implemented. Existing webhook infrastructure supplies deliveries; no resident scheduler. |
 | Release coordination | Evidence-bound requests, definition-verified CI, merged/protected-ref checks, separate Actions-only tokens and native dispatch/reconciliation implemented. No live release dispatched. |
-| Controlled live mutation cases | GitHub recovery, delayed-read fault injection, obsolete-attempt refusal, base-only change and new-head publication exercised. A real fork and delivery of an old-target report after publishing a newer-target report on the same head remain open. GitLab note acceptance awaits publisher setup. |
+| Controlled live mutation cases | GitHub recovery, delayed-read fault injection, obsolete-attempt refusal, base-only change, new-head publication and refusal of a delayed old-target report after newer-target publication exercised. A real fork remains open. GitLab note identity, stale-head refusal and native merge requirements were verified live. |
 
 The milestone sections below retain their acceptance requirements. Implementation
 availability does not imply that credential-dependent acceptance is complete.
@@ -373,8 +373,7 @@ the implementation; the product choices above are Cirra design decisions.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
 The remaining work is live setup and acceptance: independent checkout evidence;
-GitLab scoped note publication, account identity verification, native CI and merge
-requirements; a controlled GitHub fork and delayed old-target publication case;
+a controlled GitHub fork;
 operator assessment of review usefulness; and separate native release setup.
 Automatic dispatch, both publishers, GitLab/Forgejo collection, evaluation,
 authenticated event intake and native release requests are implemented.
