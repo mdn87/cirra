@@ -369,3 +369,22 @@ def test_standalone_witness_cannot_invent_a_native_pipeline_or_omit_execution_de
     del original["checks"][0]["definition_digest"]
     with pytest.raises(CirraError, match="own exact observer"):
         provenance.sign(original, KEY)
+
+
+def test_gitlab_target_refresh_resigns_receipt_without_rerunning_head_tests(
+    fixture_data, observer_policy, tmp_path
+):
+    data = data_for_observer(fixture_data)
+    data["change"].update(provider="gitlab", instance="https://gitlab.com")
+    executor = Executor()
+    path = observe(data, observer_policy, tmp_path, KEY, executor=executor, source=source)
+    original = path.read_bytes()
+    moved = copy.deepcopy(data)
+    moved["change"].update(target_sha="d" * 40, diff_base_sha="e" * 40)
+    with pytest.raises(CirraError, match="snapshot"):
+        provenance.apply(moved, path, KEY)
+    refreshed = observe(moved, observer_policy, tmp_path, KEY, executor=executor, source=source)
+    assert executor.calls == 1 and path == refreshed and path.read_bytes() != original
+    assert provenance.apply(moved, refreshed, KEY)["checks"][-1]["provenance"]["trusted"]
+    with pytest.raises(CirraError, match="snapshot"):
+        provenance.apply(data, refreshed, KEY)
