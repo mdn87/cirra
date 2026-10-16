@@ -38,7 +38,8 @@ def main():
             with (directory / "calls").open("ab", buffering=0) as calls:
                 calls.write(b"call\n")
                 os.fsync(calls.fileno())
-            time.sleep(0.8)  # Longer than the lease, to exercise its heartbeat.
+            # Still outlive the initial lease, so a missing heartbeat fails.
+            time.sleep(config.claim_ttl_seconds + 1)
             return provider.response
 
     result, reused = review(

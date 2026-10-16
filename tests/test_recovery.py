@@ -3,6 +3,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,7 +30,7 @@ def launch(mode, tmp_path, rereview=False):
 
 def result(process):
     try:
-        stdout, stderr = process.communicate(timeout=20)
+        stdout, stderr = process.communicate(timeout=60)
     except subprocess.TimeoutExpired:
         process.kill()
         process.communicate()
@@ -44,7 +45,9 @@ def call_count(tmp_path):
 
 
 def prepare(inputs, policy_data):
-    policy_data["limits"].update(claim_ttl_seconds=0.6, wait_seconds=6)
+    # Shared runners can spend longer than a subsecond lease in SQLite setup.
+    # Keep real processes/heartbeats, with enough time for ordinary scheduling.
+    policy_data["limits"].update(claim_ttl_seconds=5, wait_seconds=20)
     return inputs(policy=policy_data)
 
 
@@ -70,7 +73,7 @@ def test_killed_owner_recovers_without_repeating_an_uncertain_call(
 ):
     prepare(inputs, policy_data)
     process = launch(stage, tmp_path)
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 60
     try:
         while not (tmp_path / "state/paused").exists():
             if process.poll() is not None:
@@ -100,14 +103,16 @@ def test_killed_owner_recovers_without_repeating_an_uncertain_call(
         assert report["status"] == "complete"
 
 
-def test_expired_and_superseded_owners_cannot_write(inputs, tmp_path):
+def test_expired_and_superseded_owners_cannot_write(inputs, tmp_path, monkeypatch):
     provider, config = inputs()
     store = Store(tmp_path / "state")
-    old = store.acquire(provider.snapshot.change_key, 0.2)
+    now = 1_000.0
+    monkeypatch.setattr("cirra.store.time", SimpleNamespace(time=lambda: now))
+    old = store.acquire(provider.snapshot.change_key, 10)
     identity = analysis_identity(provider, config)
     attempt, _ = store.attempt(old, digest(identity), identity)
     store.begin_call(old, attempt["run_id"])
-    time.sleep(0.25)
+    now += 10  # Exactly at expiry, independent of filesystem/scheduler speed.
     with pytest.raises(LostClaim):
         store.record_response(old, attempt["run_id"], {"raw": provider.response}, 0.1)
     current = store.acquire(provider.snapshot.change_key, 5)
