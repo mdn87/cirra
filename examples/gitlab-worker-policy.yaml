@@ -1,0 +1,25 @@
+version: 1
+repositories:
+  - provider: gitlab
+    instance: https://gitlab.com
+    repository_id: '87658566'
+ci:
+  mode: required
+  expected:
+    - kind: observer_run
+      source_id: cirra/docker
+      name: cirra/isolated-tests
+      # Replace with cirra observer-definition --config <observer.yaml>.
+      definition_digest: '0000000000000000000000000000000000000000000000000000000000000000'
+reviewer:
+  kind: claude
+  endpoint: cli://claude
+  model: claude-sonnet-5-5
+limits:
+  max_diff_bytes: 200000
+  max_response_bytes: 65536
+  max_findings: 30
+  claim_ttl_seconds: 30
+  wait_seconds: 10
+  review_timeout_seconds: 180
+  review_budget_usd: 1

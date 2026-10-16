@@ -1,4 +1,4 @@
-"""Independently supervise a Docker checkout/test run and attest its own native check."""
+"""Supervise an isolated checkout/test run and attest native or standalone evidence."""
 
 import hashlib
 import json
@@ -62,7 +62,12 @@ def load_observer(path):
     data["supervisor_digest"] = digest(
         {
             name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-            for name in ("observer.py", "observer_source.py", "observer_process.py")
+            for name in (
+                "observer.py",
+                "observer_source.py",
+                "observer_process.py",
+                "provenance.py",
+            )
         }
     )
     data["definition_digest"] = digest({"protocol": "cirra.docker-observer.v1", **data})
@@ -267,10 +272,15 @@ class ObserverCheck:
         return self.validate(item, head, identifier, result)
 
 
-def observe(data, policy, state_dir, key, publisher, *, token=None, executor=None, source=None):
+def observe(
+    data, policy, state_dir, key, publisher=None, *, token=None, executor=None, source=None
+):
     change = data["change"]
-    if change["provider"] != "github" or change["instance"] != "https://github.com":
-        raise CirraError("independent Docker observation currently supports GitHub")
+    provider = change["provider"]
+    if provider not in ("github", "gitlab") or change["instance"] != f"https://{provider}.com":
+        raise CirraError("independent Docker observation supports GitHub and GitLab")
+    if (provider == "github") != (publisher is not None):
+        raise CirraError("only GitHub observation uses a native check publisher")
     provenance.sign(
         {"version": 1, "witness": "validation", "observed_at": utc_now(), "checks": []}, key
     )
@@ -278,7 +288,7 @@ def observe(data, policy, state_dir, key, publisher, *, token=None, executor=Non
         "repository": {k: change[k] for k in ("provider", "instance", "repository_id")},
         "head": change["head_sha"],
         "definition": policy["definition_digest"],
-        "app_id": publisher.app_id,
+        **({"app_id": publisher.app_id} if publisher else {"source_id": "cirra/docker"}),
     }
     identifier = digest(identity)
     root = Path(state_dir).resolve() / "observer"
@@ -306,6 +316,7 @@ def observe(data, policy, state_dir, key, publisher, *, token=None, executor=Non
                 change["head_sha"],
                 directory,
                 token,
+                provider=provider,
             )
             name = "cirra-observer-" + uuid.uuid4().hex
             saved = {
@@ -321,36 +332,37 @@ def observe(data, policy, state_dir, key, publisher, *, token=None, executor=Non
             saved.update(state="executed", execution=execution)
             write_receipt(path, saved)
         result = "success" if saved["execution"]["exit_code"] == 0 else "failure"
-        matches = publisher.find(change["head_sha"], identifier, result)
-        if len(matches) > 1:
-            raise CirraError(
-                "multiple native observer checks match this execution; inspect before proceeding"
-            )
-        if matches:
-            native = matches[0]
-        elif saved["state"] in ("publishing", "published"):
-            raise CirraError(
-                "observer publication is uncertain; reconciliation found no unique native check"
-            )
+        if provider == "gitlab":
+            # GitLab commit-status writes can create pipelines and affect merge
+            # eligibility. Retain our own signed execution instead; the maintained
+            # advisory MR note is the only remote publication.
+            check = {
+                "kind": "observer_run",
+                "source_id": "cirra/docker",
+                "name": NAME,
+                "native_id": saved["execution"]["container_id"],
+                "run_id": identifier,
+                "attempt": None,
+                "raw_state": result,
+                "normalized_state": result,
+                "associated_sha": change["head_sha"],
+                "provenance": {"trusted": False, "tested_sha": None, "parents": []},
+                "trigger": "independent_observer",
+                "url": f"https://gitlab.com/{data['collection']['repository']}/-/merge_requests/"
+                + change["change_id"],
+                "observed_at": utc_now(),
+                "started_at": saved["started_at"],
+            }
         else:
-            saved["state"] = "publishing"
-            write_receipt(path, saved)
-            native = publisher.create(
-                change["head_sha"],
-                identifier,
-                result,
-                saved["started_at"],
-                policy["definition_digest"],
-            )
-        check = check_from(native, "check_run", change["head_sha"], utc_now())
-        if check["started_at"] != timestamp(saved["started_at"]):
-            raise CirraError("native observer check belongs to another execution attempt")
+            check = publish_observation(publisher, change, identifier, result, saved, path, policy)
         statement = {
-            "version": 1,
+            "version": 2 if provider == "gitlab" else 1,
+            **({"change": change} if provider == "gitlab" else {}),
             "witness": "Cirra independent Docker supervisor",
             "observed_at": utc_now(),
             "checks": [
                 {
+                    **({"check": check} if provider == "gitlab" else {}),
                     "binding": provenance.binding(change, check),
                     "tested_sha": change["head_sha"],
                     "parents": saved["parents"],
@@ -363,6 +375,38 @@ def observe(data, policy, state_dir, key, publisher, *, token=None, executor=Non
             ],
         }
         write_receipt(receipt_path, provenance.sign(statement, key))
-        saved.update(state="published", native_id=str(native["id"]), receipt_path=str(receipt_path))
+        saved.update(
+            state="observed" if provider == "gitlab" else "published",
+            native_id=check["native_id"],
+            receipt_path=str(receipt_path),
+        )
         write_receipt(path, saved)
         return receipt_path
+
+
+def publish_observation(publisher, change, identifier, result, saved, path, policy):
+    matches = publisher.find(change["head_sha"], identifier, result)
+    if len(matches) > 1:
+        raise CirraError(
+            "multiple native observer checks match this execution; inspect before proceeding"
+        )
+    if matches:
+        native = matches[0]
+    elif saved["state"] in ("publishing", "published"):
+        raise CirraError(
+            "observer publication is uncertain; reconciliation found no unique native check"
+        )
+    else:
+        saved["state"] = "publishing"
+        write_receipt(path, saved)
+        native = publisher.create(
+            change["head_sha"],
+            identifier,
+            result,
+            saved["started_at"],
+            policy["definition_digest"],
+        )
+    check = check_from(native, "check_run", change["head_sha"], utc_now())
+    if check["started_at"] != timestamp(saved["started_at"]):
+        raise CirraError("native observer check belongs to another execution attempt")
+    return check

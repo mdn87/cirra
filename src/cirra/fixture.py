@@ -179,7 +179,7 @@ def validate_check(check):
     check = dict(check)
     for key in ("kind", "source_id", "name", "native_id", "raw_state", "trigger", "url"):
         string(check[key], key)
-    if check["kind"] not in ("check_run", "commit_status", "pipeline_job"):
+    if check["kind"] not in ("check_run", "commit_status", "pipeline_job", "observer_run"):
         raise CirraError("unsupported check kind")
     if check["run_id"] is not None:
         string(check["run_id"], "run_id")

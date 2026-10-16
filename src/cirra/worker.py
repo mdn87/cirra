@@ -78,14 +78,16 @@ class Processor:
         if route.observer:
             policy = load_observer(route.observer)
             expected = {
-                "kind": "check_run",
-                "source_id": str(route.publisher["app_id"]),
+                "kind": "check_run" if route.provider == "github" else "observer_run",
+                "source_id": str(route.publisher["app_id"])
+                if route.provider == "github"
+                else "cirra/docker",
                 "name": NAME,
                 "definition_digest": policy["definition_digest"],
             }
             if expected not in route.policy.expected_checks:
                 raise CirraError(
-                    "review policy must pin the observer App, check name, and definition digest"
+                    "review policy must pin the observer source, check name, and definition digest"
                 )
             witness_key = self.credential(route.witness_env)
             receipt_path = observe(
@@ -93,11 +95,13 @@ class Processor:
                 policy,
                 self.directory,
                 witness_key,
-                ObserverCheck(route.repository, route.publisher["app_id"], self.app_token(route)),
+                ObserverCheck(route.repository, route.publisher["app_id"], self.app_token(route))
+                if route.provider == "github"
+                else None,
                 token=reader,
             )
-            # Native CI is re-read; a saved webhook or local execution result is
-            # never substituted for the provider's current check identity/state.
+            # Re-read native CI and the snapshot. GitHub receipts attest a native
+            # check; GitLab receipts add explicitly separate observer evidence.
             refreshed = self.capture(
                 route.provider,
                 route.repository,

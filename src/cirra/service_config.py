@@ -147,10 +147,8 @@ def load_service(path):
             )
         observer = local_path(path.parent, item["observer"]) if item.get("observer") else None
         witness_env = env_name(item["witness_key_env"]) if item.get("witness_key_env") else None
-        if bool(observer) != bool(witness_env) or (observer and provider != "github"):
-            raise CirraError(
-                "Docker observation requires a GitHub route and a witness key reference"
-            )
+        if bool(observer) != bool(witness_env):
+            raise CirraError("Docker observation requires a policy and a witness key reference")
         routes[name] = Route(
             name,
             provider,

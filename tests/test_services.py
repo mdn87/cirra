@@ -172,10 +172,11 @@ def test_worker_errors_do_not_busy_loop_or_retry_forever(route, tmp_path):
     assert not queue.pending()
 
 
-def test_service_configuration_is_explicit_and_pins_policy(tmp_path, policy_data):
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+def test_service_configuration_is_explicit_and_pins_policy(tmp_path, policy_data, provider):
     policy_data["reviewer"] = {"kind": "claude", "endpoint": "cli://claude", "model": "test"}
     policy_data["repositories"] = [
-        {"provider": "github", "instance": "https://github.com", "repository_id": "42"}
+        {"provider": provider, "instance": f"https://{provider}.com", "repository_id": "42"}
     ]
     (tmp_path / "policy.yaml").write_text(yaml.safe_dump(policy_data))
     data = {
@@ -183,20 +184,32 @@ def test_service_configuration_is_explicit_and_pins_policy(tmp_path, policy_data
         "routes": [
             {
                 "name": "test",
-                "provider": "github",
+                "provider": provider,
                 "repository": "example/repo",
                 "repository_id": "42",
                 "policy": "policy.yaml",
                 "webhook_secret_env": "HOOK_SECRET",
                 "publisher": {"app_id": 5, "installation_id": 6, "private_key_file": "app.pem"},
+                "observer": "observer.yaml",
+                "witness_key_env": "WITNESS_KEY",
             }
         ],
     }
+    if provider == "gitlab":
+        data["routes"][0]["publisher"] = {
+            "principal_id": 7,
+            "token_env": "PUBLISHER_TOKEN",
+            "permission_receipt": "permissions.json",
+        }
     path = tmp_path / "service.yaml"
     path.write_text(yaml.safe_dump(data))
     route = load_service(path).routes["test"]
     assert route.policy.path == str(tmp_path / "policy.yaml")
-    assert route.publisher["private_key_file"] == str(tmp_path / "app.pem")
+    if provider == "github":
+        assert route.publisher["private_key_file"] == str(tmp_path / "app.pem")
+    else:
+        assert route.publisher["permission_receipt"] == str(tmp_path / "permissions.json")
+    assert route.observer == tmp_path / "observer.yaml"
     invalid = copy.deepcopy(data)
     invalid["routes"][0]["repository_id"] = "99"
     path.write_text(yaml.safe_dump(invalid))
@@ -292,3 +305,142 @@ def test_daily_admission_limit_survives_restart_without_losing_queued_work(route
         work_once(config, Queue(tmp_path), lambda *_: pytest.fail("must not spend again")) is None
     )
     assert len(queue.pending()) == 1 and queue.usage()["attempts"] == 1
+
+
+def test_gitlab_worker_observes_reviews_and_updates_one_note_with_separate_credentials(
+    inputs, fixture_data, policy_data, tmp_path, monkeypatch
+):
+    from cirra import provenance
+    from cirra.coordinator import review as real_review
+    from cirra.observer import load_observer
+    from cirra.store import Store
+    from cirra.worker import Processor
+
+    key, reader, publisher_token = "independent-witness-key-32-characters", "reader", "publisher"
+    observer_file = tmp_path / "observer.yaml"
+    observer_file.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "image": "sha256:" + "1" * 64,
+                "commands": [["python", "test.py"]],
+            }
+        )
+    )
+    definition = load_observer(observer_file)["definition_digest"]
+    fixture_data["change"].update(
+        provider="gitlab", instance="https://gitlab.com", repository_id="42"
+    )
+    fixture_data["collection"] = {
+        "source": "gitlab_rest",
+        "repository": "example/repo",
+        "observed_at": "2026-10-16T00:00:00Z",
+        "check_errors": [],
+    }
+    fixture_data["checks"] = []
+    policy_data["repositories"] = [
+        {
+            "provider": "gitlab",
+            "instance": "https://gitlab.com",
+            "repository_id": "42",
+        }
+    ]
+    policy_data["ci"]["expected"] = [
+        {
+            "kind": "observer_run",
+            "source_id": "cirra/docker",
+            "name": "cirra/isolated-tests",
+            "definition_digest": definition,
+        }
+    ]
+    _, policy = inputs(data=fixture_data, policy=policy_data)
+    permission = tmp_path / "publisher-permissions.json"
+    permission.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "instance": "https://gitlab.com",
+                "repository_id": "42",
+                "principal_id": "7",
+                "token_sha256": hashlib.sha256(publisher_token.encode()).hexdigest(),
+                "checked_at": "2026-10-16T00:00:00Z",
+                "evidence": "Operator test scope receipt",
+                "note_read_create_update": True,
+                "no_merge_or_repository_write": True,
+            }
+        )
+    )
+    route = SimpleNamespace(
+        provider="gitlab",
+        repository="example/repo",
+        repository_id="42",
+        policy=policy,
+        reader_env="READER",
+        observer=observer_file,
+        witness_env="WITNESS",
+        publisher={
+            "principal_id": 7,
+            "token_env": "PUBLISHER",
+            "permission_receipt": str(permission),
+        },
+    )
+    executions, calls, writes = [], [], []
+
+    def source(repository, change, head, directory, token, *, provider):
+        assert token == reader and provider == "gitlab"
+        directory.mkdir()
+        path = directory / "source.tar"
+        path.write_bytes(b"verified source")
+        return path, []
+
+    class Executor:
+        def run(self, policy, archive, directory, name):
+            executions.append(name)
+            return {"container_id": "a" * 64, "exit_code": 0}
+
+    class Reviewer:
+        def review(self, packet):
+            calls.append(packet)
+            return '{"findings":[],"notes":[]}'
+
+    class Publisher:
+        principal_id = "7"
+        items = []
+
+        def __init__(self, client, principal):
+            assert client.http.headers["PRIVATE-TOKEN"] == publisher_token and principal == 7
+
+        def find(self, report, slot):
+            return self.items
+
+        def write(self, report, metadata, identifier):
+            assert report["status"] == "complete" and report["ci"]["outcome"] == "verified"
+            writes.append(identifier)
+            self.items[:] = [{"id": "100", "metadata": metadata}]
+            return self.items[0]
+
+    def capture(provider, repository, change, config, *, token, witness=None, witness_key=None):
+        assert provider == "gitlab" and token == reader
+        data = copy.deepcopy(fixture_data)
+        return provenance.apply(data, witness, witness_key) if witness else data
+
+    monkeypatch.setattr("cirra.worker.is_open", lambda *_: True)
+    monkeypatch.setattr("cirra.worker.GitLabPublisher", Publisher)
+    monkeypatch.setattr("cirra.observer.export_source", source)
+    monkeypatch.setattr("cirra.observer.DockerExecutor", Executor)
+    monkeypatch.setattr(
+        "cirra.worker.review", lambda p, c, s: real_review(p, c, s, reviewer=Reviewer())
+    )
+    credential = {"READER": reader, "PUBLISHER": publisher_token, "WITNESS": key}.__getitem__
+    processor = Processor(tmp_path / "service", credential, capture)
+    monkeypatch.setattr(
+        processor, "app_token", lambda _: pytest.fail("GitLab must not mint an App token")
+    )
+    first = processor(route, {"change": 1})
+    second = processor(route, {"change": 1})
+    assert first["state"] == second["state"] == "done"
+    assert first["run_id"] == second["run_id"]
+    assert len(calls) == len(executions) == 1 and writes == [None, "100"]
+    assert publisher_token not in canonical(calls) and key not in canonical(calls)
+    report = Store(tmp_path / "service").latest_report(first["run_id"])
+    assert report["ci"]["expected"][0]["evidence"]["kind"] == "observer_run"
