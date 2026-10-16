@@ -147,6 +147,54 @@ which ingress returns an error until an operator archives completed work.
 State, source archives, and bounded logs are retained for inspection; arrange
 backups and retention appropriate to the repository data.
 
+## lugos-host deployment and acceptance
+
+On 2026-10-16 the trusted release `3ccb04649589e1d45620f1309d37ce70c9757afb`
+was installed on `lugos-host`. Its runtime is selected by
+`/srv/lugos/services/cirra/current`; protected operator configuration lives in
+`/srv/lugos/services/cirra/config` and durable state in `/srv/lugos/state/cirra`.
+The `cirra-webhook.service` and `cirra-worker.service` units are enabled at boot.
+
+Observed results:
+
+- All 154 tests passed on the Linux host, including real Docker success,
+  failure, timeout cleanup, and isolation tests under the service's private umask.
+- The independent observer fetched and tested the exact head of
+  [PR #7](https://github.com/mdn87/cirra/pull/7), then published the successful
+  [native test check](https://github.com/mdn87/cirra/runs/116804924828).
+  Recollection verified its signed checkout proof, including commit, parents,
+  execution definition, and check identity.
+- The running HTTP receiver rejected an unsigned request with HTTP 401,
+  persisted a locally generated signed PR refresh with HTTP 202, and recognized
+  its replay without creating another job. This was an operator-generated
+  delivery, not evidence of public GitHub delivery.
+
+The repository webhook is configured for pull-request events at
+`https://lugos-host.tail099c37.ts.net:8443/hooks/cirra-github`, with TLS verification
+and a separate HMAC secret. Public delivery is awaiting the account owner's
+Tailscale Funnel enablement. The existing HTTPS service on port 443 is unchanged.
+After enabling Funnel, apply the dedicated 8443 command above and verify GitHub's
+delivery response is HTTP 202.
+
+The worker startup check is awaiting the operator's Claude login on the host:
+
+```text
+ssh lugos-host
+/home/matt/.local/bin/claude auth login
+```
+
+The service retries startup after login. Full automatic webhook-to-review
+acceptance remains unfinished until both account steps are complete. The public
+repository currently uses anonymous collection; configure a separate read-only
+reader credential for sustained traffic to avoid anonymous API rate limits.
+
+To inspect the deployment without printing credentials:
+
+```text
+systemctl status cirra-webhook.service cirra-worker.service
+/srv/lugos/services/cirra/current/.venv/bin/cirra jobs --state-dir /srv/lugos/state/cirra
+```
+
 References: [GitHub webhook guidance](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks),
 [Docker runtime controls](https://docs.docker.com/engine/containers/run/), and
 [Tailscale Funnel](https://tailscale.com/kb/1311/tailscale-funnel).
