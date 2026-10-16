@@ -168,25 +168,36 @@ Observed results:
   persisted a locally generated signed PR refresh with HTTP 202, and recognized
   its replay without creating another job. This was an operator-generated
   delivery, not evidence of public GitHub delivery.
+- [PR #8](https://github.com/mdn87/cirra/pull/8) then exercised the complete public
+  flow. GitHub's real PR event received HTTP 202; the worker tested commit
+  `99260620b9ed5862f042f26465c3deafd60aa05f`, verified its checkout evidence, ran a
+  tool-free Claude Sonnet 5.5 review, and published the successful
+  [test check](https://github.com/mdn87/cirra/runs/116811075150) and neutral
+  [advisory review](https://github.com/mdn87/cirra/runs/116811123077).
+  The report was complete, with verified CI and zero findings.
+- After restarting the worker, GitHub redelivered the same event. The receiver
+  returned the original job ID with `duplicate: true`; its attempt count stayed
+  at one and no additional review report was created.
 
 The repository webhook is configured for pull-request events at
 `https://lugos-host.tail099c37.ts.net:8443/hooks/cirra-github`, with TLS verification
-and a separate HMAC secret. Public delivery is awaiting the account owner's
-Tailscale Funnel enablement. The existing HTTPS service on port 443 is unchanged.
-After enabling Funnel, apply the dedicated 8443 command above and verify GitHub's
-delivery response is HTTP 202.
+and a separate HMAC secret. Tailscale Funnel now forwards public HTTPS port 8443
+to the loopback receiver. Public health requests return HTTP 200, unsigned
+deliveries return HTTP 401, and GitHub's authenticated ping returns HTTP 202.
+The existing HTTPS service on port 443 remains private to the tailnet.
 
-The worker startup check is awaiting the operator's Claude login on the host:
+The operator completed Claude subscription login on the host. Both Cirra
+services are running and enabled at boot. If the login expires, renew it with:
 
 ```text
 ssh lugos-host
 /home/matt/.local/bin/claude auth login
 ```
 
-The service retries startup after login. Full automatic webhook-to-review
-acceptance remains unfinished until both account steps are complete. The public
-repository currently uses anonymous collection; configure a separate read-only
-reader credential for sustained traffic to avoid anonymous API rate limits.
+The service retries startup after login. The public repository currently uses
+anonymous collection; configure a separate read-only reader credential for
+sustained traffic to avoid anonymous API rate limits. Opening or updating an
+open, non-draft PR queues its current revision for isolated tests and review.
 
 To inspect the deployment without printing credentials:
 
