@@ -10,7 +10,7 @@ from cirra.publish import write_receipt
 from cirra.reviewer import unique_object
 
 
-def event_hint(provider, instance, raw, headers, secret, config):
+def authenticate(provider, raw, headers, secret):
     if len(raw) > 1024 * 1024 or not isinstance(headers, dict):
         raise CirraError("webhook body or headers exceed the accepted contract")
     normalized = {key.lower(): value for key, value in headers.items()}
@@ -23,7 +23,6 @@ def event_hint(provider, instance, raw, headers, secret, config):
         expected = secret
         delivery = normalized.get("x-gitlab-event-uuid")
         kind = normalized.get("x-gitlab-event")
-        supported = kind == "Merge Request Hook"
     else:
         expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
         if provider == "github":
@@ -38,14 +37,18 @@ def event_hint(provider, instance, raw, headers, secret, config):
             kind = normalized.get("x-forgejo-event", normalized.get("x-gitea-event"))
         else:
             raise CirraError("unsupported webhook provider")
-        supported = kind == "pull_request"
     if not isinstance(supplied, str) or not hmac.compare_digest(expected, supplied):
         raise CirraError("webhook authentication failed")
-    if not supported:
+    string(delivery, "webhook delivery identity", 200)
+    return delivery, kind
+
+
+def event_hint(provider, instance, raw, headers, secret, config):
+    delivery, kind = authenticate(provider, raw, headers, secret)
+    if kind != ("Merge Request Hook" if provider == "gitlab" else "pull_request"):
         raise CirraError(
             "unsupported webhook event; only pull/merge request refresh hints are accepted"
         )
-    string(delivery, "webhook delivery identity", 200)
     try:
         payload = json.loads(raw, object_pairs_hook=unique_object)
         repo = payload["project"] if provider == "gitlab" else payload["repository"]

@@ -1,0 +1,25 @@
+[Unit]
+Description=Cirra authenticated webhook receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=matt
+Group=matt
+WorkingDirectory=/srv/lugos/services/cirra/current
+ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -m cirra serve-webhooks --service-config /srv/lugos/services/cirra/config/service.yaml --env-file /srv/lugos/services/cirra/config/receiver.env --state-dir /srv/lugos/state/cirra --port 8796
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/lugos/state/cirra
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
