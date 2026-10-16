@@ -42,7 +42,7 @@ class API:
         self.pr = {
             "number": 9,
             "head": {"sha": HEAD},
-            "base": {"sha": TARGET, "repo": {"id": 123}},
+            "base": {"sha": TARGET, "ref": "main", "repo": {"id": 123}},
             "changed_files": 1,
         }
         self.comparison = {
@@ -71,6 +71,8 @@ class API:
         ]
         self.overrides = {}
         self.pr_sequence = []
+        self.branch = {"name": "main", "commit": {"sha": TARGET}}
+        self.branch_sequence = []
 
     def get(self, route="", params=None):
         params = params or {}
@@ -85,6 +87,8 @@ class API:
             data = {"id": 123, "full_name": "example/repo"}
         elif route == "pulls/9":
             data = self.pr_sequence.pop(0) if self.pr_sequence else self.pr
+        elif route.startswith("branches/"):
+            data = self.branch_sequence.pop(0) if self.branch_sequence else self.branch
         elif route.startswith("compare/"):
             data = self.comparison
         elif route.endswith("check-runs"):
@@ -113,8 +117,9 @@ def test_pinned_live_snapshot_preserves_native_results_without_claiming_checkout
     assert provider.snapshot.target_sha == TARGET
     assert provider.snapshot.diff_base_sha == BASE
     assert provider.snapshot.coverage_gaps == ()
-    assert api.calls[2] == (f"compare/{TARGET}...{HEAD}", {"per_page": 1, "page": 1})
-    assert api.calls[-1][0] == "pulls/9"
+    assert api.calls[3] == (f"compare/{TARGET}...{HEAD}", {"per_page": 1, "page": 1})
+    assert api.calls[-2][0] == "pulls/9"
+    assert api.calls[-1][0] == "branches/main"
     assert provider.checks[0]["run_id"] is None
     assert provider.checks[0]["attempt"] is None
     assert provider.checks[0]["check_suite_id"] == "7"
@@ -134,20 +139,66 @@ def test_allowlist_failure_stops_before_reading_pull_request(github_policy):
     assert len(api.calls) == 1
 
 
-@pytest.mark.parametrize("side", ["head", "base"])
-def test_revision_change_during_collection_retries_snapshot(side, github_policy):
+def test_live_target_branch_overrides_stale_pr_base_metadata(github_policy):
+    api = API()
+    api.pr["base"]["sha"] = BASE
+    stale_comparison = copy.deepcopy(api.comparison)
+    stale_comparison["base_commit"]["sha"] = BASE
+    api.overrides[(f"compare/{BASE}...{HEAD}", 1)] = (stale_comparison, False)
+    data = collect("example/repo", 9, github_policy, client=api)
+    assert data["change"]["target_sha"] == TARGET
+    assert (f"compare/{TARGET}...{HEAD}", {"per_page": 1, "page": 1}) in api.calls
+
+
+def test_target_branch_advance_retries_even_when_pr_metadata_does_not_change(github_policy):
+    api = API()
+    old_branch = {"name": "main", "commit": {"sha": BASE}}
+    api.branch_sequence = [old_branch, api.branch, api.branch, api.branch]
+    old_comparison = copy.deepcopy(api.comparison)
+    old_comparison["base_commit"]["sha"] = BASE
+    api.overrides[(f"compare/{BASE}...{HEAD}", 1)] = (old_comparison, False)
+    data = collect("example/repo", 9, github_policy, client=api)
+    assert data["change"]["target_sha"] == TARGET
+    assert len([route for route, _ in api.calls if route.startswith("compare/")]) == 2
+
+
+def test_head_change_during_collection_retries_snapshot(github_policy):
     api = API()
     old = copy.deepcopy(api.pr)
-    old[side]["sha"] = "a" * 40
+    old["head"]["sha"] = "a" * 40
     api.pr_sequence = [old, api.pr, api.pr, api.pr]
-    if side == "base":
-        old_compare = copy.deepcopy(api.comparison)
-        old_compare["base_commit"]["sha"] = "a" * 40
-        api.overrides[(f"compare/{'a' * 40}...{HEAD}", 1)] = (old_compare, False)
     data = collect("example/repo", 9, github_policy, client=api)
     assert data["change"]["head_sha"] == HEAD
     assert data["change"]["target_sha"] == TARGET
     assert len([route for route, _ in api.calls if route.startswith("compare/")]) == 2
+
+
+@pytest.mark.parametrize("failure", ["denied", "wrong-name", "missing-commit"])
+def test_target_branch_failure_never_falls_back_to_pr_metadata(failure, github_policy):
+    api = API()
+    if failure == "denied":
+        api.overrides[("branches/main", 1)] = GitHubError("GitHub access denied (HTTP 403)")
+    elif failure == "wrong-name":
+        api.branch["name"] = "other"
+    else:
+        api.branch.pop("commit")
+    with pytest.raises(CirraError):
+        collect("example/repo", 9, github_policy, client=api)
+    assert not any(route.startswith("compare/") for route, _ in api.calls)
+
+
+def test_fork_head_does_not_choose_target_repository_or_branch(github_policy):
+    api = API()
+    api.pr["head"].update(ref="untrusted-branch", repo={"id": 999, "full_name": "other/fork"})
+    api.pr["base"]["ref"] = "release/one"
+    api.branch["name"] = "release/one"
+    data = collect("example/repo", 9, github_policy, client=api)
+    assert data["change"]["repository_id"] == "123"
+    assert data["change"]["target_sha"] == TARGET
+    assert [route for route, _ in api.calls if route.startswith("branches/")] == [
+        "branches/release%2Fone",
+        "branches/release%2Fone",
+    ]
 
 
 def test_continuously_changing_snapshot_fails_without_export(github_policy):
@@ -193,7 +244,7 @@ def test_check_pagination_and_newest_rerun(github_policy):
     assert ci["expected"][0]["state"] == "failure"
     assert ci["expected"][0]["evidence"]["raw_state"] == "timed_out"
     assert len(provider.checks) == 3
-    assert api.calls[3][1]["filter"] == "all"
+    assert api.calls[4][1]["filter"] == "all"
 
 
 @pytest.mark.parametrize("failure", ["outage", "limit", "duplicate", "missing-page"])
@@ -329,6 +380,14 @@ def test_transport_only_gets_fixed_github_urls_and_handles_pagination():
     assert request.get_header("Authorization") == "Bearer canary-secret"
     assert data == {"id": 123} and more is True
     assert len(transport.requests) == 1
+
+
+def test_transport_encodes_target_branch_as_one_path_component():
+    transport = Transport([(200, b"{}", {})])
+    client_with(transport).get("branches/release%2Fone")
+    assert transport.requests[0].full_url == (
+        "https://api.github.com/repos/example/repo/branches/release%2Fone"
+    )
 
 
 def test_redirect_does_not_forward_credentials():

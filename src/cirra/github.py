@@ -6,7 +6,7 @@ import time
 import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from cirra.domain import CirraError, digest, number, path_name, sha, string, utc_now
@@ -16,7 +16,8 @@ from cirra.reviewer import unique_object
 API_VERSION = "2026-03-10"
 OID = r"(?:[a-f0-9]{40}|[a-f0-9]{64})"
 ROUTE = re.compile(
-    rf"(?:pulls/[1-9][0-9]*|compare/{OID}\.\.\.{OID}|commits/{OID}/(?:check-runs|statuses))?"
+    rf"(?:pulls/[1-9][0-9]*|branches/(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{{2}})+"
+    rf"|compare/{OID}\.\.\.{OID}|commits/{OID}/(?:check-runs|statuses))?"
 )
 
 
@@ -140,6 +141,15 @@ def revisions(pr, repository_id, change):
         pr.get("changed_files"), "GitHub changed file count", 0, 1_000_000, integral=True
     )
     return sha(head.get("sha")), sha(base.get("sha")), count
+
+
+def target_revision(client, branch_name):
+    # PR base.sha can remain stale after a base-only push. Read the named branch
+    # independently, within the already allowlisted repository.
+    branch, _ = client.get("branches/" + quote(branch_name, safe=""))
+    if record(branch).get("name") != branch_name:
+        raise CirraError("GitHub returned a different target branch")
+    return sha(record(branch.get("commit")).get("sha"))
 
 
 def files_from(comparison, count):
@@ -309,8 +319,11 @@ def collect(repository, change, config, *, client=None, max_pages=10):
     if identity not in config.repositories:
         raise CirraError("GitHub repository is not allowlisted by operator policy")
     for _ in range(3):
-        before, _ = client.get(f"pulls/{change}")
-        head, target, count = revisions(before, repository_id, change)
+        pr, _ = client.get(f"pulls/{change}")
+        head, _, count = revisions(pr, repository_id, change)
+        branch_name = string(pr["base"].get("ref"), "GitHub target branch", 1024)
+        before = head, branch_name, count
+        target = target_revision(client, branch_name)
         comparison, _ = client.get(f"compare/{target}...{head}", {"per_page": 1, "page": 1})
         record(comparison)
         if sha(record(comparison.get("base_commit")).get("sha")) != target:
@@ -319,7 +332,10 @@ def collect(repository, change, config, *, client=None, max_pages=10):
         files, gaps = files_from(comparison, count)
         checks, errors = checks_from(client, head, max_pages)
         after, _ = client.get(f"pulls/{change}")
-        if revisions(after, repository_id, change) != (head, target, count):
+        after_head, _, after_count = revisions(after, repository_id, change)
+        if (after_head, after["base"].get("ref"), after_count) != before:
+            continue
+        if target_revision(client, branch_name) != target:
             continue
         data = {
             "schema_version": 1,

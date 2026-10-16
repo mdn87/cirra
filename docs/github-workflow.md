@@ -50,9 +50,12 @@ limits remain those in operator policy.
 
 ## Snapshot and evidence rules
 
-The collector reads PR metadata, compares the pinned target and head commits,
-records the returned merge base, collects native checks/statuses, then reads
-PR metadata again. A changed head, target, or file count retries the snapshot,
+The collector reads PR metadata and resolves its target branch independently,
+compares the pinned target and head commits, records the returned merge base,
+and collects native checks/statuses. It then rechecks both PR metadata and the
+target branch. GitHub's PR `base.sha` can lag behind a base-only push and is
+not authoritative for the current target. A changed head, target branch, target
+SHA, or file count retries the snapshot,
 up to three attempts within the same request budget. Continual changes fail
 without exporting a mixed snapshot. Fork heads are compared within the base
 repository's API; unsupported comparisons produce a visible collection error.
@@ -85,11 +88,13 @@ To refresh, collect again and prepare with the new snapshot. Unchanged review
 inputs reuse the attempt; CI observations and collection errors are not part
 of the review identity. Changed head, target, merge base, patch, or policy
 creates a distinct analysis. Existing capture files are historical evidence;
-`show` and importing a response do not contact GitHub. Future publication must
-recheck the current remote revision before any write.
+`show` and importing a response do not contact GitHub. Publication rechecks the
+current remote revision before any write; see the [App setup walkthrough](github-app-setup.md).
 
 Live acceptance so far: collection of Cirra PR #2 captured 13 files and four
 native checks and produced a session packet. Automated tests cover head/base
 races, paginated reruns, missing coverage, outages, credential-safe failures,
-and reuse. The planned controlled live cases, checkout attestation, reviewer
-evaluation, and advisory publisher are not yet complete.
+and reuse. PR #5 exercises live advisory publication and recovery, including
+the stale PR-base metadata case. The [implementation plan](plans/2026-10-15-coordination-layer-plan.md)
+tracks the remaining acceptance work, and the [frozen evaluation](../eval/README.md)
+records the automatic review-quality demonstration.
