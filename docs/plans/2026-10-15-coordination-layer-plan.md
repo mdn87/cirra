@@ -15,7 +15,7 @@ The [review record](2026-10-15-planning-review.md) explains the original decisio
 | Trusted checkout provenance | Signed witness statements and exact check/attempt binding implemented. The independent Docker observer on lugos-host tested PR #7 and published a verified native check; other hosted CI retains its original provenance. |
 | Review-quality evaluation | Ten frozen labelled cases, two runs; 6/6 defects and 0/4 clean-case findings each. Human usefulness adjudication remains open. |
 | GitHub advisory publication | PR #5 is merged after live neutral-check publication, repeat/re-review, process-exit recovery, and base-only/new-head cases. The live base-only case exposed stale PR metadata; the collector now resolves the target branch independently. All 134 tests passed in the four native CI jobs. |
-| GitLab portability | Sandbox MR !1 is merged after pinned collection, automatic review, a maintained note across head changes/repeats/reconciliation, and successful native MR/push pipelines. Separate publisher scope was operator-confirmed. Publication preserved pipeline/job identity and the enabled requirement for successful CI before merging. Independent Docker execution and signed standalone evidence are implemented; live acceptance needs the reader token's Code Download permission and a configured sandbox webhook. |
+| GitLab portability | Sandbox MR !1 demonstrated collection, review, maintained-note publication and unchanged native merge rules. PR #9 adds independent Docker execution and signed standalone evidence, now deployed on lugos-host. The GitLab webhook delivered a durable job for MR !2, whose native pipelines passed. Live independent execution is waiting for Code Download on the reader token; Git downloads return HTTP 403. |
 | Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
 | Event triggers | Authenticated saved intake and HTTP webhook reception, replay detection, durable jobs, and current-state capture implemented. A persistent worker processes supported PR/MR events. |
 | Always-running services | Receiver and worker run on lugos-host with public HTTPS ingress, bounded retries, and daily admission. PR #8 completed real webhook delivery, independent container tests, verified checkout evidence, Claude review, and neutral native publication. Worker restart and GitHub redelivery preserved the completed job without another model call. See the service guide for the deployment record. |
@@ -373,9 +373,19 @@ the implementation; the product choices above are Cirra design decisions.
   requiring a new PR-code execution environment.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
-The remaining work is live setup and acceptance: GitLab independent checkout evidence;
-a controlled GitHub fork;
-operator assessment of review usefulness; and separate native release setup.
+The remaining work is live setup and acceptance:
+
+- Complete GitLab MR !2 after adding Code Download to its reader token. The
+  observer, route and webhook are deployed; the accepted job stopped after
+  three failed download attempts. Verify the complete note and unchanged native
+  pipelines, then merge the sandbox documentation change.
+- Exercise a controlled GitHub fork under another owner. The authenticated
+  account currently exposes no organizations or existing forks for this case.
+- Obtain the operator's usefulness assessment of the frozen reviewer cases.
+- Configure the native release demonstration's protected target and separate
+  Actions-only credential. `main` is currently unprotected, so the release
+  coordinator correctly refuses dispatch under the existing contract.
+
 Automatic dispatch, both publishers, GitLab/Forgejo collection, evaluation,
 authenticated event intake and native release requests are implemented.
 No new model API credentials are required for subscription review.

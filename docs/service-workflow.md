@@ -232,6 +232,40 @@ anonymous collection; configure a separate read-only reader credential for
 sustained traffic to avoid anonymous API rate limits. Opening or updating an
 open, non-draft PR queues its current revision for isolated tests and review.
 
+### GitLab observer rollout
+
+[PR #9](https://github.com/mdn87/cirra/pull/9) adds GitLab independent execution.
+The deployed runtime is now `bc7939200ea846a78853f1bcdafa0b04db24c67e`; the
+remaining PR commit adds a regression test and does not change runtime source.
+All 160 tests passed on lugos-host, including three real Docker checks. The
+additional target-refresh regression passed locally and in all four native CI
+jobs. It proves a target-only change reuses the head execution and signs a new
+receipt for the refreshed snapshot.
+
+Both `cirra-github` and `cirra-gitlab` routes are configured. The GitLab route
+uses its own README-heading check and a separate execution-definition digest.
+Webhook `91625689` subscribes only to Merge request events, with TLS verification
+and an independent secret, at
+`https://lugos-host.tail099c37.ts.net:8443/hooks/cirra-gitlab`.
+GitLab's test delivery reached the receiver and created a durable worker job.
+Public health returned HTTP 200 and an unsigned GitLab request returned HTTP 401.
+
+The [sandbox MR !2](https://gitlab.com/mdn87/cirra-sandbox/-/merge_requests/2)
+uses head `c00a1992bb259577f13ec653de0e831c22efa38d`. Both native pipelines
+`2953727183` and `2953726032` passed. Its independent checkout is **not yet
+accepted**: GitLab permits API reads but returns HTTP 403 for Git downloads
+using `GITLAB_TOKEN`. The user was asked to add Code Download for this project.
+The worker stopped after three bounded attempts; it has not run the GitLab
+tests, invoked its reviewer, or published a note for this MR. Keep the MR open
+until that permission is available and the live flow can be completed.
+
+After the rollout, a real GitHub PR edit exercised the updated service on
+head `e104fd0f212c7b4a849a4aa332a06fcb669cfb51`. Run
+`18928154b26c45bc894b41ebe5807519` completed with verified CI, a successful
+review, zero findings, and [advisory check 116822006340](https://github.com/mdn87/cirra/runs/116822006340).
+The previous runtime and protected configuration backup remain available for
+rollback. No database schema changed.
+
 To inspect the deployment without printing credentials:
 
 ```text
