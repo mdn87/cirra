@@ -168,6 +168,16 @@ Observed results:
   persisted a locally generated signed PR refresh with HTTP 202, and recognized
   its replay without creating another job. This was an operator-generated
   delivery, not evidence of public GitHub delivery.
+- [PR #8](https://github.com/mdn87/cirra/pull/8) then exercised the complete public
+  flow. GitHub's real PR event received HTTP 202; the worker tested commit
+  `99260620b9ed5862f042f26465c3deafd60aa05f`, verified its checkout evidence, ran a
+  tool-free Claude Sonnet 5.5 review, and published the successful
+  [test check](https://github.com/mdn87/cirra/runs/116811075150) and neutral
+  [advisory review](https://github.com/mdn87/cirra/runs/116811123077).
+  The report was complete, with verified CI and zero findings.
+- After restarting the worker, GitHub redelivered the same event. The receiver
+  returned the original job ID with `duplicate: true`; its attempt count stayed
+  at one and no additional review report was created.
 
 The repository webhook is configured for pull-request events at
 `https://lugos-host.tail099c37.ts.net:8443/hooks/cirra-github`, with TLS verification
