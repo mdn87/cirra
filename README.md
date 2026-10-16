@@ -104,6 +104,9 @@ success remains unverified until trusted checkout provenance is available.
 The [GitHub workflow guide](docs/github-workflow.md) covers permissions, limits,
 CI refresh, and importing the session response.
 
+The [GitHub App setup guide](docs/github-app-setup.md) covers installing the
+advisory publisher, loading its signing key, and recovering interrupted writes.
+
 ## Development
 
 ```text
