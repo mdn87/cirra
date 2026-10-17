@@ -57,8 +57,20 @@ class Queue:
             self.save(job)
             return {"job_id": identifier, "duplicate": False}
 
+    def scan(self):
+        """Readable job records, and names of records that could not be read."""
+        jobs, unreadable = [], []
+        for path in self.directory.glob("*.json"):
+            try:
+                jobs.append(self.read(path))
+            except (OSError, ValueError, CirraError):
+                unreadable.append(path.name)
+        return jobs, sorted(unreadable)
+
     def pending(self):
-        jobs = [self.read(path) for path in self.directory.glob("*.json")]
+        # An unreadable record is skipped (and reported by `cirra health`)
+        # rather than crashing the worker loop on every pass.
+        jobs, _ = self.scan()
         return sorted(
             (
                 job
@@ -71,11 +83,7 @@ class Queue:
 
     def tested_head(self, route, change, head):
         """Whether a finished job on this route already tested `head` for `change`."""
-        for path in self.directory.glob("*.json"):
-            try:
-                job = self.read(path)
-            except (OSError, ValueError, CirraError):
-                continue
+        for job in self.scan()[0]:
             ci = (job.get("result") or {}).get("ci") or {}
             if (
                 job.get("route") == route.name
@@ -157,7 +165,7 @@ class Queue:
         )
 
     def status(self):
-        jobs = [self.read(path) for path in self.directory.glob("*.json")]
+        jobs, _ = self.scan()
         return [
             {
                 key: job.get(key)

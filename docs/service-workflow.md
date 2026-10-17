@@ -254,13 +254,33 @@ a reason. Policy changes also stop old queued jobs for inspection.
 
 Defaults permit three attempts per job and 30 admitted job attempts per UTC day.
 Retry delays increase exponentially from `retry_seconds` to `max_retry_seconds`
-(one hour by default). `reconcile_seconds` defaults to zero (disabled).
+(one hour by default). A GitHub rate limit is not counted as an attempt: the
+job waits in `retry` until the reset time GitHub reports (at most one hour).
+Anonymous collection allows 60 reads an hour, so configure a read-only reader
+token for sustained traffic. `reconcile_seconds` defaults to zero (disabled).
+Polling queues each open PR head once; a head that another job already tested,
+or a move of only the target branch, does not queue it again.
 The daily limit survives restart; remaining jobs wait for the next day. Per-call
 review time and budget limits still apply. `cirra jobs` shows results and today's
 admission count. The queue retains up to 10,000 unique accepted bodies, after
 which ingress returns an error until an operator archives completed work.
 State, source archives, and bounded logs are retained for inspection; arrange
 backups and retention appropriate to the repository data.
+
+`cirra health --state-dir <state>` prints one JSON object and exits 1 when
+something needs an operator: the worker heartbeat is missing or older than
+`--max-heartbeat-age` (1200 s by default, because a bounded test and review can
+hold the loop), a job entered `attention` within `--attention-window` (one day),
+the last reconcile reported a route or branch error, today's admission is
+exhausted, or a queue record is unreadable (the worker skips such records).
+`examples/systemd/cirra-health.service` and `.timer` run it every five minutes;
+point the service's `OnFailure=` at your alerting.
+
+The receiver closes any connection that has not finished its request within
+10 seconds, so slow clients cannot hold its 16 handler slots. It writes one
+JSON line to stderr per response, with route path, status, delivery ID and
+declared size, never headers, bodies or credentials, and logs only the type
+name of unexpected exceptions.
 
 ## lugos-host deployment and acceptance
 

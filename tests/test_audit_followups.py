@@ -73,3 +73,90 @@ def test_rate_limited_job_waits_for_reset_without_spending_an_attempt(tmp_path):
         assert job["not_before"] >= reset
         job["not_before"] = 0  # simulate the reset passing
         queue.save(job)
+
+
+def health_state(tmp_path, *, heartbeat_age=10, attention_age=None, reconcile=None, used=1):
+    from datetime import UTC, datetime, timedelta
+
+    from cirra.publish import write_receipt
+
+    def stamp(age):
+        return (datetime.now(UTC) - timedelta(seconds=age)).isoformat()
+
+    queue = Queue(tmp_path)
+    if heartbeat_age is not None:
+        write_receipt(
+            tmp_path / "worker-status.json",
+            {"state": "running", "heartbeat_at": stamp(heartbeat_age)},
+            history=False,
+        )
+    if attention_age is not None:
+        route = SimpleNamespace(
+            name="repo",
+            digest="v1",
+            provider="github",
+            instance="https://github.com",
+            repository="owner/repo",
+            repository_id="42",
+        )
+        job_id = queue.request(route, 7)["job_id"]
+        job = queue.read(queue.directory / (job_id + ".json"))
+        job.update(state="attention", error="retry limit reached", updated_at=stamp(attention_age))
+        queue.save(job)
+    if reconcile is not None:
+        write_receipt(tmp_path / "reconciliation.json", reconcile, history=False)
+    write_receipt(queue.usage_path(), {"attempts": used, "maximum": 30}, history=False)
+    return queue
+
+
+def test_health_is_quiet_for_a_running_idle_worker(tmp_path):
+    from cirra.health import check
+
+    health_state(tmp_path, reconcile={"routes": [{"route": "repo", "jobs": []}]})
+    assert check(tmp_path) == {"healthy": True, "problems": []}
+
+
+@pytest.mark.parametrize(
+    "state, expected",
+    [
+        ({"heartbeat_age": 5000}, "heartbeat"),
+        ({"heartbeat_age": None}, "heartbeat"),
+        ({"attention_age": 60}, "attention"),
+        ({"reconcile": {"routes": [{"route": "repo", "error": "provider down"}]}}, "reconcile"),
+        (
+            {
+                "reconcile": {
+                    "routes": [{"route": "repo", "jobs": [], "branch_errors": {"main": "x"}}]
+                }
+            },
+            "reconcile",
+        ),
+        ({"used": 30}, "daily"),
+    ],
+)
+def test_health_reports_what_nothing_else_watches(tmp_path, state, expected):
+    # Production audit C020/C021/C056-C058/C061/C062: stale heartbeats, jobs in
+    # attention, reconcile errors and an exhausted budget were invisible.
+    from cirra.health import check
+
+    health_state(tmp_path, **state)
+    result = check(tmp_path)
+    assert result["healthy"] is False
+    assert any(problem["kind"] == expected for problem in result["problems"]), result
+
+
+def test_old_attention_jobs_do_not_alert_forever(tmp_path):
+    from cirra.health import check
+
+    health_state(tmp_path, attention_age=3 * 86400)
+    assert check(tmp_path)["healthy"] is True
+
+
+def test_unreadable_queue_file_is_reported_and_does_not_crash_the_worker(tmp_path):
+    from cirra.health import check
+
+    queue = health_state(tmp_path)
+    (queue.directory / ("0" * 64 + ".json")).write_text("{not json", encoding="utf-8")
+    assert queue.pending() == []
+    result = check(tmp_path)
+    assert any(problem["kind"] == "queue" for problem in result["problems"]), result
