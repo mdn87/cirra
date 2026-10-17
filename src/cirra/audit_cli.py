@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 
 from cirra import audits
+from cirra.audit_checkout import change_ref
 from cirra.config import load_config
-from cirra.domain import CirraError
+from cirra.domain import CirraError, number
 from cirra.job_queue import AuditQueue
+from cirra.service_config import branch_name
 from cirra.store import Store
 
 
@@ -34,7 +36,7 @@ def register(commands):
     request.add_argument("--head", required=True, help="full commit ID to audit")
     request.add_argument("--base", help="full diff-base commit ID (pr tier only)")
     request.add_argument("--change", type=int, help="pull/merge request number (pr tier)")
-    request.add_argument("--ref", help="release branch (release tier)")
+    request.add_argument("--ref", help="branch containing --head (release and full tiers)")
     request.add_argument("--repository-id", help="allowlisted repository, when several")
     request.add_argument("--state-dir", type=Path, default=Path(".cirra"))
     cancel = commands.add_parser("cancel-audit", help="cancel a queued or running audit request")
@@ -77,26 +79,24 @@ def run(args):
         return 0 if result["state"] == "complete" else 1
     if args.command == "request-audit":
         config = load_config(args.config)
-        scope = {
-            "pr": f"change:{args.change}" if args.change else None,
-            "release": f"release:{args.ref}" if args.ref else None,
-            "full": "repository",
-        }[args.tier]
-        if (
-            scope is None
-            or (args.change and args.tier != "pr")
-            or (args.ref and args.tier != "release")
-        ):
-            raise CirraError("pr requests need --change; release requests need --ref")
-        identity = audits.audit_identity(
-            config.audit,
-            args.tier,
-            audits.select_repository(config, args.repository_id),
-            args.head,
-            args.base,
-        )
+        repository = audits.select_repository(config, args.repository_id)
+        if args.tier == "pr":
+            if args.change is None or args.ref:
+                raise CirraError("pr requests need --change and take no --ref")
+            number(args.change, "change number", 1, 2**31 - 1, integral=True)
+            scope = f"change:{args.change}"
+            ref = change_ref(repository["provider"], args.change)
+        else:
+            if args.change is not None or not args.ref:
+                raise CirraError(
+                    "release and full requests need --ref, the branch containing --head"
+                )
+            ref = "refs/heads/" + branch_name(args.ref)
+            scope = "release:" + args.ref if args.tier == "release" else "repository"
+        identity = audits.audit_identity(config.audit, args.tier, repository, args.head, args.base)
         queue = AuditQueue(args.state_dir, Store(args.state_dir))
-        print(json.dumps(queue.request(identity, scope, reason="operator")))
+        context = {"route": None, "change": args.change, "ref": ref}
+        print(json.dumps(queue.request(identity, scope, reason="operator", context=context)))
         return 0
     if args.command == "cancel-audit":
         queue = AuditQueue(args.state_dir, Store(args.state_dir))

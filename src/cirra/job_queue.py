@@ -196,7 +196,13 @@ class Queue:
 
 
 AUDIT_PRIORITY = {"release": 0, "pr": 1, "full": 2}
-ACTIVE_AUDIT = ("queued", "deferred", "running", "awaiting_import")
+ACTIVE_AUDIT = ("queued", "deferred", "running", "awaiting_import", "awaiting_baseline")
+# Finished records move to audit-queue/archive after this long, so each request
+# scans only recent and active work; completed results stay attachable in SQLite.
+ARCHIVE_AFTER_SECONDS = 7 * 86400
+ARCHIVED_STATES = ("done", "superseded", "cancelled", "failed", "attention")
+# Every field the queue reads from a record; a record missing one is reported.
+RECORD_STRINGS = ("work_key", "audit_id", "scope", "reason", "accepted_at", "updated_at")
 
 
 class AuditQueue:
@@ -207,10 +213,10 @@ class AuditQueue:
     ones as superseded; identical identities attach to existing work.
     """
 
-    def __init__(self, directory, store=None):
+    def __init__(self, directory, store=None, maximum=10000):
         self.directory = Path(directory).resolve() / "audit-queue"
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.store = store
+        self.store, self.maximum = store, maximum
 
     def _lock(self):
         return change_lock(self.directory / "locks", "audit-queue", 10)
@@ -227,22 +233,69 @@ class AuditQueue:
         job["updated_at"] = utc_now()
         write_receipt(self.directory / (job["id"] + ".json"), job)
 
-    def jobs(self):
-        found = []
+    def scan(self):
+        """Readable job records, and names of records that could not be read."""
+        jobs, unreadable = [], []
         for path in self.directory.glob("*.json"):
             try:
-                found.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, ValueError):
-                continue  # Reported by `cirra health` through the review queue's scan.
-        return sorted(found, key=lambda job: (job["sequence"], job["id"]))
+                job = json.loads(path.read_text(encoding="utf-8"))
+                if not (
+                    isinstance(job, dict)
+                    and type(job.get("sequence")) is int
+                    and isinstance(job.get("id"), str)
+                    and job.get("state") in (*ACTIVE_AUDIT, *ARCHIVED_STATES)
+                    and isinstance(job.get("identity"), dict)
+                    and isinstance(job["identity"].get("repository"), dict)
+                    and isinstance(job["identity"].get("head"), str)
+                    and job.get("tier") in AUDIT_PRIORITY
+                    and all(isinstance(job.get(key), str) for key in RECORD_STRINGS)
+                    and type(job.get("not_before")) in (int, float)
+                    and isinstance(job.get("cancel_requested"), bool)
+                    and isinstance(job.get("context"), dict)
+                    and (job.get("superseded_by") is None or isinstance(job["superseded_by"], str))
+                    and (job.get("attempt_id") is None or isinstance(job["attempt_id"], str))
+                ):
+                    raise ValueError("audit record lacks required fields")
+                datetime.fromisoformat(job["updated_at"])
+            except (OSError, ValueError, RecursionError):
+                unreadable.append(path.name)
+                continue
+            jobs.append(job)
+        return sorted(jobs, key=lambda job: (job["sequence"], job["id"])), sorted(unreadable)
+
+    def jobs(self):
+        # Unreadable records are skipped here and reported by `cirra health`.
+        return self.scan()[0]
+
+    def archive(self, jobs, now):
+        """Move finished records older than ARCHIVE_AFTER_SECONDS out of the scan."""
+        kept = []
+        for job in jobs:
+            updated = datetime.fromisoformat(job["updated_at"]).timestamp()
+            if job["state"] in ARCHIVED_STATES and now - updated > ARCHIVE_AFTER_SECONDS:
+                target = self.directory / "archive" / (job["id"] + ".json")
+                target.parent.mkdir(exist_ok=True)
+                (self.directory / (job["id"] + ".json")).replace(target)
+            else:
+                kept.append(job)
+        return kept
 
     def _mark_attempt(self, job, state):
+        """Fence the job's attempt; returns the attempt's resulting state, if any."""
         if self.store is not None and job.get("attempt_id"):
             from cirra.audits import mark
 
-            mark(self.store, job["attempt_id"], state)
+            return mark(self.store, job["attempt_id"], state)
+        return None
 
-    def request(self, identity, scope, *, reason, debounce_seconds=0, context=None, now=None):
+    def request(
+        self, identity, scope, *, reason, debounce_seconds=0, context=None, now=None, fresh=False
+    ):
+        """Queue, coalesce or attach one audit request.
+
+        `fresh` requests a new run even when the identity already completed
+        (scheduled and stale re-audits); it still attaches to active work.
+        """
         from cirra.audits import repository_key
 
         string(scope, "audit scope", 300)
@@ -251,15 +304,23 @@ class AuditQueue:
         audit_id = digest(identity)
         work_key = digest([repository_key(identity["repository"]), scope, identity["tier"]])
         with self._lock():
-            jobs = self.jobs()
+            jobs = self.archive(self.jobs(), time.time())
             for job in jobs:
                 if (
                     job["audit_id"] == audit_id
                     and job["scope"] == scope
-                    and job["state"] in (*ACTIVE_AUDIT, "done")
+                    and job["state"] in (ACTIVE_AUDIT if fresh else (*ACTIVE_AUDIT, "done"))
+                    and not job["cancel_requested"]
+                    and not job["superseded_by"]
                 ):
                     return {"job_id": job["id"], "attached": True}
-            if self.store is not None:
+            # Same-key work the new request supersedes leaves as it arrives.
+            active = sum(
+                job["state"] in ACTIVE_AUDIT and job["work_key"] != work_key for job in jobs
+            )
+            if active >= self.maximum:
+                raise CirraError("audit queue capacity reached; cancel or finish queued audits")
+            if self.store is not None and not fresh:
                 from cirra.audits import begin, completed
 
                 attempt = completed(self.store, audit_id)
@@ -283,15 +344,21 @@ class AuditQueue:
                 "cancel_requested": False,
                 "not_before": now + debounce_seconds,
                 "accepted_at": utc_now(),
+                "fresh": fresh,
             }
             for other in jobs:
                 if other["work_key"] != work_key:
                     continue
+                if other.get("attempt_id") and other["state"] in ACTIVE_AUDIT:
+                    # A newer head can reuse unchanged domains of this attempt.
+                    job["resume_from"] = other["attempt_id"]
                 if other["state"] in ("queued", "deferred"):
                     other.update(state="superseded", superseded_by=job["id"])
+                    self._mark_attempt(other, "superseded")  # A preempted full audit.
                     self.save(other)
                 elif (
-                    other["state"] in ("running", "awaiting_import") and not other["superseded_by"]
+                    other["state"] in ("running", "awaiting_import", "awaiting_baseline")
+                    and not other["superseded_by"]
                 ):
                     # The runner stops at its next checkpoint; the attempt's state is
                     # the fence that refuses a late import of the old head.
@@ -304,18 +371,43 @@ class AuditQueue:
     def runnable(self, now=None):
         now = time.time() if now is None else now
         today = datetime.fromtimestamp(now, UTC).date().isoformat()
+        jobs = self.jobs()
+        # Repositories whose finished pr audits wait on a first baseline: that
+        # baseline runs ahead of further pr work, so traffic cannot starve it.
+        blocked = {
+            json.dumps(job["identity"]["repository"], sort_keys=True)
+            for job in jobs
+            if job["state"] == "awaiting_baseline"
+        }
+
+        def priority(job):
+            repository = json.dumps(job["identity"]["repository"], sort_keys=True)
+            if job["tier"] == "full" and job["scope"] == "repository" and repository in blocked:
+                return -1  # ahead of releases too: waiting pr gates depend on it
+            return AUDIT_PRIORITY[job["tier"]]
+
         return sorted(
             (
                 job
-                for job in self.jobs()
+                for job in jobs
                 if job["not_before"] <= now
                 and (
                     job["state"] == "queued"
                     or (job["state"] == "deferred" and job.get("deferred_on") != today)
                 )
             ),
-            key=lambda job: (AUDIT_PRIORITY[job["tier"]], job["sequence"]),
+            key=lambda job: (priority(job), job["sequence"]),
         )
+
+    def priority_waiting(self, now=None):
+        """Whether pr or release work is runnable; it may preempt a full audit."""
+        return any(job["tier"] != "full" for job in self.runnable(now))
+
+    def admission_left(self, maximum, now=None):
+        now = time.time() if now is None else now
+        path = self.usage_path(now)
+        used = json.loads(path.read_text(encoding="utf-8"))["attempts"] if path.exists() else 0
+        return used < maximum
 
     def usage_path(self, now):
         day = datetime.fromtimestamp(now, UTC).date().isoformat()
@@ -324,8 +416,14 @@ class AuditQueue:
     def next_job(self, maximum, now=None):
         """Claim the highest-priority runnable request within daily admission."""
         now = time.time() if now is None else now
+        today = datetime.fromtimestamp(now, UTC).date().isoformat()
         with self._lock():
             for job in self.runnable(now):
+                if job.get("admitted_on") == today:
+                    # Resuming a preempted or recovered run admitted today is free.
+                    job.update(state="running", started_at=utc_now())
+                    self.save(job)
+                    return job
                 path = self.usage_path(now)
                 used = (
                     json.loads(path.read_text(encoding="utf-8"))["attempts"] if path.exists() else 0
@@ -342,7 +440,7 @@ class AuditQueue:
                 write_receipt(
                     path, {"attempts": used + 1, "maximum": maximum, "updated_at": utc_now()}
                 )
-                job.update(state="running", started_at=utc_now())
+                job.update(state="running", started_at=utc_now(), admitted_on=today)
                 self.save(job)
                 return job
         return None
@@ -368,11 +466,16 @@ class AuditQueue:
         with self._lock():
             job = self.read(identifier)
             if job["state"] in ("queued", "deferred"):
+                self._mark_attempt(job, "cancelled")  # A preempted job keeps its attempt.
                 job.update(state="cancelled", cancel_reason=reason)
-            elif job["state"] in ("running", "awaiting_import"):
+            elif job["state"] in ("running", "awaiting_import", "awaiting_baseline"):
+                fenced = self._mark_attempt(job, "cancelled")
+                if job["state"] == "awaiting_import" and fenced == "complete":
+                    raise CirraError(
+                        "this audit's report was already imported; it settles on the next pass"
+                    )
                 job.update(cancel_requested=True, cancel_reason=reason)
-                self._mark_attempt(job, "cancelled")
-                if job["state"] == "awaiting_import":
+                if job["state"] != "running":
                     job["state"] = "cancelled"  # No process to stop; the fence is set.
             else:
                 raise CirraError(f"audit job is already {job['state']}")

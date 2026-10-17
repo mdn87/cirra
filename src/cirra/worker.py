@@ -32,6 +32,10 @@ from cirra.publish import (
 from cirra.report import export_report
 from cirra.store import Store
 
+# Full-audit schedule checks read the default branch head, so they run once an
+# hour; `schedule_days` and `max_age_days` decide whether a check queues work.
+AUDIT_SCHEDULE_SECONDS = 3600
+
 
 def is_open(route, change, reader):
     if route.provider == "github":
@@ -105,6 +109,26 @@ class Processor:
         except CirraError as exc:
             return [{"error": str(exc)}]
 
+    def schedule_audits(self, routes, now=None):
+        """Hourly full-audit schedule checks, starting with the first pass."""
+        now = time.monotonic() if now is None else now
+        schedule = self.__dict__.setdefault("audit_schedule", {})
+        receipts = []
+        for name, route in routes.items():
+            due = schedule.get(name)
+            if due is not None and now < due:
+                continue
+            schedule[name] = now + AUDIT_SCHEDULE_SECONDS  # Also paces failing reads.
+            reader = self.credential(route.reader_env) if route.reader_env else None
+            receipts += request_audits(
+                self.directory,
+                route,
+                # Every pass is a schedule check, so restarts cannot postpone a due audit.
+                {"kind": "schedule"},
+                default_head=lambda route=route, reader=reader: default_branch_head(route, reader),
+            )
+        return receipts
+
     def audit(self, config):
         """Run one production-audit pass over routes whose policy has an audit block."""
         routes = {
@@ -114,8 +138,14 @@ class Processor:
         }
         if not routes:
             return None
+        self.schedule_audits(routes)
         store = Store(self.directory)
-        runner = AuditRunner(self.directory, routes, self.credential)
+        runner = AuditRunner(
+            self.directory,
+            routes,
+            self.credential,
+            heartbeat=lambda: heartbeat(Queue(self.directory), audit_running=True),
+        )
         publication = AuditPublication(
             self.directory,
             routes,
@@ -129,6 +159,9 @@ class Processor:
             min(route.policy.audit.max_audits_per_day for route in routes.values()),
             runner,
             on_complete=publication,
+            # A delivery waiting in the review queue preempts a full audit, so the
+            # worker can turn it into pr audit requests.
+            interrupt=lambda: bool(Queue(self.directory).pending()),
         )
         runner.cleanup(store)
         return job
@@ -276,6 +309,16 @@ class Processor:
         }
 
 
+def heartbeat(queue, **extra):
+    # Liveness is the file's content and mtime; a history copy per poll would add
+    # an fsync'd file every pass.
+    write_receipt(
+        queue.directory.parent / "worker-status.json",
+        {"state": "running", "heartbeat_at": utc_now(), "daily_usage": queue.usage(), **extra},
+        history=False,
+    )
+
+
 def work_once(config, queue, process):
     jobs = queue.pending()
     if not jobs:
@@ -340,17 +383,7 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                     history=False,
                 )
                 next_reconcile = time.monotonic() + interval
-            # Liveness is the file's content and mtime; a history copy per poll
-            # would add an fsync'd file every pass.
-            write_receipt(
-                queue.directory.parent / "worker-status.json",
-                {
-                    "state": "running",
-                    "heartbeat_at": utc_now(),
-                    "daily_usage": queue.usage(),
-                },
-                history=False,
-            )
+            heartbeat(queue)
             job = work_once(config, queue, process)
             if job:
                 print(

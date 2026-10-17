@@ -5,7 +5,9 @@ A runner is `run(job, attempt, stop)` and returns one of
 `{"state": "imported", "audit": summary}` (the runner imported a report), or
 `{"state": "stopped", "reason": ...}` after `stop()` returned a reason at a
 checkpoint. Cancellation and supersession are cooperative: `stop()` reports
-them and the attempt's stored state already refuses a late import.
+them and the attempt's stored state already refuses a late import. A runner
+calls `stop(checkpoints=[...])` when the completed domains change; for a full
+audit that is where runnable pr or release work preempts it.
 """
 
 import json
@@ -28,6 +30,9 @@ from cirra.store import Store
 from cirra.transport import JSONClient, pages
 
 CHECK_NAME = "cirra/audit"
+WAITING = ("awaiting_import", "awaiting_baseline")
+# A noisy or wedged agent must not fill the state filesystem.
+MAX_AGENT_LOG_BYTES = 16 * 1024 * 1024
 FINAL = {
     "complete": "done",
     "failed": "failed",
@@ -43,43 +48,127 @@ def settle(queue, store, job, on_complete=None):
         return job
     result = audits.summary(attempt)
     state = FINAL[attempt["state"]]
+    stopped = queue.stop_reason(job["id"])
+    if attempt["state"] == "complete" and stopped:
+        # Cancelled, or replaced by a newer head, before its result was published.
+        return queue.update(job["id"], state=stopped, result=result)
     if attempt["state"] == "complete" and on_complete:
         result["publication"] = on_complete(job, attempt)
+        if result["publication"]["state"] == "waiting":
+            return queue.update(job["id"], state="awaiting_baseline", result=result)
+        if result["publication"]["state"] == "stopped":
+            return queue.update(job["id"], state=result["publication"]["reason"], result=result)
         if result["publication"]["state"] == "failed":
             state = "attention"
     return queue.update(job["id"], state=state, result=result)
 
 
-def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
-    """Settle imported session audits, then run at most one runnable request."""
+def recover(queue, store, on_complete=None):
+    """Settle waiting jobs and reconcile jobs a stopped worker left `running`.
+
+    The single worker runs one audit at a time inside `audit_once`, so a job
+    still `running` when a pass starts was orphaned by a restart: its final
+    attempt settles, a pending stop applies, and anything else runs again.
+    """
     for job in queue.jobs():
-        if job["state"] == "awaiting_import":
+        if job["state"] in WAITING:
             settle(queue, store, job, on_complete)
+        elif job["state"] == "running":
+            attempt_id = job.get("attempt_id")
+            if attempt_id and audits.get(store, attempt_id)["state"] in FINAL:
+                settle(queue, store, job, on_complete)
+            elif reason := queue.stop_reason(job["id"]):
+                if attempt_id:
+                    audits.mark(store, attempt_id, reason)
+                queue.update(job["id"], state=reason)
+            else:
+                queue.update(job["id"], state="queued", recovered=job.get("recovered", 0) + 1)
+
+
+def fail(queue, store, job, attempt_id, error, on_complete=None):
+    """End a job whose runner failed, unless a stop or an import already decided it."""
+    reason = queue.stop_reason(job["id"])
+    if attempt_id:
+        if not reason and audits.get(store, attempt_id)["state"] == "complete":
+            return settle(queue, store, queue.read(job["id"]), on_complete)
+        audits.mark(store, attempt_id, reason or "cancelled")
+    if reason:
+        return queue.update(job["id"], state=reason)
+    return queue.update(job["id"], state="failed", error=error)
+
+
+def audit_once(queue, store, maximum, run, *, on_complete=None, now=None, interrupt=None):
+    """Recover and settle earlier work, then run at most one runnable request.
+
+    `interrupt()` reports work outside the audit queue (pending review deliveries)
+    that should also preempt a full audit, since it becomes audit requests only
+    once the worker loop gets to it.
+    """
+    recover(queue, store, on_complete)
     job = queue.next_job(maximum, now)
     if job is None:
         return None
-    attempt, _ = audits.begin(store, job["identity"], job["scope"])
-    job = queue.update(job["id"], attempt_id=attempt["attempt_id"])
-    if attempt["state"] == "complete":
-        return settle(queue, store, job, on_complete)  # Attached to an existing result.
+    job_id, attempt_id = job["id"], None
+
+    def stop(checkpoints=None):
+        reason = queue.stop_reason(job_id)
+        if reason is None and checkpoints is not None:
+            queue.update(job_id, checkpoints=checkpoints)
+            if (
+                job["tier"] == "full"
+                # Once every domain is done, only the report remains: let it finish.
+                and len(checkpoints) < len(audits.catalog_domains())
+                and (queue.priority_waiting(now) or (interrupt is not None and interrupt()))
+                and queue.admission_left(maximum, now)
+            ):
+                return "preempted"
+        return reason
+
     try:
-        outcome = run(job, attempt, lambda: queue.stop_reason(job["id"]))
-    except CirraError as exc:
-        audits.mark(store, attempt["attempt_id"], "cancelled")
-        return queue.update(job["id"], state="failed", error=str(exc))
-    if outcome["state"] == "awaiting_import":
-        return queue.update(
-            job["id"], state="awaiting_import", packet_path=outcome.get("packet_path")
+        attempt, _ = audits.begin(
+            store, job["identity"], job["scope"], fresh=job.get("fresh", False)
         )
-    if outcome["state"] == "stopped":
-        reason = outcome["reason"]
-        if reason in ("cancelled", "superseded"):
-            audits.mark(store, attempt["attempt_id"], reason)
-            return queue.update(job["id"], state=reason)
-        raise CirraError(f"unsupported runner stop reason {reason!r}")
-    if outcome["state"] == "imported":
-        return settle(queue, store, queue.read(job["id"]), on_complete)
-    raise CirraError("audit runner returned an unsupported outcome")
+        attempt_id = attempt["attempt_id"]
+        job = queue.update(job_id, attempt_id=attempt_id)
+        if attempt["state"] == "complete":
+            return settle(queue, store, job, on_complete)  # Attached to an existing result.
+        if reason := queue.stop_reason(job_id):
+            # Cancelled or superseded before the attempt existed to be fenced.
+            audits.mark(store, attempt_id, reason)
+            return queue.update(job_id, state=reason)
+        outcome = run(job, attempt, stop)
+        if outcome["state"] == "awaiting_import":
+            return queue.update(
+                job_id, state="awaiting_import", packet_path=outcome.get("packet_path")
+            )
+        if outcome["state"] == "stopped" and outcome["reason"] in ("cancelled", "superseded"):
+            audits.mark(store, attempt_id, outcome["reason"])
+            return queue.update(job_id, state=outcome["reason"])
+        if outcome["state"] == "stopped" and outcome["reason"] == "preempted":
+            # The attempt stays prepared, so the next run resumes its checkpoints.
+            current = queue.read(job_id)
+            return queue.update(
+                job_id, state="queued", preemptions=current.get("preemptions", 0) + 1
+            )
+        if outcome["state"] == "imported":
+            return settle(queue, store, queue.read(job_id), on_complete)
+        raise CirraError(f"audit runner returned an unsupported outcome {outcome!r}")
+    except Exception as exc:  # noqa: BLE001 - any runner failure must end and fence the job
+        message = str(exc) if isinstance(exc, CirraError) else f"{type(exc).__name__}: {exc}"
+        return fail(queue, store, job, attempt_id, message, on_complete)
+
+
+def route_for(routes, name, identity):
+    """The named route, else one serving this repository with the identity's policy."""
+    if routes.get(name):
+        return routes[name]
+    serving = [route for route in routes.values() if repository_of(route) == identity["repository"]]
+    matching = [
+        route
+        for route in serving
+        if audits.policy_digest(route.policy.audit) == identity["policy_digest"]
+    ]
+    return (matching or serving or [None])[0]
 
 
 def repository_of(route):
@@ -155,6 +244,8 @@ def request_audits(
             reason=reason,
             debounce_seconds=policy.debounce_seconds,
             context=context,
+            # Age-triggered re-audits of an unchanged head need a new attempt.
+            fresh=reason in ("schedule", "stale"),
         )
         receipts.append({"tier": tier, "reason": reason, **receipt})
     return receipts
@@ -173,28 +264,27 @@ class AuditRunner:
         protocols=("https",),
         poll_seconds=2,
         grace_seconds=30,
+        heartbeat=None,
     ):
         self.directory = Path(directory).resolve()
         self.routes, self.credential = routes, credential
         self.url_for, self.protocols = url_for, protocols
         self.poll_seconds, self.grace_seconds = poll_seconds, grace_seconds
+        self.heartbeat = heartbeat  # Keeps worker liveness current during long audits.
 
     def attempt_dir(self, attempt_id):
         return self.directory / "audit-attempts" / attempt_id
 
     def __call__(self, job, attempt, stop):
-        route = self.routes.get(job["context"].get("route")) or next(
-            (
-                item
-                for item in self.routes.values()
-                if repository_of(item) == job["identity"]["repository"]
-            ),
-            None,
-        )
+        route = route_for(self.routes, job["context"].get("route"), job["identity"])
         if route is None:
             raise CirraError("no route with an audit policy serves this repository")
         policy = route.policy.audit
         identity = job["identity"]
+        if identity["policy_digest"] != audits.policy_digest(policy):
+            raise CirraError("the audit policy changed after this request; request it again")
+        if not job["context"].get("ref"):
+            raise CirraError("the audit request names no ref to fetch")
         root = self.attempt_dir(attempt["attempt_id"])
         checkout = root / "checkout"
         if not checkout.exists():
@@ -217,8 +307,110 @@ class AuditRunner:
         if policy.runner_kind == "session":
             return {"state": "awaiting_import", "packet_path": packet_path}
         work = root / "work"
-        work.mkdir(parents=True, exist_ok=True)
+        (work / "checkpoints").mkdir(parents=True, exist_ok=True)
+        # A preempted run leaves its stop file and possibly a partial report.
+        (work / "stop").unlink(missing_ok=True)
+        for stale in work.glob("production-audit-*"):
+            stale.unlink()
+        if identity["tier"] == "full":
+            self.resume(store, job, checkout, work / "checkpoints")
         return self.run_agent(policy, identity, attempt, packet_path, checkout, work, stop)
+
+    def resume(self, store, job, checkout, target):
+        """Copy a superseded attempt's checkpoints when no file changed between the heads.
+
+        Cited evidence is not a complete dependency set (a new file can change a
+        domain's conclusions without being cited), so any change reruns every domain.
+        """
+        source_id = job.get("resume_from")
+        if not source_id or any(target.glob("*.json")):
+            return []
+        source = self.attempt_dir(source_id) / "work" / "checkpoints"
+        if not source.is_dir():
+            return []
+        old = json.loads(audits.get(store, source_id)["identity_json"])
+        if any(old[key] != job["identity"][key] for key in ("skill_version", "catalog_digest")):
+            return []  # Conclusions under another catalog are not reusable.
+        old_head = old["head"]
+        # -z: paths exactly as stored, without Git's quoting of unusual characters.
+        listing = audits.git(
+            checkout,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            old_head,
+            job["identity"]["head"],
+            strip=False,
+        )
+        if listing is None or listing.strip("\0"):
+            return []  # A file changed, or the old head is unavailable: rerun every domain.
+        copied = []
+        domains = audits.catalog_domains()
+        for path in sorted(source.glob("*.json")):
+            if audits.valid_checkpoint(path, domains) is not None:
+                (target / path.name).write_bytes(path.read_bytes())
+                copied.append(path.stem)
+        return copied
+
+    def checkpoints(self, work):
+        domains = audits.catalog_domains()
+        return sorted(
+            path.stem
+            for path in (work / "checkpoints").glob("*.json")
+            if audits.valid_checkpoint(path, domains) is not None
+        )
+
+    def launch(self, argv, work, env, log):
+        """Start the agent after any agent a crashed worker left in this directory is gone.
+
+        On POSIX the agent inherits a lock on `agent.lock`, so the lock stays held for
+        as long as it (or anything it started) runs, even after the worker dies.
+        Windows has no inherited lock; there a surviving agent is not detected.
+        """
+        if os.name == "nt":
+            return subprocess.Popen(
+                argv,
+                cwd=work,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        import fcntl
+        import signal
+
+        with (work / "agent.lock").open("a+b") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                previous = int((work / "agent.pid").read_text(encoding="utf-8"))
+                try:
+                    os.killpg(previous, signal.SIGKILL)  # its own session: pgid == pid
+                except ProcessLookupError:
+                    pass
+                deadline = time.monotonic() + self.grace_seconds
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise CirraError("a previous audit agent is still running") from None
+                        time.sleep(0.1)
+            process = subprocess.Popen(
+                argv,
+                cwd=work,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                pass_fds=(lock.fileno(),),
+            )
+            (work / "agent.pid").write_text(str(process.pid), encoding="utf-8")
+        return process
 
     def run_agent(self, policy, identity, attempt, packet_path, checkout, work, stop):
         env = tool_environment()
@@ -229,20 +421,17 @@ class AuditRunner:
         )
         log_path = work / "agent.log"
         with log_path.open("ab") as log:
-            process = subprocess.Popen(
-                list(policy.runner_command),
-                cwd=work,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=os.name != "nt",
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-            )
+            process = self.launch(list(policy.runner_command), work, env, log)
             deadline = time.monotonic() + policy.audit_timeout_seconds
+            completed = self.checkpoints(work)
             try:
                 while process.poll() is None:
-                    reason = stop()
+                    current = self.checkpoints(work)
+                    if current != completed:
+                        completed = current
+                        reason = stop(checkpoints=current)
+                    else:
+                        reason = stop()
                     if reason:
                         # Checkpoint protocol: the agent checks for `stop` between domains.
                         (work / "stop").write_text(reason, encoding="utf-8")
@@ -253,10 +442,16 @@ class AuditRunner:
                         return {"state": "stopped", "reason": reason}
                     if time.monotonic() >= deadline:
                         raise CirraError("audit agent exceeded audit_timeout_seconds")
+                    if log_path.stat().st_size > MAX_AGENT_LOG_BYTES:
+                        raise CirraError("audit agent output exceeded 16 MiB")
+                    if self.heartbeat:
+                        self.heartbeat()
                     time.sleep(self.poll_seconds)
             finally:
                 if process.poll() is None:
                     stop_process(process)
+        if log_path.stat().st_size > MAX_AGENT_LOG_BYTES:
+            raise CirraError("audit agent output exceeded 16 MiB")  # a fast exit skipped polling
         if process.returncode:
             raise CirraError(f"audit agent exited with status {process.returncode}; see {log_path}")
         reports = sorted(work.glob(f"production-audit-{identity['tier']}-*.json"))
@@ -349,10 +544,32 @@ class AuditPublication:
             receipt = json.loads(path.read_text(encoding="utf-8"))
             if receipt["state"] == "published":
                 return {**receipt, "duplicate": True}
-        route = self.routes.get(job["context"]["route"])
+        identity = json.loads(attempt["identity_json"])
+        route = route_for(self.routes, job["context"].get("route"), identity)
         if route is None:
-            return {"state": "failed", "reason": "the audit's route no longer has an audit policy"}
-        result = audits.gate(route.policy.audit, "pr", attempt)
+            return {"state": "failed", "reason": "no route with an audit policy serves this audit"}
+        policy = route.policy.audit
+        if identity["policy_digest"] != audits.policy_digest(policy):
+            return {
+                "state": "failed",
+                "reason": "the audit policy changed after this request; request it again",
+            }
+        comparison = None
+        if "full" in policy.tiers:
+            # Findings are only new against a baseline; without one, the gate waits.
+            baseline = audits.latest_full(Store(self.directory), attempt["repository_key"])
+            if baseline is not None and any(
+                json.loads(baseline["identity_json"])[key] != identity[key]
+                for key in ("skill_version", "catalog_digest")
+            ):
+                baseline = None  # findings from another catalog are not comparable
+            if baseline is None:
+                return {
+                    "state": "waiting",
+                    "reason": "waiting for a full audit baseline from the same skill and catalog",
+                }
+            comparison = audits.compare(json.loads(attempt["report_json"]), baseline)
+        result = audits.gate(policy, "pr", attempt, comparison)
         conclusion = (
             "neutral"
             if result["level"] == "none"
@@ -366,6 +583,9 @@ class AuditPublication:
             "conclusion": conclusion,
             "blocking": len(result["blocking"]),
         }
+        if reason := AuditQueue(self.directory).stop_reason(job["id"]):
+            # Cancelled or superseded while waiting: never publish stopped work.
+            return {"state": "stopped", "reason": reason}
         if route.provider != "github":
             receipt.update(
                 state="unsupported", reason="audit publication is implemented for GitHub only"

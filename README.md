@@ -21,8 +21,9 @@ turns that direction into staged work: a GitHub review-and-report prototype,
 followed by a GitLab portability proof and further provider integrations.
 
 The [production audit tiers plan](docs/plans/2026-10-16-production-audit-tiers-plan.md)
-proposes selecting, queueing and gating `pr`, `release` and `full` production
-audits from the events Cirra already handles.
+selects, queues and gates `pr`, `release` and `full` production audits from the
+events Cirra already handles. The [audit guide](docs/audit-workflow.md) covers
+the policy, the worker, agent runners, imports, publication and the release gate.
 
 ## Run the offline example
 

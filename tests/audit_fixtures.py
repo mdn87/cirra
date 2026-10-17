@@ -126,6 +126,21 @@ def build_report(tier, head, base=None, gaps=(), repo_path="repo"):
     }
 
 
+def domain_rows(slug, evidence_paths=(), status="implemented"):
+    """Coverage rows for every concept of one catalog domain, all citing `evidence_paths`."""
+    from cirra.audits import catalog_domains
+
+    domain = next(item for item in catalog_domains() if item["slug"] == slug)
+    return [
+        {
+            "id": cid,
+            "status": status,
+            "evidence": [{"path": path, "start_line": 1, "end_line": 1} for path in evidence_paths],
+        }
+        for cid in domain["ids"]
+    ]
+
+
 def write_report(directory, report):
     """Write the JSON and companion Markdown with the skill's file naming."""
     directory.mkdir(parents=True, exist_ok=True)
