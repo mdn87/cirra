@@ -19,6 +19,7 @@ from cirra.vendor.production_audit.scripts import validate_report
 
 PROTOCOL = "cirra.audit.v1"
 MAX_REPORT_BYTES = 8 * 1024 * 1024
+MAX_CHECKPOINT_BYTES = 1024 * 1024  # one domain's rows and findings
 TITLE_IDS = re.compile(r"\[((?:C\d{3}|X\d{2})(?:, ?(?:C\d{3}|X\d{2}))*)\]")
 BASELINE = (
     "SELECT * FROM audits WHERE repository_key=? AND tier='full' AND state='complete' "
@@ -85,7 +86,11 @@ def valid_checkpoint(path, domains=None):
     """
     domains = {item["slug"]: set(item["ids"]) for item in domains or catalog_domains()}
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        with Path(path).open("rb") as stream:
+            raw = stream.read(MAX_CHECKPOINT_BYTES + 1)
+        if len(raw) > MAX_CHECKPOINT_BYTES:
+            return None
+        data = json.loads(raw)
     except (OSError, ValueError, RecursionError):
         return None
     slug = Path(path).stem

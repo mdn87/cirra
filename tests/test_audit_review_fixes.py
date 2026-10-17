@@ -812,3 +812,78 @@ def test_a_running_same_key_job_is_replaceable_at_capacity(env):
     small.next_job(20)  # now running
     second = pr(2)
     assert small.read(first["job_id"])["superseded_by"] == second["job_id"]
+
+
+# --- Sixth Codex round on #20 ------------------------------------------------
+
+
+def test_a_changed_non_ascii_path_invalidates_its_checkpoint(world, tmp_path):
+    from cirra.audit_checkout import prepare_checkout
+
+    world.origin.git("switch", "main")
+    world.origin.commit({"café.py": "one\n"})
+    before = world.origin.git("rev-parse", "HEAD")
+    after = world.origin.commit({"café.py": "two\n"})
+    world.origin.git("update-ref", "refs/pull/9/head", after)
+    route, runner = world.make()
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    old, _ = audits.begin(
+        store, audits.audit_identity(route.policy.audit, "full", repository, before)
+    )
+    source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
+    source.mkdir(parents=True)
+    (source / "security.json").write_text(
+        json.dumps({"domain": "security", "coverage": domain_rows("security", ["café.py"])}),
+        encoding="utf-8",
+    )
+    checkout = prepare_checkout(
+        world.state,
+        "github",
+        "example/repo",
+        "refs/pull/9/head",
+        after,
+        tmp_path / "co",
+        url=str(world.origin.path),
+        protocols=("file",),
+    )
+    job = {
+        "resume_from": old["attempt_id"],
+        "identity": audits.audit_identity(route.policy.audit, "full", repository, after),
+    }
+    target = tmp_path / "target"
+    target.mkdir()
+    assert runner.resume(store, job, checkout, target) == []
+
+
+def test_a_baseline_from_another_catalog_makes_the_pr_wait(world, tmp_path):
+    route, runner = world.make(agent(tmp_path))
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    identity = audits.audit_identity(route.policy.audit, "full", repository, world.base)
+    old, _ = audits.begin(store, {**identity, "catalog_digest": "0" * 64})
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE audits SET state='complete', completed_at=?, report_json=? WHERE attempt_id=?",
+            (time.time(), json.dumps(build_report("full", world.base)), old["attempt_id"]),
+        )
+    request(world, route, "app.py")
+    github = FakeGitHub()
+    publication = AuditPublication(
+        world.state,
+        {"main": route},
+        lambda r: AuditCheckPublisher(r.repository, 5, "t", http=github),
+    )
+    queue = AuditQueue(world.state, store)
+    job = audit_once(queue, store, 20, runner, on_complete=publication)
+    assert job["tier"] == "pr" and job["state"] == "awaiting_baseline", job
+    assert github.posts == []
+
+
+def test_oversized_checkpoints_are_rejected_unread(tmp_path, monkeypatch):
+    monkeypatch.setattr(audits, "MAX_CHECKPOINT_BYTES", 100)
+    path = tmp_path / "security.json"
+    path.write_text(
+        json.dumps({"domain": "security", "coverage": domain_rows("security")}), encoding="utf-8"
+    )
+    assert audits.valid_checkpoint(path) is None

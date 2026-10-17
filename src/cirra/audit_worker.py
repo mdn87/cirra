@@ -323,12 +323,13 @@ class AuditRunner:
         if any(old[key] != job["identity"][key] for key in ("skill_version", "catalog_digest")):
             return []  # Conclusions under another catalog are not reusable.
         old_head = old["head"]
+        # -z: paths exactly as stored, without Git's quoting of unusual characters.
         listing = audits.git(
-            checkout, "diff", "--name-only", "--no-renames", old_head, job["identity"]["head"]
+            checkout, "diff", "--name-only", "--no-renames", "-z", old_head, job["identity"]["head"]
         )
         if listing is None:
             return []  # The old head is unavailable: rerun every domain.
-        changed = set(listing.splitlines())
+        changed = set(filter(None, listing.split("\0")))
         copied = []
         domains = audits.catalog_domains()
         for path in sorted(source.glob("*.json")):
@@ -551,8 +552,16 @@ class AuditPublication:
         if "full" in policy.tiers:
             # Findings are only new against a baseline; without one, the gate waits.
             baseline = audits.latest_full(Store(self.directory), attempt["repository_key"])
+            if baseline is not None and any(
+                json.loads(baseline["identity_json"])[key] != identity[key]
+                for key in ("skill_version", "catalog_digest")
+            ):
+                baseline = None  # findings from another catalog are not comparable
             if baseline is None:
-                return {"state": "waiting", "reason": "waiting for the first full audit baseline"}
+                return {
+                    "state": "waiting",
+                    "reason": "waiting for a full audit baseline from the same skill and catalog",
+                }
             comparison = audits.compare(json.loads(attempt["report_json"]), baseline)
         result = audits.gate(policy, "pr", attempt, comparison)
         conclusion = (
