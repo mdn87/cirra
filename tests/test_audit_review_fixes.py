@@ -915,3 +915,118 @@ def test_git_listing_keeps_leading_whitespace(tmp_path):
     second = repo.commit({" spaced.py": "b\n"})
     listing = audits.git(repo.path, "diff", "--name-only", "-z", first, second, strip=False)
     assert listing.split("\0")[0] == " spaced.py"
+
+
+# --- Eighth Codex round on #20 -----------------------------------------------
+
+
+def test_a_skill_only_upgrade_queues_a_replacement_baseline(world):
+    from test_audit_full import schedule
+
+    route, _ = world.make()
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    identity = audits.audit_identity(route.policy.audit, "full", repository, world.base)
+    old, _ = audits.begin(store, {**identity, "skill_version": "0.9.0"})
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE audits SET state='complete', completed_at=?, report_json=? WHERE attempt_id=?",
+            (time.time(), json.dumps(build_report("full", world.base)), old["attempt_id"]),
+        )
+    assert schedule(world, route) == [("full", "catalog")]
+    [job] = AuditQueue(world.state).jobs()
+    assert job["identity"]["skill_version"] == audits.vendored_identity()["skill_version"]
+
+
+def blocking_baseline(queue, store, config, pr):
+    """A repository baseline that a finished pr audit is waiting on."""
+    baseline = full_job(queue, store, config, revision=50)
+    waiting = queue.read(pr(1)["job_id"])
+    attempt, _ = audits.begin(store, waiting["identity"], waiting["scope"])
+    queue.update(waiting["id"], state="awaiting_baseline", attempt_id=attempt["attempt_id"])
+    return baseline
+
+
+@pytest.mark.parametrize("interrupt", [None, lambda: True])
+def test_a_baseline_that_prs_wait_on_is_not_preempted_by_work_it_outranks(env, interrupt):
+    queue, store, config, pr = env
+    baseline = blocking_baseline(queue, store, config, pr)
+    seen = []
+
+    def runner(job, attempt, stop):
+        pr(2, change=2)  # more pr work arrives while the baseline runs
+        seen.append(stop(checkpoints=slugs()[:1]))
+        return {"state": "awaiting_import"}
+
+    job = audit_once(queue, store, 20, runner, interrupt=interrupt)
+    assert job["id"] == baseline["job_id"]
+    assert seen == [None]
+
+
+def test_an_ordinary_full_audit_is_still_preempted_by_pr_work(env):
+    queue, store, config, pr = env
+    full_job(queue, store, config)
+    seen = []
+
+    def runner(job, attempt, stop):
+        pr(2, change=2)
+        seen.append(stop(checkpoints=slugs()[:1]))
+        return {"state": "stopped", "reason": seen[-1]}
+
+    assert audit_once(queue, store, 20, runner)["state"] == "queued"
+    assert seen == ["preempted"]
+
+
+def test_a_full_audit_is_not_preempted_by_work_of_the_same_rank(env):
+    queue, store, config, _ = env
+    full_job(queue, store, config)
+    seen = []
+
+    def runner(job, attempt, stop):
+        structural = audits.audit_identity(
+            config.audit, "full", audits.select_repository(config), head(8)
+        )
+        queue.request(structural, "change:3", reason="structural")
+        seen.append(stop(checkpoints=slugs()[:1]))
+        return {"state": "awaiting_import"}
+
+    audit_once(queue, store, 20, runner)
+    assert seen == [None]
+
+
+def test_effective_priority_ranks_a_blocking_baseline_first(env):
+    queue, store, config, pr = env
+    baseline = blocking_baseline(queue, store, config, pr)
+    jobs = {job["id"]: job for job in queue.jobs()}
+    assert queue.priority(jobs[baseline["job_id"]]) == -1
+    other = queue.read(pr(2, change=2)["job_id"])
+    assert queue.priority(other) == job_queue.AUDIT_PRIORITY["pr"]
+
+
+class FakeProvider:
+    """A provider client whose repository reports `native` as its ID."""
+
+    native = 5
+
+    def __init__(self, repository, token=None):
+        self.repository = repository
+
+    def get(self, route=""):
+        if route == "":
+            return {"id": self.native, "default_branch": "main"}, {}
+        return {"commit": {"sha": head(7), "id": head(7)}}, {}
+
+
+@pytest.mark.parametrize(
+    ("provider", "client"),
+    [("github", "cirra.github.GitHubClient"), ("gitlab", "cirra.gitlab.GitLabClient")],
+)
+def test_default_branch_head_verifies_the_repository_identity(monkeypatch, provider, client):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(client, FakeProvider)
+    route = SimpleNamespace(provider=provider, repository="acme/app", repository_id="5")
+    assert audit_worker.default_branch_head(route, None) == ("main", head(7))
+    monkeypatch.setattr(FakeProvider, "native", 6)  # the path now names another repository
+    with pytest.raises(CirraError, match="identity changed"):
+        audit_worker.default_branch_head(route, None)

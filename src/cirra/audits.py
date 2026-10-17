@@ -303,6 +303,7 @@ def history(row):
     return {
         "completed_at": datetime.fromtimestamp(row["completed_at"], UTC).isoformat(),
         "catalog_digest": identity["catalog_digest"],
+        "skill_version": identity["skill_version"],
     }
 
 

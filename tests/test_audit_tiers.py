@@ -270,6 +270,8 @@ def test_malformed_history_is_refused(tmp_path, policy_data):
         {"completed_at": "yesterday", "catalog_digest": CATALOG},
         {"completed_at": NOW.isoformat(), "catalog_digest": "short"},
         {"completed_at": NOW.isoformat()},
+        {"completed_at": NOW.isoformat(), "catalog_digest": CATALOG, "skill_version": 1},
+        {"completed_at": NOW.isoformat(), "catalog_digest": CATALOG, "skill_version": ""},
     ):
         with pytest.raises(CirraError):
             select_tiers(
@@ -293,3 +295,35 @@ def test_future_completion_counts_as_fresh(tmp_path, policy_data):
         )
         == ()
     )
+
+
+def test_skill_version_change_selects_a_new_baseline(tmp_path, policy_data):
+    config = load(tmp_path, policy_data, AUDIT)
+    latest = {**full_audit(1), "skill_version": "1.0.0"}
+
+    def select(version):
+        return select_tiers(
+            config.audit,
+            {"kind": "schedule"},
+            latest,
+            catalog_digest=CATALOG,
+            skill_version=version,
+            now=NOW,
+        )
+
+    assert select("1.1.0") == (("full", "catalog"),)
+    assert select("1.0.0") == ()
+    # History without a skill version is compared by catalog alone.
+    assert (
+        select_tiers(
+            config.audit,
+            {"kind": "schedule"},
+            full_audit(1),
+            catalog_digest=CATALOG,
+            skill_version="1.1.0",
+            now=NOW,
+        )
+        == ()
+    )
+    with pytest.raises(CirraError, match="skill_version"):
+        select(2)
