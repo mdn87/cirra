@@ -20,8 +20,12 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/srv/lugos/state/cirra -/home/matt/.claude -/home/matt/.claude.json
+# The worker parses attacker-supplied PR data and is in the docker group, so it
+# sees an empty home: only the Claude login (read-write) and CLI (read-only).
+ProtectHome=tmpfs
+BindPaths=-/home/matt/.claude -/home/matt/.claude.json
+BindReadOnlyPaths=/home/matt/.local/bin -/home/matt/.local/lib/node_modules/@anthropic-ai
+ReadWritePaths=/srv/lugos/state/cirra
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 MemoryMax=1536M
 TasksMax=128
