@@ -341,9 +341,13 @@ implementing:
   next run reuses the same attempt, checkout and checkpoints. Each run still
   counts toward daily admission.
 - A request that replaces work which already had an attempt records it as
-  `resume_from`. A full audit then copies that attempt's checkpoints whose
-  cited evidence files are unchanged between the two heads; if the old head is
-  unavailable, every domain reruns.
+  `resume_from`. A full audit then copies that attempt's checkpoints only when
+  no file changed between the two heads and the skill and catalog match. This is
+  narrower than the plan's "rerun only the domains whose files changed": cited
+  evidence is not a complete dependency set (a new file can change a domain's
+  conclusions without being cited), so any change reruns every domain. Preemption
+  after a pending review delivery or runnable pr/release work still resumes the
+  same attempt from its own checkpoints.
 - The packet instructions tell agents the checkpoint and stop protocol. The
   skill itself does not yet read packets; an operator's command wrapper (or a
   later skill change) has to follow them.

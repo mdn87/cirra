@@ -513,7 +513,7 @@ def test_evidence_free_domains_are_rerun_after_a_new_head(world, tmp_path):
     }
     target = tmp_path / "target"
     target.mkdir()
-    assert runner.resume(store, job, checkout, target) == ["security"]
+    assert runner.resume(store, job, checkout, target) == []  # any change reruns all
 
 
 def test_same_key_replacement_is_allowed_at_capacity(env):
@@ -887,3 +887,31 @@ def test_oversized_checkpoints_are_rejected_unread(tmp_path, monkeypatch):
         json.dumps({"domain": "security", "coverage": domain_rows("security")}), encoding="utf-8"
     )
     assert audits.valid_checkpoint(path) is None
+
+
+# --- Seventh Codex round on #20 ----------------------------------------------
+
+
+def test_a_pending_review_delivery_preempts_a_full_audit(env):
+    queue, store, config, _ = env
+    full_job(queue, store, config)
+    seen = []
+
+    def runner(job, attempt, stop):
+        seen.append(stop(checkpoints=slugs()[:1]))
+        return (
+            {"state": "stopped", "reason": seen[-1]} if seen[-1] else {"state": "awaiting_import"}
+        )
+
+    job = audit_once(queue, store, 20, runner, interrupt=lambda: True)
+    assert seen == ["preempted"] and job["state"] == "queued"
+
+
+def test_git_listing_keeps_leading_whitespace(tmp_path):
+    from audit_fixtures import Repository
+
+    repo = Repository(tmp_path / "r")
+    first = repo.commit({"a.py": "a\n"})
+    second = repo.commit({" spaced.py": "b\n"})
+    listing = audits.git(repo.path, "diff", "--name-only", "-z", first, second, strip=False)
+    assert listing.split("\0")[0] == " spaced.py"

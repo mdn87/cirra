@@ -106,7 +106,11 @@ def checkpoint(directory, slug, evidence_paths):
     )
 
 
-def test_superseded_full_audit_reuses_domains_whose_files_did_not_change(world, tmp_path):
+def test_superseded_full_audit_reuses_checkpoints_only_when_no_file_changed(world, tmp_path):
+    world.origin.git("switch", "feature")
+    world.origin.git("commit", "--allow-empty", "-m", "no file changes")
+    same_tree = world.origin.git("rev-parse", "HEAD")
+    world.origin.git("update-ref", "refs/pull/8/head", same_tree)
     route, runner = world.make()
     store = Store(world.state)
     repository = audits.select_repository(route.policy)
@@ -114,7 +118,7 @@ def test_superseded_full_audit_reuses_domains_whose_files_did_not_change(world, 
         store, audits.audit_identity(route.policy.audit, "full", repository, world.base)
     )
     source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
-    checkpoint(source, "reliability-and-resilience", ["app.py"])  # app.py changed
+    checkpoint(source, "reliability-and-resilience", ["app.py"])
     checkpoint(source, "security", ["pyproject.toml"])
     checkpoint(source, "traffic-caching-and-edge", [])
     (source / "security-copy.json").write_text("{}", encoding="utf-8")  # not a domain
@@ -134,11 +138,35 @@ def test_superseded_full_audit_reuses_domains_whose_files_did_not_change(world, 
     }
     target = tmp_path / "target"
     target.mkdir()
-    copied = runner.resume(store, job, checkout, target)
-    assert copied == ["security"]  # app.py changed; the evidence-free domain reruns
+    # app.py changed between the heads: every domain reruns, cited or not.
+    assert runner.resume(store, job, checkout, target) == []
+
+    unchanged = prepare_checkout(
+        world.state,
+        "github",
+        "example/repo",
+        "refs/pull/8/head",
+        same_tree,
+        tmp_path / "same-tree",
+        url=str(world.origin.path),
+        protocols=("file",),
+    )
+    old_head, _ = audits.begin(
+        store, audits.audit_identity(route.policy.audit, "full", repository, world.head)
+    )
+    moved = runner.attempt_dir(old_head["attempt_id"]) / "work" / "checkpoints"
+    moved.mkdir(parents=True)
+    for path in source.glob("*.json"):
+        (moved / path.name).write_bytes(path.read_bytes())
+    same = {
+        "resume_from": old_head["attempt_id"],
+        "identity": audits.audit_identity(route.policy.audit, "full", repository, same_tree),
+    }
+    copied = runner.resume(store, same, unchanged, target)
+    assert copied == ["reliability-and-resilience", "security", "traffic-caching-and-edge"]
     assert sorted(path.stem for path in target.glob("*.json")) == copied
     # An attempt that already has checkpoints keeps its own progress.
-    assert runner.resume(store, job, checkout, target) == []
+    assert runner.resume(store, same, unchanged, target) == []
 
 
 def test_supersession_links_the_new_full_request_to_the_old_attempt(world):

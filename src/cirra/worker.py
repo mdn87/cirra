@@ -159,6 +159,9 @@ class Processor:
             min(route.policy.audit.max_audits_per_day for route in routes.values()),
             runner,
             on_complete=publication,
+            # A delivery waiting in the review queue preempts a full audit, so the
+            # worker can turn it into pr audit requests.
+            interrupt=lambda: bool(Queue(self.directory).pending()),
         )
         runner.cleanup(store)
         return job

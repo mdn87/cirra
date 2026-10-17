@@ -188,7 +188,7 @@ def audit_identity(policy, tier, repository, head, base=None):
     }
 
 
-def git(checkout, *args):
+def git(checkout, *args, strip=True):
     try:
         result = subprocess.run(
             ["git", "-C", str(checkout), *args], capture_output=True, timeout=30, check=False
@@ -197,7 +197,8 @@ def git(checkout, *args):
         raise CirraError("git is unavailable or timed out in the audit checkout") from None
     if result.returncode:
         return None
-    return result.stdout.decode("utf-8", "replace").strip()
+    output = result.stdout.decode("utf-8", "replace")
+    return output.strip() if strip else output
 
 
 def resolve(checkout, revision):

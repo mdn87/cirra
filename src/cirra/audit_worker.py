@@ -97,8 +97,13 @@ def fail(queue, store, job, attempt_id, error, on_complete=None):
     return queue.update(job["id"], state="failed", error=error)
 
 
-def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
-    """Recover and settle earlier work, then run at most one runnable request."""
+def audit_once(queue, store, maximum, run, *, on_complete=None, now=None, interrupt=None):
+    """Recover and settle earlier work, then run at most one runnable request.
+
+    `interrupt()` reports work outside the audit queue (pending review deliveries)
+    that should also preempt a full audit, since it becomes audit requests only
+    once the worker loop gets to it.
+    """
     recover(queue, store, on_complete)
     job = queue.next_job(maximum, now)
     if job is None:
@@ -113,7 +118,7 @@ def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
                 job["tier"] == "full"
                 # Once every domain is done, only the report remains: let it finish.
                 and len(checkpoints) < len(audits.catalog_domains())
-                and queue.priority_waiting(now)
+                and (queue.priority_waiting(now) or (interrupt is not None and interrupt()))
                 and queue.admission_left(maximum, now)
             ):
                 return "preempted"
@@ -312,7 +317,11 @@ class AuditRunner:
         return self.run_agent(policy, identity, attempt, packet_path, checkout, work, stop)
 
     def resume(self, store, job, checkout, target):
-        """Copy a superseded attempt's checkpoints whose evidence files did not change."""
+        """Copy a superseded attempt's checkpoints when no file changed between the heads.
+
+        Cited evidence is not a complete dependency set (a new file can change a
+        domain's conclusions without being cited), so any change reruns every domain.
+        """
         source_id = job.get("resume_from")
         if not source_id or any(target.glob("*.json")):
             return []
@@ -325,24 +334,21 @@ class AuditRunner:
         old_head = old["head"]
         # -z: paths exactly as stored, without Git's quoting of unusual characters.
         listing = audits.git(
-            checkout, "diff", "--name-only", "--no-renames", "-z", old_head, job["identity"]["head"]
+            checkout,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            old_head,
+            job["identity"]["head"],
+            strip=False,
         )
-        if listing is None:
-            return []  # The old head is unavailable: rerun every domain.
-        changed = set(filter(None, listing.split("\0")))
+        if listing is None or listing.strip("\0"):
+            return []  # A file changed, or the old head is unavailable: rerun every domain.
         copied = []
         domains = audits.catalog_domains()
         for path in sorted(source.glob("*.json")):
-            data = audits.valid_checkpoint(path, domains)
-            if data is None:
-                continue
-            # A row without evidence (not applicable, or missing) rests on what is
-            # absent, which a new head may change; only fully cited domains carry over.
-            if not data["coverage"] or any(not row["evidence"] for row in data["coverage"]):
-                continue
-            cited = {item["path"] for row in data["coverage"] for item in row["evidence"]}
-            cited |= {finding["path"] for finding in data.get("findings", [])}
-            if not cited & changed:
+            if audits.valid_checkpoint(path, domains) is not None:
                 (target / path.name).write_bytes(path.read_bytes())
                 copied.append(path.stem)
         return copied

@@ -103,10 +103,12 @@ audits the agent also writes `checkpoints/<domain>.json` after each catalog
 domain, holding that domain's coverage rows and findings, and stops between
 domains when a `stop` file appears. That lets a `pr` or `release` request
 preempt a running full audit, which then resumes without redoing finished
-domains. Preemption only happens while domains remain and when the waiting
-request can be admitted today, and resuming the same day uses no extra
-admission. A full audit replaced by a newer head reuses the domains whose cited
-files did not change, never across skill or catalog versions. A scheduled or
+domains. Preemption happens when `pr` or `release` work is runnable or a
+review delivery is waiting, while domains remain, and when the waiting request
+can be admitted today; resuming the same day uses no extra admission. A full
+audit replaced by a newer head reuses the old checkpoints only when no file
+changed between the heads and the skill and catalog match; cited evidence is not
+a complete dependency set, so any change reruns every domain. A scheduled or
 stale re-audit of an unchanged head runs as a new attempt of the same identity.
 
 Outside the worker, `cirra prepare-audit` opens an attempt for a local
