@@ -42,8 +42,18 @@ SCHEMA = [
 # SCHEMA creates version 1. MIGRATIONS[n] holds the statements that take a
 # version-n database to n + 1; append an entry and bump SCHEMA_VERSION for
 # every schema change so existing state (reviews, attempts) carries over.
-SCHEMA_VERSION = 1
-MIGRATIONS = {}
+SCHEMA_VERSION = 2
+MIGRATIONS = {
+    # Production audits: one row per attempt; audit_id is the identity digest.
+    1: [
+        """CREATE TABLE audits (
+            attempt_id TEXT PRIMARY KEY, audit_id TEXT NOT NULL, number INTEGER NOT NULL,
+            repository_key TEXT NOT NULL, tier TEXT NOT NULL, head TEXT NOT NULL,
+            state TEXT NOT NULL, identity_json TEXT NOT NULL, report_json TEXT,
+            report_digest TEXT, comparison_json TEXT, validator_output TEXT,
+            created_at REAL NOT NULL, completed_at REAL, UNIQUE(audit_id, number))""",
+    ],
+}
 
 
 class Store:
