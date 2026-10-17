@@ -211,6 +211,7 @@ def test_discovery_verifies_repository_and_reads_current_target(tmp_path, monkey
                         "id": 100,
                         "number": 7,
                         "draft": False,
+                        "author_association": "OWNER",
                         "head": {"sha": "a" * 40},
                         "base": {"repo": {"id": 42}, "ref": "main", "sha": "b" * 40},
                     }
@@ -223,6 +224,58 @@ def test_discovery_verifies_repository_and_reads_current_target(tmp_path, monkey
     route.repository_id = "99"
     with pytest.raises(CirraError, match="identity"):
         discover(route)
+
+
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+def test_discovery_skips_changes_from_authors_without_write_access(monkeypatch, provider):
+    # Polling must apply the same author trust rule as the webhook receiver,
+    # or a fork PR would still spend execution and review through reconcile.
+    from cirra.reconcile import discover
+
+    route = SimpleNamespace(provider=provider, repository="owner/repo", repository_id="42")
+    if provider == "github":
+        items = [
+            {
+                "id": 100 + number,
+                "number": number,
+                "draft": False,
+                "author_association": association,
+                "head": {"sha": head * 40},
+                "base": {"repo": {"id": 42}, "ref": "main"},
+            }
+            for number, association, head in ((7, "MEMBER", "a"), (8, "CONTRIBUTOR", "d"))
+        ]
+        responses = {"pulls": items, "branches/main": {"name": "main", "commit": {"sha": "c" * 40}}}
+    else:
+        items = [
+            {
+                "id": 100 + iid,
+                "iid": iid,
+                "project_id": 42,
+                "source_project_id": source,
+                "target_project_id": 42,
+                "sha": head * 40,
+                "target_branch": "main",
+            }
+            for iid, source, head in ((7, 42, "a"), (8, 99, "d"))
+        ]
+        responses = {
+            "merge_requests": items,
+            "repository/branches/main": {"name": "main", "commit": {"id": "c" * 40}},
+        }
+    responses[""] = {"id": 42}
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get(self, path="", params=None):
+            return responses[path], False
+
+    monkeypatch.setattr(
+        f"cirra.reconcile.{'GitHub' if provider == 'github' else 'GitLab'}Client", Client
+    )
+    assert discover(route) == [(7, {"head": "a" * 40, "target": "c" * 40})]
 
 
 def test_branch_requests_are_allowlisted_and_deduplicated(tmp_path):

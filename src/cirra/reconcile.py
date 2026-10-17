@@ -3,6 +3,7 @@
 from urllib.parse import quote
 
 from cirra.domain import CirraError, number, sha, utc_now
+from cirra.events import trusted_change
 from cirra.github import GitHubClient, native_id, record, target_revision
 from cirra.gitlab import GitLabClient
 from cirra.transport import pages
@@ -25,6 +26,8 @@ def discover(route, token=None):
     for item in items:
         if item.get("draft", item.get("work_in_progress", False)):
             continue
+        if not trusted_change(route.provider, item):
+            continue  # same author rule as the webhook receiver
         change = number(
             item.get("number" if github else "iid"), "change number", 1, 2**31 - 1, integral=True
         )
