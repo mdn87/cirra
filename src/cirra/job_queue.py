@@ -253,13 +253,19 @@ class AuditQueue:
         with self._lock():
             jobs = self.jobs()
             for job in jobs:
-                if job["audit_id"] == audit_id and job["state"] in (*ACTIVE_AUDIT, "done"):
+                if (
+                    job["audit_id"] == audit_id
+                    and job["scope"] == scope
+                    and job["state"] in (*ACTIVE_AUDIT, "done")
+                ):
                     return {"job_id": job["id"], "attached": True}
             if self.store is not None:
-                from cirra.audits import completed
+                from cirra.audits import begin, completed
 
                 attempt = completed(self.store, audit_id)
                 if attempt:
+                    if scope == "repository":
+                        begin(self.store, identity, scope)  # The commit is now the baseline.
                     return {"job_id": None, "attempt_id": attempt, "attached": True}
             job = {
                 "id": uuid.uuid4().hex,

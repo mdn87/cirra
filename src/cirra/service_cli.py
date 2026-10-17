@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from cirra.domain import CirraError
-from cirra.job_queue import Queue
+from cirra.job_queue import AuditQueue, Queue
 from cirra.observer import load_observer
 from cirra.service_config import load_service
 from cirra.webhook import WebhookServer
@@ -91,6 +91,7 @@ def run(args, credential, capture):
                     if reconciliation.exists()
                     else None,
                     "ci": [queue.read(p) for p in sorted(ci.glob("*.json"))],
+                    "audits": AuditQueue(args.state_dir).status(),
                 },
                 indent=2,
             )

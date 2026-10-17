@@ -3,7 +3,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 
-from cirra.job_queue import Queue
+from cirra.job_queue import AuditQueue, Queue
 
 # A bounded test run plus review can hold the loop for several minutes, during
 # which the heartbeat legitimately does not move.
@@ -52,6 +52,12 @@ def check(
         updated = _parse(job.get("updated_at"))
         if job.get("state") == "attention" and updated is not None and updated >= since:
             problems.append({"kind": "attention", "job": job.get("id"), "detail": job.get("error")})
+
+    for job in AuditQueue(state_dir).jobs():
+        updated = _parse(job.get("updated_at"))
+        if job.get("state") in ("attention", "failed") and updated and updated >= since:
+            detail = job.get("error") or (job.get("result") or {}).get("publication")
+            problems.append({"kind": "audit", "job": job.get("id"), "detail": detail})
 
     reconcile_path = root / "reconciliation.json"
     if reconcile_path.exists():

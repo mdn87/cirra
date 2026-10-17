@@ -20,6 +20,10 @@ from cirra.vendor.production_audit.scripts import validate_report
 PROTOCOL = "cirra.audit.v1"
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 TITLE_IDS = re.compile(r"\[((?:C\d{3}|X\d{2})(?:, ?(?:C\d{3}|X\d{2}))*)\]")
+BASELINE = (
+    "SELECT * FROM audits WHERE repository_key=? AND tier='full' AND state='complete' "
+    "AND scope='repository' ORDER BY completed_at DESC, rowid DESC LIMIT 1"
+)
 INSTRUCTIONS = """Run the production-audit skill at this packet's tier against
 repository.path. Read files at repository.head and, for the pr tier, diff
 against repository.base. The report's catalog_digest must equal
@@ -102,19 +106,30 @@ def get(store, attempt_id):
         return _row(connection, attempt_id)
 
 
-def begin(store, identity):
-    """Reuse a prepared or complete attempt for this identity, else open the next one."""
+def begin(store, identity, scope="repository"):
+    """Reuse a prepared or complete attempt for this identity, else open the next one.
+
+    `scope` is "repository" for baseline audits of the default branch, or the
+    change or release the audit belongs to.
+    """
     audit_id = digest(identity)
     with store.transaction() as connection:
         latest = connection.execute(
             "SELECT * FROM audits WHERE audit_id=? ORDER BY number DESC LIMIT 1", (audit_id,)
         ).fetchone()
         if latest and latest["state"] in ("prepared", "complete"):
+            if scope == "repository" and latest["scope"] != scope:
+                # The same commit, now requested for the default branch.
+                connection.execute(
+                    "UPDATE audits SET scope=? WHERE attempt_id=?", (scope, latest["attempt_id"])
+                )
+                return _row(connection, latest["attempt_id"]), True
             return dict(latest), True
         attempt_id = uuid.uuid4().hex
         connection.execute(
             """INSERT INTO audits (attempt_id, audit_id, number, repository_key, tier, head,
-            state, identity_json, created_at) VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?)""",
+            state, identity_json, created_at, scope)
+            VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?)""",
             (
                 attempt_id,
                 audit_id,
@@ -124,6 +139,7 @@ def begin(store, identity):
                 identity["head"],
                 canonical(identity),
                 time.time(),
+                scope,
             ),
         )
         return _row(connection, attempt_id), False
@@ -156,8 +172,7 @@ def latest_full(store, key):
     """The newest complete full audit for a repository, or None."""
     with store.connection() as connection:
         row = connection.execute(
-            "SELECT * FROM audits WHERE repository_key=? AND tier='full' AND state='complete' "
-            "ORDER BY completed_at DESC, rowid DESC LIMIT 1",
+            BASELINE,
             (key,),
         ).fetchone()
     return dict(row) if row else None
@@ -309,11 +324,7 @@ def import_report(store, attempt_id, report_path, checkout):
         if problems:
             updates = {"state": "failed", "validator_output": "\n".join(problems)}
         else:
-            baseline = connection.execute(
-                "SELECT * FROM audits WHERE repository_key=? AND tier='full' "
-                "AND state='complete' ORDER BY completed_at DESC, rowid DESC LIMIT 1",
-                (attempt["repository_key"],),
-            ).fetchone()
+            baseline = connection.execute(BASELINE, (attempt["repository_key"],)).fetchone()
             updates = {
                 "state": "complete",
                 "comparison_json": canonical(compare(report, dict(baseline) if baseline else None)),
@@ -326,3 +337,61 @@ def import_report(store, attempt_id, report_path, checkout):
             f"UPDATE audits SET {assignments} WHERE attempt_id=?", (*updates.values(), attempt_id)
         )
         return summary(_row(connection, attempt_id)), False
+
+
+SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+def gate(policy, tier, row):
+    """Gate state for a stored attempt: pass, block, or pending (never passing by default).
+
+    A `pr` gate counts only findings new against the baseline, so a pull request
+    is not blamed for the backlog; a `release` gate counts every finding.
+    """
+    level = policy.gates[tier]
+    if row is None or row["state"] != "complete":
+        return {"state": "pending", "level": level, "blocking": [], "considered": []}
+    report = json.loads(row["report_json"])
+    new = set(json.loads(row["comparison_json"])["new"])
+    considered = [
+        finding for finding in report["findings"] if tier != "pr" or finding_key(finding) in new
+    ]
+    blocking = [
+        finding
+        for finding in considered
+        if level != "none" and SEVERITY_RANK[finding["severity"]] >= SEVERITY_RANK[level]
+    ]
+    return {
+        "state": "block" if blocking else "pass",
+        "level": level,
+        "blocking": blocking,
+        "considered": considered,
+    }
+
+
+def render(row, result):
+    """Markdown for a native check or note; findings are data, rendered as plain text."""
+
+    def plain(text):
+        return re.sub(r"([\\`*_\[\]<>|#()!])", r"\\\1", str(text)).strip()
+
+    identity = json.loads(row["identity_json"])
+    lines = [
+        f"Production audit ({row['tier']}) of `{row['head'][:12]}`: gate **{result['state']}** "
+        f"at `{result['level']}`.",
+        "",
+        f"Skill {identity['skill_version']}, catalog `{identity['catalog_digest'][:12]}`, "
+        f"attempt `{row['attempt_id']}`.",
+        "",
+    ]
+    if not result["considered"]:
+        lines.append("No new findings." if row["tier"] == "pr" else "No findings.")
+    for finding in result["considered"][:50]:
+        lines.append(
+            f"- **{plain(finding['severity'])}** {plain(finding['title'])} "
+            f"({plain(finding['path'])}:{finding['start_line']}-{finding['end_line']}): "
+            f"{plain(finding['evidence'])[:600]}"
+        )
+    if len(result["considered"]) > 50:
+        lines.append(f"- … and {len(result['considered']) - 50} more in the stored report.")
+    return "\n".join(lines)[:60000]

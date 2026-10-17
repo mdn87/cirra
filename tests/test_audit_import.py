@@ -222,7 +222,7 @@ def test_version_one_state_gains_the_audit_table(tmp_path, monkeypatch):
     monkeypatch.undo()
     Store(tmp_path)
     with sqlite3.connect(tmp_path / "cirra.sqlite3") as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION
         assert connection.execute("SELECT COUNT(*) FROM audits").fetchone()[0] == 0
 
 
