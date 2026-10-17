@@ -238,6 +238,23 @@ pushes (one audit, of the last head), a push during a running audit (running
 job superseded, late import refused), a duplicate delivery (attached, no new
 work), and a release request during pull request traffic (never superseded).
 
+Implemented as `cirra.job_queue.AuditQueue` (file records under
+`audit-queue/`, separate from review jobs) and `cirra.audit_worker.audit_once`,
+with `cirra request-audit`, `cancel-audit` and `audit-jobs`; tested in
+`tests/test_audit_queue.py`. Choices made while implementing:
+
+- Superseding or cancelling running work also marks its stored attempt
+  `superseded` or `cancelled` at once. That state is the fence: import refuses
+  any attempt that is not `prepared`, so no lease is held across an agent run.
+- A session runner leaves its job `awaiting_import`, which does not occupy the
+  worker; each pass settles such jobs once the operator imports the report.
+- A request whose identity is queued, running, awaiting import, done, or
+  complete in the store attaches to that work.
+- Deferred `pr` and `release` requests become runnable again on the next UTC
+  day; `full` requests stay queued. Admission counts in `audit-usage/`.
+- A runner error fails the job and fences its attempt.
+- Preemption (stage 6) and the worker wiring (stage 4) build on this pass.
+
 ### Stage 4: `pr` tier in the worker
 
 Webhook-triggered `pr` audits through the same path as reviews, with
