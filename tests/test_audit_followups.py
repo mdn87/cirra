@@ -279,4 +279,5 @@ def test_deploy_script_and_its_remote_half_are_valid_lf_bash():
         [bash, str(script), "--print-remote"], check=True, capture_output=True
     ).stdout
     assert b"\r" not in remote and b"observer-pins" in remote and b"--require-hashes" in remote
+    assert b"flock -n 9" in remote  # concurrent deploys refuse instead of racing
     subprocess.run([bash, "-n"], input=remote, check=True)
