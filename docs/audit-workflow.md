@@ -95,10 +95,14 @@ agent writes exactly one report there, and the worker imports it. Its combined
 output goes to `agent.log` and is capped at 16 MiB, and the worker heartbeat
 stays current while it runs. For full
 audits the agent also writes `checkpoints/<domain>.json` after each catalog
-domain and stops between domains when a `stop` file appears. That lets a
-`pr` or `release` request preempt a running full audit, which then resumes
-without redoing finished domains. A full audit replaced by a newer head reuses
-the domains whose cited files did not change.
+domain, holding that domain's coverage rows and findings, and stops between
+domains when a `stop` file appears. That lets a `pr` or `release` request
+preempt a running full audit, which then resumes without redoing finished
+domains. Preemption only happens while domains remain and when the waiting
+request can be admitted today, and resuming the same day uses no extra
+admission. A full audit replaced by a newer head reuses the domains whose cited
+files did not change, never across skill or catalog versions. A scheduled or
+stale re-audit of an unchanged head runs as a new attempt of the same identity.
 
 Outside the worker, `cirra prepare-audit` opens an attempt for a local
 checkout and writes its packet, for manual runs.

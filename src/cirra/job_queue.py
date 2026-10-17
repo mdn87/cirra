@@ -269,7 +269,14 @@ class AuditQueue:
             return mark(self.store, job["attempt_id"], state)
         return None
 
-    def request(self, identity, scope, *, reason, debounce_seconds=0, context=None, now=None):
+    def request(
+        self, identity, scope, *, reason, debounce_seconds=0, context=None, now=None, fresh=False
+    ):
+        """Queue, coalesce or attach one audit request.
+
+        `fresh` requests a new run even when the identity already completed
+        (scheduled and stale re-audits); it still attaches to active work.
+        """
         from cirra.audits import repository_key
 
         string(scope, "audit scope", 300)
@@ -283,14 +290,14 @@ class AuditQueue:
                 if (
                     job["audit_id"] == audit_id
                     and job["scope"] == scope
-                    and job["state"] in (*ACTIVE_AUDIT, "done")
+                    and job["state"] in (ACTIVE_AUDIT if fresh else (*ACTIVE_AUDIT, "done"))
                     and not job["cancel_requested"]
                     and not job["superseded_by"]
                 ):
                     return {"job_id": job["id"], "attached": True}
             if sum(job["state"] in ACTIVE_AUDIT for job in jobs) >= self.maximum:
                 raise CirraError("audit queue capacity reached; cancel or finish queued audits")
-            if self.store is not None:
+            if self.store is not None and not fresh:
                 from cirra.audits import begin, completed
 
                 attempt = completed(self.store, audit_id)
@@ -314,6 +321,7 @@ class AuditQueue:
                 "cancel_requested": False,
                 "not_before": now + debounce_seconds,
                 "accepted_at": utc_now(),
+                "fresh": fresh,
             }
             for other in jobs:
                 if other["work_key"] != work_key:
@@ -357,6 +365,12 @@ class AuditQueue:
         """Whether pr or release work is runnable; it may preempt a full audit."""
         return any(job["tier"] != "full" for job in self.runnable(now))
 
+    def admission_left(self, maximum, now=None):
+        now = time.time() if now is None else now
+        path = self.usage_path(now)
+        used = json.loads(path.read_text(encoding="utf-8"))["attempts"] if path.exists() else 0
+        return used < maximum
+
     def usage_path(self, now):
         day = datetime.fromtimestamp(now, UTC).date().isoformat()
         return self.directory.parent / "audit-usage" / (day + ".json")
@@ -364,8 +378,14 @@ class AuditQueue:
     def next_job(self, maximum, now=None):
         """Claim the highest-priority runnable request within daily admission."""
         now = time.time() if now is None else now
+        today = datetime.fromtimestamp(now, UTC).date().isoformat()
         with self._lock():
             for job in self.runnable(now):
+                if job.get("admitted_on") == today:
+                    # Resuming a preempted or recovered run admitted today is free.
+                    job.update(state="running", started_at=utc_now())
+                    self.save(job)
+                    return job
                 path = self.usage_path(now)
                 used = (
                     json.loads(path.read_text(encoding="utf-8"))["attempts"] if path.exists() else 0
@@ -382,7 +402,7 @@ class AuditQueue:
                 write_receipt(
                     path, {"attempts": used + 1, "maximum": maximum, "updated_at": utc_now()}
                 )
-                job.update(state="running", started_at=utc_now())
+                job.update(state="running", started_at=utc_now(), admitted_on=today)
                 self.save(job)
                 return job
         return None
@@ -408,6 +428,7 @@ class AuditQueue:
         with self._lock():
             job = self.read(identifier)
             if job["state"] in ("queued", "deferred"):
+                self._mark_attempt(job, "cancelled")  # A preempted job keeps its attempt.
                 job.update(state="cancelled", cancel_reason=reason)
             elif job["state"] in ("running", "awaiting_import", "awaiting_baseline"):
                 fenced = self._mark_attempt(job, "cancelled")

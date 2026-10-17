@@ -107,12 +107,20 @@ def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
         reason = queue.stop_reason(job_id)
         if reason is None and checkpoints is not None:
             queue.update(job_id, checkpoints=checkpoints)
-            if job["tier"] == "full" and queue.priority_waiting(now):
+            if (
+                job["tier"] == "full"
+                # Once every domain is done, only the report remains: let it finish.
+                and len(checkpoints) < len(audits.catalog_domains())
+                and queue.priority_waiting(now)
+                and queue.admission_left(maximum, now)
+            ):
                 return "preempted"
         return reason
 
     try:
-        attempt, _ = audits.begin(store, job["identity"], job["scope"])
+        attempt, _ = audits.begin(
+            store, job["identity"], job["scope"], fresh=job.get("fresh", False)
+        )
         attempt_id = attempt["attempt_id"]
         job = queue.update(job_id, attempt_id=attempt_id)
         if attempt["state"] == "complete":
@@ -216,6 +224,8 @@ def request_audits(
             reason=reason,
             debounce_seconds=policy.debounce_seconds,
             context=context,
+            # Age-triggered re-audits of an unchanged head need a new attempt.
+            fresh=reason in ("schedule", "stale"),
         )
         receipts.append({"tier": tier, "reason": reason, **receipt})
     return receipts
@@ -301,7 +311,10 @@ class AuditRunner:
         source = self.attempt_dir(source_id) / "work" / "checkpoints"
         if not source.is_dir():
             return []
-        old_head = json.loads(audits.get(store, source_id)["identity_json"])["head"]
+        old = json.loads(audits.get(store, source_id)["identity_json"])
+        if any(old[key] != job["identity"][key] for key in ("skill_version", "catalog_digest")):
+            return []  # Conclusions under another catalog are not reusable.
+        old_head = old["head"]
         listing = audits.git(checkout, "diff", "--name-only", old_head, job["identity"]["head"])
         if listing is None:
             return []  # The old head is unavailable: rerun every domain.

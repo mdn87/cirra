@@ -138,7 +138,7 @@ def test_superseded_full_audit_reuses_domains_whose_files_did_not_change(world, 
     )
     job = {
         "resume_from": old["attempt_id"],
-        "identity": {"head": world.head},
+        "identity": audits.audit_identity(route.policy.audit, "full", repository, world.head),
     }
     target = tmp_path / "target"
     target.mkdir()

@@ -304,3 +304,150 @@ def test_agent_output_is_bounded(world, tmp_path, monkeypatch):
 
 def test_awaiting_baseline_is_active_work():
     assert "awaiting_baseline" in job_queue.ACTIVE_AUDIT
+
+
+# --- Review findings on #20 ------------------------------------------------
+
+
+def full_job(queue, store, config, revision=1):
+    identity = audits.audit_identity(
+        config.audit, "full", audits.select_repository(config), head(revision)
+    )
+    return queue.request(identity, "repository", reason="schedule")
+
+
+def slugs():
+    return [domain["slug"] for domain in audits.catalog_domains()]
+
+
+def test_checkpoints_carry_findings_and_reject_malformed_rows(tmp_path):
+    finding = {
+        "path": "app.py",
+        "side": "new",
+        "start_line": 1,
+        "end_line": 2,
+        "severity": "high",
+        "title": "[C011] Missing timeout",
+        "evidence": "No timeout.",
+    }
+    row = {"id": "C011", "status": "missing", "evidence": []}
+    good = {"domain": "reliability-and-resilience", "coverage": [row], "findings": [finding]}
+    path = tmp_path / "reliability-and-resilience.json"
+    path.write_text(json.dumps(good), encoding="utf-8")
+    assert audits.valid_checkpoint(path)["findings"] == [finding]
+    for bad in (
+        {**good, "coverage": [{**row, "evidence": 1}]},
+        {**good, "coverage": [{**row, "evidence": [{"path": "a.py", "start_line": "1"}]}]},
+        {**good, "coverage": [{**row, "status": "sort of"}]},
+        {**good, "findings": [{**finding, "title": "[C058] Another domain"}]},
+        {**good, "findings": [{**finding, "extra": True}]},
+        {**good, "findings": "none"},
+    ):
+        path.write_text(json.dumps(bad), encoding="utf-8")
+        assert audits.valid_checkpoint(path) is None
+
+
+def test_no_preemption_once_every_domain_is_checkpointed(env):
+    queue, store, config, pr = env
+    full_job(queue, store, config)
+    seen = []
+
+    def runner(job, attempt, stop):
+        pr(5)  # priority work becomes runnable during the last domain
+        seen.append(stop(checkpoints=slugs()))
+        return {"state": "awaiting_import"}
+
+    audit_once(queue, store, 20, runner)
+    assert seen == [None]
+
+
+def test_no_preemption_without_admission_for_the_waiting_work(env):
+    queue, store, config, pr = env
+    full_job(queue, store, config)
+    seen = []
+
+    def runner(job, attempt, stop):
+        pr(5)
+        seen.append(stop(checkpoints=slugs()[:1]))
+        return {"state": "awaiting_import"}
+
+    audit_once(queue, store, 1, runner)  # the full audit used the only slot
+    assert seen == [None]
+
+
+def test_resuming_a_preempted_audit_the_same_day_is_free(env):
+    queue, store, config, pr = env
+    full = full_job(queue, store, config)
+
+    def runner(job, attempt, stop):
+        if job["tier"] == "full" and not job.get("preemptions"):
+            pr(5)
+            return {"state": "stopped", "reason": stop(checkpoints=slugs()[:1])}
+        return {"state": "awaiting_import"}
+
+    assert audit_once(queue, store, 2, runner)["state"] == "queued"  # preempted
+    assert audit_once(queue, store, 2, runner)["tier"] == "pr"  # second slot
+    resumed = audit_once(queue, store, 2, runner)  # no slot left, but already admitted
+    assert resumed["id"] == full["job_id"] and resumed["state"] == "awaiting_import"
+
+
+def test_cancelling_a_preempted_job_fences_its_attempt(env):
+    queue, store, config, pr = env
+    full_job(queue, store, config)
+
+    def runner(job, attempt, stop):
+        pr(5)
+        return {"state": "stopped", "reason": stop(checkpoints=slugs()[:1])}
+
+    preempted = audit_once(queue, store, 20, runner)
+    assert preempted["state"] == "queued" and preempted["attempt_id"]
+    queue.cancel(preempted["id"], "no longer needed")
+    assert audits.get(store, preempted["attempt_id"])["state"] == "cancelled"
+
+
+def test_scheduled_reaudit_of_an_unchanged_head_opens_a_new_attempt(world):
+    route, _ = world.make()
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    identity = audits.audit_identity(route.policy.audit, "full", repository, world.base)
+    old, _ = audits.begin(store, identity)
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE audits SET state='complete', completed_at=?, report_json=? WHERE attempt_id=?",
+            (
+                time.time() - 8 * 86400,
+                json.dumps(build_report("full", world.base)),
+                old["attempt_id"],
+            ),
+        )
+    from cirra.audit_worker import request_audits
+
+    [receipt] = request_audits(
+        world.state, route, {"kind": "schedule"}, default_head=lambda: ("main", world.base)
+    )
+    assert receipt["reason"] == "schedule" and not receipt["attached"]
+    queue = AuditQueue(world.state, store)
+    job = audit_once(queue, store, 20, session)
+    new = audits.get(store, job["attempt_id"])
+    assert new["audit_id"] == old["audit_id"] and new["number"] == 2
+    again = request_audits(
+        world.state, route, {"kind": "schedule"}, default_head=lambda: ("main", world.base)
+    )
+    assert again[0]["attached"]  # the running re-audit absorbs further ticks
+
+
+def test_checkpoints_are_not_reused_across_catalogs(world, tmp_path):
+    route, runner = world.make()
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    identity = audits.audit_identity(route.policy.audit, "full", repository, world.base)
+    old, _ = audits.begin(store, {**identity, "catalog_digest": "0" * 64})
+    source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
+    source.mkdir(parents=True)
+    (source / "security.json").write_text(
+        json.dumps({"domain": "security", "coverage": []}), encoding="utf-8"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    job = {"resume_from": old["attempt_id"], "identity": identity}
+    assert runner.resume(store, job, world.origin.path, target) == []

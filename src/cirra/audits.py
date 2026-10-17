@@ -38,8 +38,10 @@ Markdown reports the skill describes; the operator imports the JSON with
 When CIRRA_AUDIT_DIR is set (an unattended full audit), work domain by domain
 in the order of `domains`. After finishing a domain, write
 $CIRRA_AUDIT_DIR/checkpoints/<slug>.json containing
-{"domain": "<slug>", "coverage": [that domain's coverage rows]}. Skip domains
-whose checkpoint already exists and copy their rows into the final report.
+{"domain": "<slug>", "coverage": [that domain's coverage rows],
+"findings": [findings whose first concept ID is in that domain]}. Skip domains
+whose checkpoint already exists and copy their rows and findings into the
+final report.
 Between domains, stop without a report if $CIRRA_AUDIT_DIR/stop exists. Write
 the final report into $CIRRA_AUDIT_DIR last.
 """
@@ -66,12 +68,25 @@ def catalog_domains():
     return domains
 
 
+def _valid_range(item):
+    return (
+        isinstance(item, dict)
+        and isinstance(item.get("path"), str)
+        and type(item.get("start_line")) is int
+        and type(item.get("end_line")) is int
+    )
+
+
 def valid_checkpoint(path, domains=None):
-    """A checkpoint file's contents when it is well formed for its domain, else None."""
+    """A checkpoint file's contents when it is well formed for its domain, else None.
+
+    Rows and findings are shape-checked here because resuming reads them; the
+    final report is still fully validated on import.
+    """
     domains = {item["slug"]: set(item["ids"]) for item in domains or catalog_domains()}
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     slug = Path(path).stem
     if (
@@ -79,11 +94,27 @@ def valid_checkpoint(path, domains=None):
         or not isinstance(data, dict)
         or data.get("domain") != slug
         or not isinstance(data.get("coverage"), list)
-        or not all(
-            isinstance(row, dict) and row.get("id") in domains[slug] for row in data["coverage"]
-        )
+        or not isinstance(data.get("findings", []), list)
     ):
         return None
+    for row in data["coverage"]:
+        if (
+            not isinstance(row, dict)
+            or row.get("id") not in domains[slug]
+            or row.get("status") not in validate_report.STATUSES
+            or not isinstance(row.get("evidence"), list)
+            or not all(_valid_range(item) for item in row["evidence"])
+        ):
+            return None
+    for finding in data.get("findings", []):
+        match = TITLE_IDS.match(finding.get("title", "")) if isinstance(finding, dict) else None
+        if (
+            not match
+            or set(finding) != validate_report.FINDING_FIELDS
+            or not _valid_range(finding)
+            or match.group(1).split(",")[0].strip() not in domains[slug]
+        ):
+            return None
     return data
 
 
@@ -156,18 +187,20 @@ def get(store, attempt_id):
         return _row(connection, attempt_id)
 
 
-def begin(store, identity, scope="repository"):
+def begin(store, identity, scope="repository", *, fresh=False):
     """Reuse a prepared or complete attempt for this identity, else open the next one.
 
     `scope` is "repository" for baseline audits of the default branch, or the
-    change or release the audit belongs to.
+    change or release the audit belongs to. `fresh` opens a new attempt even
+    after a complete one: an age-triggered re-audit of an unchanged head.
     """
     audit_id = digest(identity)
     with store.transaction() as connection:
         latest = connection.execute(
             "SELECT * FROM audits WHERE audit_id=? ORDER BY number DESC LIMIT 1", (audit_id,)
         ).fetchone()
-        if latest and latest["state"] in ("prepared", "complete"):
+        reusable = ("prepared",) if fresh else ("prepared", "complete")
+        if latest and latest["state"] in reusable:
             if scope == "repository" and latest["scope"] != scope:
                 # The same commit, now requested for the default branch.
                 connection.execute(
