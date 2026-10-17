@@ -37,6 +37,8 @@ def test_manual_request_and_requeue_keep_history_and_daily_budget(tmp_path):
     history = list((queue.directory / "history").glob("*.json"))
     assert len(history) == 1
     assert json.loads(history[0].read_text())["previous"]["error"] == "provider unavailable"
+    # The archive record is itself history; it must not grow a nested copy.
+    assert not (queue.directory / "history" / "history").exists()
     with pytest.raises(CirraError, match="terminal"):
         queue.requeue(job["id"], route, "do not reset active work")
     with pytest.raises(CirraError):
@@ -187,11 +189,73 @@ def test_reconciliation_recovers_missed_revisions_without_repeated_jobs(tmp_path
     second = sync(config, queue, lambda _: None, discover_changes=discover)
     assert not first[0]["jobs"][0]["duplicate"]
     assert second[0]["jobs"][0]["duplicate"]
+    # Review follow-up: a target-only move must not re-queue every open PR and
+    # spend daily admission; tests run on the PR head, which has not changed.
     revision["target"] = "c" * 40
+    assert sync(config, queue, lambda _: None, discover_changes=discover)[0]["jobs"][0]["duplicate"]
+    revision["head"] = "d" * 40
     assert not sync(config, queue, lambda _: None, discover_changes=discover)[0]["jobs"][0][
         "duplicate"
     ]
     assert len(queue.pending()) == 2
+
+
+def test_reconciliation_skips_heads_already_tested_by_another_job(tmp_path):
+    from cirra.reconcile import sync
+
+    route = SimpleNamespace(
+        name="repo",
+        digest="v1",
+        provider="github",
+        instance="https://github.com",
+        repository="owner/repo",
+        repository_id="42",
+        reader_env=None,
+    )
+    queue = Queue(tmp_path)
+    webhook_job = queue.request(route, 7, source="webhook-redelivery")
+    job = queue.read(queue.directory / (webhook_job["job_id"] + ".json"))
+    job.update(state="done", result={"state": "done", "ci": {"change": 7, "head_sha": "a" * 40}})
+    queue.save(job)
+    config = SimpleNamespace(routes={"repo": route})
+    result = sync(
+        config,
+        queue,
+        lambda _: None,
+        discover_changes=lambda *_: [(7, {"head": "a" * 40, "target": "b" * 40})],
+    )
+    assert result == [{"route": "repo", "jobs": [], "already_tested": [7]}]
+    assert not queue.pending()
+
+
+def test_branch_capture_failure_keeps_already_queued_pr_jobs(tmp_path, monkeypatch):
+    from cirra import reconcile
+
+    route = SimpleNamespace(
+        name="repo",
+        digest="v1",
+        provider="github",
+        instance="https://github.com",
+        repository="owner/repo",
+        repository_id="42",
+        reader_env=None,
+        branches=("main",),
+    )
+
+    def broken(*_args, **_kwargs):
+        raise CirraError("branch read failed")
+
+    monkeypatch.setattr(reconcile, "capture_branch", broken)
+    queue = Queue(tmp_path)
+    result = reconcile.sync(
+        SimpleNamespace(routes={"repo": route}),
+        queue,
+        lambda _: None,
+        discover_changes=lambda *_: [(7, {"head": "a" * 40, "target": "b" * 40})],
+    )
+    assert len(result[0]["jobs"]) == 1 and not result[0]["jobs"][0]["duplicate"]
+    assert result[0]["branch_errors"] == {"main": "branch read failed"}
+    assert len(queue.pending()) == 1
 
 
 def test_discovery_verifies_repository_and_reads_current_target(tmp_path, monkeypatch):

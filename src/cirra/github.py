@@ -25,6 +25,29 @@ class GitHubError(CirraError):
     """A safe transport error containing neither server payloads nor credentials."""
 
 
+class GitHubRateLimited(GitHubError):
+    """GitHub refused the read for quota reasons; `retry_at` is when it resets (epoch seconds)."""
+
+    def __init__(self, message, retry_at):
+        super().__init__(message)
+        self.retry_at = retry_at
+
+
+def rate_limit_reset(headers, now=None):
+    """Epoch seconds when GitHub says a limited read may be retried (default: one minute)."""
+    now = time.time() if now is None else now
+    try:
+        retry_after = headers.get("Retry-After")
+        if retry_after is not None:
+            return now + min(max(int(retry_after), 1), 3600)
+        reset = headers.get("X-RateLimit-Reset")
+        if reset is not None:
+            return min(max(int(reset), now + 1), now + 3600)
+    except (TypeError, ValueError):
+        pass
+    return now + 60
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -96,14 +119,15 @@ class GitHubClient:
             except HTTPError as exc:
                 status = exc.code
                 limited = status == 429 or exc.headers.get("X-RateLimit-Remaining") == "0"
+                retry_at = rate_limit_reset(exc.headers) if limited else None
                 exc.close()
                 if 300 <= status < 400:
                     raise GitHubError(
                         "GitHub redirect refused; use the canonical repository name"
                     ) from None
                 if limited:
-                    raise GitHubError(
-                        f"GitHub rate limit reached (HTTP {status}); retry later"
+                    raise GitHubRateLimited(
+                        f"GitHub rate limit reached (HTTP {status}); retry later", retry_at
                     ) from None
                 if status in (401, 403):
                     raise GitHubError(

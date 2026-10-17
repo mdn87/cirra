@@ -1,6 +1,9 @@
 """A bounded loopback HTTP receiver. A TLS reverse proxy owns public ingress."""
 
 import json
+import re
+import socket
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -53,9 +56,19 @@ def metadata_only(provider, action, payload):
     )
 
 
+DELIVERY_HEADERS = ("X-GitHub-Delivery", "X-Gitlab-Event-UUID", "X-Forgejo-Delivery")
+
+
+def log_line(record):
+    print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+
+
 class WebhookServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 16
+    # Total time a client may take to send its request; per-read timeouts alone
+    # let a slow client hold one of the 16 slots indefinitely.
+    request_deadline = 10
 
     def __init__(self, address, config, directory, credential):
         if address[0] != "127.0.0.1":
@@ -84,7 +97,9 @@ class WebhookServer(ThreadingHTTPServer):
             self.slots.release()
 
     def handle_error(self, request, client_address):
-        pass  # Never echo payloads or credential-bearing headers in a traceback.
+        # Never echo payloads or credential-bearing headers in a traceback; the
+        # exception type alone shows that something failed and what kind.
+        log_line({"event": "webhook_error", "type": type(sys.exc_info()[1]).__name__})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -93,10 +108,50 @@ class Handler(BaseHTTPRequestHandler):
 
     def setup(self):
         self.request.settimeout(5)
+        self.deadline = threading.Timer(self.server.request_deadline, self.expire)
+        self.deadline.daemon = True
+        self.deadline.start()
         super().setup()
 
+    def expire(self):
+        try:
+            self.request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def finish(self):
+        self.deadline.cancel()
+        try:
+            super().finish()
+        except OSError:
+            pass
+
     def log_message(self, format, *args):
-        pass
+        pass  # Free-form messages can contain the raw request line.
+
+    def log_request(self, code="-", size="-"):
+        # One structured line per response: route path, status, delivery id and
+        # declared size. Never headers, bodies, query strings, or credentials.
+        known = any(self.path == "/hooks/" + name for name in self.server.config.routes)
+        delivery = next(
+            (self.headers.get(name) for name in DELIVERY_HEADERS if self.headers.get(name)), None
+        )
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            size = None
+        log_line(
+            {
+                "event": "webhook_request",
+                "method": self.command,
+                "path": self.path if known or self.path == "/healthz" else "(other)",
+                "status": int(code) if str(code).isdigit() else None,
+                "delivery": delivery
+                if delivery and re.fullmatch(r"[A-Za-z0-9-]{1,64}", delivery)
+                else None,
+                "bytes": size,
+            }
+        )
 
     def respond(self, status, result):
         body = canonical(result).encode()

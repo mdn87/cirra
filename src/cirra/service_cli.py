@@ -45,10 +45,22 @@ def register(commands):
             parser.add_argument("--route")
     status = commands.add_parser("jobs", help="inspect durable worker job results")
     status.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
+    health = commands.add_parser(
+        "health", help="exit nonzero when the worker, queue, reconcile, or budget needs attention"
+    )
+    health.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
+    health.add_argument("--max-heartbeat-age", type=int, default=1200)
+    health.add_argument("--attention-window", type=int, default=86400)
     observer = commands.add_parser(
         "observer-definition", help="validate and fingerprint an observer policy"
     )
     observer.add_argument("--config", type=Path, required=True)
+    pins = commands.add_parser(
+        "observer-pins",
+        help="check each route's pinned observer digest; --repin updates stale pins",
+    )
+    pins.add_argument("--service-config", type=Path, required=True)
+    pins.add_argument("--repin", action="store_true")
 
 
 def run(args, credential, capture):
@@ -56,6 +68,14 @@ def run(args, credential, capture):
         data = load_observer(args.config)
         print(json.dumps({"definition_digest": data["definition_digest"], "image": data["image"]}))
         return 0
+    if args.command == "observer-pins":
+        from cirra.pins import main as pins
+
+        return pins(args.service_config, args.repin)
+    if args.command == "health":
+        from cirra.health import main as health
+
+        return health(args.state_dir, args.max_heartbeat_age, args.attention_window)
     if args.command == "jobs":
         queue = Queue(args.state_dir)
         status = queue.directory.parent / "worker-status.json"
@@ -114,7 +134,7 @@ def run(args, credential, capture):
             config, Queue(args.state_dir, config.max_jobs), credential, route_name=args.route
         )
         print(json.dumps(result))
-        return int(any("error" in row for row in result))
+        return int(any("error" in row or "branch_errors" in row for row in result))
     if args.command == "serve-webhooks":
         with WebhookServer(("127.0.0.1", args.port), config, args.state_dir, credential) as server:
             print(

@@ -57,8 +57,20 @@ class Queue:
             self.save(job)
             return {"job_id": identifier, "duplicate": False}
 
+    def scan(self):
+        """Readable job records, and names of records that could not be read."""
+        jobs, unreadable = [], []
+        for path in self.directory.glob("*.json"):
+            try:
+                jobs.append(self.read(path))
+            except (OSError, ValueError, CirraError):
+                unreadable.append(path.name)
+        return jobs, sorted(unreadable)
+
     def pending(self):
-        jobs = [self.read(path) for path in self.directory.glob("*.json")]
+        # An unreadable record is skipped (and reported by `cirra health`)
+        # rather than crashing the worker loop on every pass.
+        jobs, _ = self.scan()
         return sorted(
             (
                 job
@@ -68,6 +80,19 @@ class Queue:
             ),
             key=lambda job: (job["accepted_at"], job["id"]),
         )
+
+    def tested_head(self, route, change, head):
+        """Whether a finished job on this route already tested `head` for `change`."""
+        for job in self.scan()[0]:
+            ci = (job.get("result") or {}).get("ci") or {}
+            if (
+                job.get("route") == route.name
+                and job.get("state") == "done"
+                and ci.get("change") == change
+                and ci.get("head_sha") == head
+            ):
+                return True
+        return False
 
     def request(self, route, change, *, source="manual", revision=None):
         number(change, "change number", 1, 2**31 - 1, integral=True)
@@ -105,6 +130,7 @@ class Queue:
             write_receipt(
                 self.directory / "history" / (identifier + "-" + uuid.uuid4().hex + ".json"),
                 {"previous": job, "reason": reason, "recorded_at": utc_now()},
+                history=False,  # this record is the archive; no nested copy
             )
             job = {
                 **job,
@@ -139,7 +165,7 @@ class Queue:
         )
 
     def status(self):
-        jobs = [self.read(path) for path in self.directory.glob("*.json")]
+        jobs, _ = self.scan()
         return [
             {
                 key: job.get(key)

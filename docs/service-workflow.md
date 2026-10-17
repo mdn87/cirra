@@ -235,8 +235,10 @@ and the [Code Download permission for Git operations](https://docs.gitlab.com/au
 
 ## Recovery and operating limits
 
-Queue and observer receipts use atomic files; existing review state keeps its
-SQLite schema. No state database migration is required. Run one worker and one
+Queue and observer receipts use atomic files; review state lives in SQLite.
+Schema changes are applied at startup through ordered migrations, so existing
+reviews and attempts carry over; a database written by a newer Cirra is refused
+rather than downgraded. Run one worker and one
 receiver against a local filesystem, not a network share or synchronized folder.
 
 Duplicate authenticated bodies reuse their queued job even if delivery headers
@@ -254,13 +256,33 @@ a reason. Policy changes also stop old queued jobs for inspection.
 
 Defaults permit three attempts per job and 30 admitted job attempts per UTC day.
 Retry delays increase exponentially from `retry_seconds` to `max_retry_seconds`
-(one hour by default). `reconcile_seconds` defaults to zero (disabled).
+(one hour by default). A GitHub rate limit is not counted as an attempt: the
+job waits in `retry` until the reset time GitHub reports (at most one hour).
+Anonymous collection allows 60 reads an hour, so configure a read-only reader
+token for sustained traffic. `reconcile_seconds` defaults to zero (disabled).
+Polling queues each open PR head once; a head that another job already tested,
+or a move of only the target branch, does not queue it again.
 The daily limit survives restart; remaining jobs wait for the next day. Per-call
 review time and budget limits still apply. `cirra jobs` shows results and today's
 admission count. The queue retains up to 10,000 unique accepted bodies, after
 which ingress returns an error until an operator archives completed work.
 State, source archives, and bounded logs are retained for inspection; arrange
 backups and retention appropriate to the repository data.
+
+`cirra health --state-dir <state>` prints one JSON object and exits 1 when
+something needs an operator: the worker heartbeat is missing or older than
+`--max-heartbeat-age` (1200 s by default, because a bounded test and review can
+hold the loop), a job entered `attention` within `--attention-window` (one day),
+the last reconcile reported a route or branch error, today's admission is
+exhausted, or a queue record is unreadable (the worker skips such records).
+`examples/systemd/cirra-health.service` and `.timer` run it every five minutes;
+point the service's `OnFailure=` at your alerting.
+
+The receiver closes any connection that has not finished its request within
+10 seconds, so slow clients cannot hold its 16 handler slots. It writes one
+JSON line to stderr per response, with route path, status, delivery ID and
+declared size, never headers, bodies or credentials, and logs only the type
+name of unexpected exceptions.
 
 ## lugos-host deployment and acceptance
 
@@ -409,6 +431,50 @@ Observed results:
 The installed worker unit still runs the Claude login check in
 `ExecStartPre`; the template's removal of that line has not been applied on
 this host.
+
+### Host recovery facts
+
+Checked on lugos-host on 2026-10-17 for the production audit:
+
+- Backups: `lugos-host-backup.timer` archives `/srv/lugos` nightly to
+  `/srv/lugos/backups` with 14-day retention; the last run succeeded. The
+  archive includes `state/cirra` (the SQLite review state and the signed
+  witness and publication receipts), but its secret filter leaves out
+  `services/cirra/config`, which holds the witness key and tokens.
+- Disaster recovery: those archives are on the same disk, and the only
+  off-host copy (restic to nodens) covers a different service. Losing the disk
+  loses Cirra's receipts and witness key. Reviews can be re-run and
+  publications reconciled from the providers, but past receipts cannot be
+  re-signed. An off-host copy of `state/cirra`, and an offline copy of the
+  witness key, would close this.
+- Encryption at rest: the root filesystem is unencrypted ext4. State written
+  under `UMask=0077` includes diffs from the private GitLab sandbox.
+- Ingress: Tailscale Funnel on port 8443 proxies directly to the loopback
+  receiver. The receiver's own 10-second total request deadline and 1 MiB body
+  limit apply regardless of what Funnel enforces.
+
+### Deploying and rolling back
+
+`scripts/deploy-release.sh` replaces the manual steps above. From a checkout
+on the operator machine:
+
+```text
+scripts/deploy-release.sh --host lugos-host --ref <commit>
+scripts/deploy-release.sh --host lugos-host --ref <commit> --repin
+scripts/deploy-release.sh --host lugos-host --rollback <previous-sha>
+```
+
+A deploy archives the commit, installs it as a new release from the hashed
+`requirements/dev.txt` lock, runs the full suite on the host with the deployed
+observer image, and saves `staging/config-before-<sha>`. It then runs
+`cirra observer-pins`, which fails when a release changes the observer
+definition digest. Review the release, then rerun with `--repin` to update the
+pins (each policy keeps a `.before-repin` copy). The script switches `current`
+atomically, restarts both services and checks `/healthz`. If they do not come
+up, it restores the saved configuration and the previous release. Old
+releases beyond `--keep` (3 by default) are removed; the current and previous
+releases are always kept. A rollback restores the configuration saved before
+the current release and switches back.
 
 To inspect the deployment without printing credentials:
 
