@@ -261,8 +261,11 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                 write_receipt(
                     queue.directory.parent / "reconciliation.json",
                     {"observed_at": utc_now(), "routes": results},
+                    history=False,
                 )
                 next_reconcile = time.monotonic() + interval
+            # Liveness is the file's content and mtime; a history copy per poll
+            # would add an fsync'd file every pass.
             write_receipt(
                 queue.directory.parent / "worker-status.json",
                 {
@@ -270,6 +273,7 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                     "heartbeat_at": utc_now(),
                     "daily_usage": queue.usage(),
                 },
+                history=False,
             )
             job = work_once(config, queue, process)
             if job:

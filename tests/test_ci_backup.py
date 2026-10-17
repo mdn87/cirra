@@ -1,5 +1,6 @@
 import copy
 import json
+import threading
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -8,8 +9,9 @@ import yaml
 
 from cirra.domain import CirraError
 from cirra.job_queue import Queue
+from cirra.publish import write_receipt
 from cirra.service_config import load_service
-from cirra.worker import work_once
+from cirra.worker import run_worker, work_once
 
 
 def test_manual_request_and_requeue_keep_history_and_daily_budget(tmp_path):
@@ -251,3 +253,42 @@ def test_branch_policy_refuses_refspecs_and_unsafe_names(branch):
 
     with pytest.raises(CirraError):
         branch_name(branch)
+
+
+class StopAfter(threading.Event):
+    """Idle-loop stand-in: each poll wait returns at once; stop after `passes` waits."""
+
+    def __init__(self, passes):
+        super().__init__()
+        self.passes = passes
+
+    def wait(self, timeout=None):
+        self.passes -= 1
+        if self.passes <= 0:
+            self.set()
+        return self.is_set()
+
+
+def test_idle_worker_heartbeat_overwrites_status_without_growing_history(tmp_path, monkeypatch):
+    # Production audit X06: every idle pass wrote a new fsync'd history file
+    # (about 43,200 a day at the default 2-second poll).
+    ticks = iter(f"2026-10-17T00:00:{second:02d}Z" for second in range(60))
+    monkeypatch.setattr("cirra.worker.utc_now", lambda: next(ticks))
+    config = SimpleNamespace(
+        routes={}, max_jobs=10, poll_seconds=2, reconcile_seconds=0, max_attempts=3
+    )
+    run_worker(config, tmp_path, process=None, stopped=StopAfter(5))
+    status = json.loads((tmp_path / "worker-status.json").read_text())
+    assert status["state"] == "running"
+    assert status["heartbeat_at"] == "2026-10-17T00:00:04Z"
+    assert not (tmp_path / "history" / "worker-status").exists()
+
+
+def test_write_receipt_keeps_history_unless_the_caller_opts_out(tmp_path):
+    write_receipt(tmp_path / "job.json", {"attempt": 1})
+    write_receipt(tmp_path / "job.json", {"attempt": 2})
+    assert len(list((tmp_path / "history" / "job").iterdir())) == 2
+    write_receipt(tmp_path / "status.json", {"tick": 1}, history=False)
+    write_receipt(tmp_path / "status.json", {"tick": 2}, history=False)
+    assert json.loads((tmp_path / "status.json").read_text()) == {"tick": 2}
+    assert not (tmp_path / "history" / "status").exists()
