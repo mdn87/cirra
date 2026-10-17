@@ -332,7 +332,7 @@ def test_checkpoints_carry_findings_and_reject_malformed_rows(tmp_path):
         "title": "[C011] Missing timeout",
         "evidence": "No timeout.",
     }
-    row = {"id": "C011", "status": "missing", "evidence": []}
+    row = {"id": "C011", "status": "missing", "priority": "high", "evidence": []}
     others = [r for r in domain_rows("reliability-and-resilience") if r["id"] != "C011"]
     good = {
         "domain": "reliability-and-resilience",
@@ -348,6 +348,12 @@ def test_checkpoints_carry_findings_and_reject_malformed_rows(tmp_path):
         {**good, "coverage": [{**row, "status": "sort of"}, *others]},
         {**good, "coverage": others},  # a concept is missing
         {**good, "coverage": [row, row, *others[1:]]},  # a duplicate instead of a concept
+        {**good, "findings": [{**finding, "severity": 1}]},
+        {**good, "findings": [{**finding, "evidence": " "}]},
+        {**good, "findings": [{**finding, "side": "old"}]},
+        {**good, "findings": [{**finding, "title": "[C011]"}]},
+        {**good, "findings": [{**finding, "severity": "low"}]},  # not the row priority
+        {**good, "findings": []},  # the missing row has no finding
         {**good, "findings": [{**finding, "title": "[C058] Another domain"}]},
         {**good, "findings": [{**finding, "extra": True}]},
         {**good, "findings": "none"},
@@ -759,3 +765,50 @@ def test_publication_rechecks_for_a_stop_right_before_writing(world, tmp_path):
     queue.update(job["id"], cancel_requested=True)  # arrives after settle's own check
     receipt = publication(job, audits.get(store, job["attempt_id"]))
     assert receipt == {"state": "stopped", "reason": "cancelled"} and github.posts == []
+
+
+# --- Fifth Codex round on #20 ------------------------------------------------
+
+
+def test_records_missing_queue_fields_are_reported(env):
+    queue, store, _, pr = env
+    job = pr(1)
+    path = queue.directory / (job["job_id"] + ".json")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    del record["not_before"]
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert queue.scan() == ([], [job["job_id"] + ".json"])
+    assert audit_once(queue, store, 20, lambda *args: {"state": "awaiting_import"}) is None
+
+
+def test_a_blocking_baseline_outranks_release_work(env):
+    queue, store, config, pr = env
+    repository = audits.select_repository(config)
+    queue.request(
+        audits.audit_identity(config.audit, "release", repository, head(60)),
+        "release:main",
+        reason="release",
+    )
+    baseline = queue.request(
+        audits.audit_identity(config.audit, "full", repository, head(50)),
+        "repository",
+        reason="baseline",
+    )
+    waiting = pr(1)
+    queue.update(waiting["job_id"], state="awaiting_baseline")
+    assert queue.runnable()[0]["id"] == baseline["job_id"]
+
+
+def test_a_running_same_key_job_is_replaceable_at_capacity(env):
+    queue, store, config, _ = env
+    small = AuditQueue(queue.directory.parent, store, maximum=1)
+    repository = audits.select_repository(config)
+
+    def pr(revision):
+        identity = audits.audit_identity(config.audit, "pr", repository, head(revision), head(99))
+        return small.request(identity, "change:1", reason="change")
+
+    first = pr(1)
+    small.next_job(20)  # now running
+    second = pr(2)
+    assert small.read(first["job_id"])["superseded_by"] == second["job_id"]

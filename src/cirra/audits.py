@@ -109,15 +109,38 @@ def valid_checkpoint(path, domains=None):
             or not all(_valid_range(item) for item in row["evidence"])
         ):
             return None
+    rows = {row["id"]: row for row in data["coverage"]}
+    cited = set()
     for finding in data.get("findings", []):
-        match = TITLE_IDS.match(finding.get("title", "")) if isinstance(finding, dict) else None
+        title = finding.get("title") if isinstance(finding, dict) else None
+        match = validate_report.TITLE_RE.match(title) if isinstance(title, str) else None
         if (
             not match
             or set(finding) != validate_report.FINDING_FIELDS
             or not _valid_range(finding)
-            or match.group(1).split(",")[0].strip() not in domains[slug]
+            or not 1 <= finding["start_line"] <= finding["end_line"]
+            or finding["side"] != "new"  # full audits cite the audited head only
+            or finding["severity"] not in validate_report.SEVERITIES
+            or not isinstance(finding["evidence"], str)
+            or not finding["evidence"].strip()
         ):
             return None
+        ids = [part.strip() for part in match.group(1).split(",")]
+        if ids[0] not in domains[slug]:
+            return None
+        local = [rows[cid] for cid in ids if cid in rows]
+        if any(row["status"] in validate_report.UNRATED for row in local):
+            return None
+        ranks = [validate_report.RANK.get(row.get("priority"), -1) for row in local]
+        if local and validate_report.RANK[finding["severity"]] != max(ranks):
+            return None
+        cited.update(ids)
+    for row in data["coverage"]:
+        needs = row["status"] in ("missing", "incomplete") or (
+            row["status"] == "needs_investigation" and row.get("priority") in ("critical", "high")
+        )
+        if needs and row["id"] not in cited:
+            return None  # the final report would lack this row's finding
     return data
 
 

@@ -201,6 +201,8 @@ ACTIVE_AUDIT = ("queued", "deferred", "running", "awaiting_import", "awaiting_ba
 # scans only recent and active work; completed results stay attachable in SQLite.
 ARCHIVE_AFTER_SECONDS = 7 * 86400
 ARCHIVED_STATES = ("done", "superseded", "cancelled", "failed", "attention")
+# Every field the queue reads from a record; a record missing one is reported.
+RECORD_STRINGS = ("work_key", "audit_id", "scope", "reason", "accepted_at", "updated_at")
 
 
 class AuditQueue:
@@ -243,8 +245,18 @@ class AuditQueue:
                     and isinstance(job.get("id"), str)
                     and job.get("state") in (*ACTIVE_AUDIT, *ARCHIVED_STATES)
                     and isinstance(job.get("identity"), dict)
+                    and isinstance(job["identity"].get("repository"), dict)
+                    and isinstance(job["identity"].get("head"), str)
+                    and job.get("tier") in AUDIT_PRIORITY
+                    and all(isinstance(job.get(key), str) for key in RECORD_STRINGS)
+                    and type(job.get("not_before")) in (int, float)
+                    and isinstance(job.get("cancel_requested"), bool)
+                    and isinstance(job.get("context"), dict)
+                    and (job.get("superseded_by") is None or isinstance(job["superseded_by"], str))
+                    and (job.get("attempt_id") is None or isinstance(job["attempt_id"], str))
                 ):
                     raise ValueError("audit record lacks required fields")
+                datetime.fromisoformat(job["updated_at"])
             except (OSError, ValueError, RecursionError):
                 unreadable.append(path.name)
                 continue
@@ -302,11 +314,9 @@ class AuditQueue:
                     and not job["superseded_by"]
                 ):
                     return {"job_id": job["id"], "attached": True}
-            replaced = {"queued", "deferred"}  # same-key requests the new one supersedes
+            # Same-key work the new request supersedes leaves as it arrives.
             active = sum(
-                job["state"] in ACTIVE_AUDIT
-                and not (job["work_key"] == work_key and job["state"] in replaced)
-                for job in jobs
+                job["state"] in ACTIVE_AUDIT and job["work_key"] != work_key for job in jobs
             )
             if active >= self.maximum:
                 raise CirraError("audit queue capacity reached; cancel or finish queued audits")
@@ -373,7 +383,7 @@ class AuditQueue:
         def priority(job):
             repository = json.dumps(job["identity"]["repository"], sort_keys=True)
             if job["tier"] == "full" and job["scope"] == "repository" and repository in blocked:
-                return 0.5
+                return -1  # ahead of releases too: waiting pr gates depend on it
             return AUDIT_PRIORITY[job["tier"]]
 
         return sorted(
