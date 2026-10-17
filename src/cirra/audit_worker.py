@@ -315,7 +315,9 @@ class AuditRunner:
         if any(old[key] != job["identity"][key] for key in ("skill_version", "catalog_digest")):
             return []  # Conclusions under another catalog are not reusable.
         old_head = old["head"]
-        listing = audits.git(checkout, "diff", "--name-only", old_head, job["identity"]["head"])
+        listing = audits.git(
+            checkout, "diff", "--name-only", "--no-renames", old_head, job["identity"]["head"]
+        )
         if listing is None:
             return []  # The old head is unavailable: rerun every domain.
         changed = set(listing.splitlines())
@@ -325,12 +327,11 @@ class AuditRunner:
             data = audits.valid_checkpoint(path, domains)
             if data is None:
                 continue
-            cited = {
-                item.get("path")
-                for row in data["coverage"]
-                for item in row.get("evidence") or []
-                if isinstance(item, dict)
-            }
+            # A row without evidence (not applicable, or missing) rests on what is
+            # absent, which a new head may change; only fully cited domains carry over.
+            if not data["coverage"] or any(not row["evidence"] for row in data["coverage"]):
+                continue
+            cited = {item["path"] for row in data["coverage"] for item in row["evidence"]}
             if not cited & changed:
                 (target / path.name).write_bytes(path.read_bytes())
                 copied.append(path.stem)
@@ -391,6 +392,8 @@ class AuditRunner:
             finally:
                 if process.poll() is None:
                     stop_process(process)
+        if log_path.stat().st_size > MAX_AGENT_LOG_BYTES:
+            raise CirraError("audit agent output exceeded 16 MiB")  # a fast exit skipped polling
         if process.returncode:
             raise CirraError(f"audit agent exited with status {process.returncode}; see {log_path}")
         reports = sorted(work.glob(f"production-audit-{identity['tier']}-*.json"))

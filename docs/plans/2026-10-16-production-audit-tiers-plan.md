@@ -328,10 +328,11 @@ Implemented in `cirra.worker` (`schedule_audits`), `cirra.audit_worker` and
 preemption of a stand-in agent between domains. Choices made while
 implementing:
 
-- The worker emits `registered` on its first audit pass and `schedule` once an
-  hour after that; `select_tiers` decides whether either queues a full audit of
-  the default branch head. The hourly pace also limits provider reads when they
-  fail.
+- The worker emits a `schedule` event on its first audit pass and once an hour
+  after that; `select_tiers` decides whether it queues a full audit of the
+  default branch head. Checking on the first pass means frequent restarts cannot
+  postpone a due audit, and the hourly pace limits provider reads when they
+  fail. Scheduled and stale re-audits of an unchanged head open a new attempt.
 - Domains are the catalog's ten numbered sections, listed with their IDs in
   full-audit packets. A checkpoint is `checkpoints/<slug>.json` holding that
   domain's coverage rows; malformed ones are ignored.

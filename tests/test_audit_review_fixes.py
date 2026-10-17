@@ -451,3 +451,168 @@ def test_checkpoints_are_not_reused_across_catalogs(world, tmp_path):
     target.mkdir()
     job = {"resume_from": old["attempt_id"], "identity": identity}
     assert runner.resume(store, job, world.origin.path, target) == []
+
+
+def test_evidence_free_domains_are_rerun_after_a_new_head(world, tmp_path):
+    route, runner = world.make()
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    old, _ = audits.begin(
+        store, audits.audit_identity(route.policy.audit, "full", repository, world.base)
+    )
+    source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
+    source.mkdir(parents=True)
+    cited = {
+        "id": "C064",
+        "status": "implemented",
+        "evidence": [{"path": "pyproject.toml", "start_line": 1, "end_line": 1}],
+    }
+    absent = {"id": "C065", "status": "not_applicable", "evidence": []}
+    (source / "security.json").write_text(
+        json.dumps({"domain": "security", "coverage": [{**cited, "id": "X01"}]}), encoding="utf-8"
+    )
+    (source / "observability-and-operations.json").write_text(
+        json.dumps({"domain": "observability-and-operations", "coverage": [cited, absent]}),
+        encoding="utf-8",
+    )
+    from cirra.audit_checkout import prepare_checkout
+
+    checkout = prepare_checkout(
+        world.state,
+        "github",
+        "example/repo",
+        "refs/pull/7/head",
+        world.head,
+        tmp_path / "co",
+        url=str(world.origin.path),
+        protocols=("file",),
+    )
+    job = {
+        "resume_from": old["attempt_id"],
+        "identity": audits.audit_identity(route.policy.audit, "full", repository, world.head),
+    }
+    target = tmp_path / "target"
+    target.mkdir()
+    assert runner.resume(store, job, checkout, target) == ["security"]
+
+
+def test_same_key_replacement_is_allowed_at_capacity(env):
+    queue, store, config, _ = env
+    small = AuditQueue(queue.directory.parent, store, maximum=1)
+    repository = audits.select_repository(config)
+
+    def pr(revision):
+        identity = audits.audit_identity(config.audit, "pr", repository, head(revision), head(99))
+        return small.request(identity, "change:1", reason="change")
+
+    first = pr(1)
+    second = pr(2)  # replaces the queued request: no net growth
+    assert small.read(first["job_id"])["superseded_by"] == second["job_id"]
+
+
+def test_records_missing_required_fields_are_reported_not_loaded(tmp_path):
+    from cirra.health import check
+
+    queue = AuditQueue(tmp_path)
+    (queue.directory / "partial.json").write_text('{"sequence": 1}', encoding="utf-8")
+    jobs, unreadable = queue.scan()
+    assert jobs == [] and unreadable == ["partial.json"]
+    assert any(problem["kind"] == "audit-queue" for problem in check(tmp_path)["problems"])
+
+
+def test_records_with_a_mistyped_sequence_are_reported(tmp_path):
+    queue = AuditQueue(tmp_path)
+    record = {"sequence": "1", "id": "a" * 32, "state": "queued", "identity": {}}
+    (queue.directory / ("a" * 32 + ".json")).write_text(json.dumps(record), encoding="utf-8")
+    assert queue.scan() == ([], ["a" * 32 + ".json"])
+
+
+def test_log_cap_also_applies_after_a_fast_exit(world, tmp_path, monkeypatch):
+    monkeypatch.setattr(audit_worker, "MAX_AGENT_LOG_BYTES", 1000)
+    route, runner = world.make(agent(tmp_path, source="print('x' * 5000)\n"))
+    runner.poll_seconds = 3  # the agent exits before the first size check
+    store_baseline(world, route)
+    request(world, route, "app.py")
+    store = Store(world.state)
+    job = audit_once(AuditQueue(world.state, store), store, 20, runner)
+    assert job["state"] == "failed" and "output exceeded" in job["error"]
+
+
+def test_a_renamed_cited_file_invalidates_its_checkpoint(world, tmp_path):
+    from cirra.audit_checkout import prepare_checkout
+
+    world.origin.git("switch", "feature")
+    world.origin.git("mv", "pyproject.toml", "renamed.toml")
+    world.origin.git("commit", "-m", "rename")
+    renamed = world.origin.git("rev-parse", "HEAD")
+    world.origin.git("update-ref", "refs/pull/8/head", renamed)
+    route, runner = world.make()
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    old, _ = audits.begin(
+        store, audits.audit_identity(route.policy.audit, "full", repository, world.head)
+    )
+    source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
+    source.mkdir(parents=True)
+    row = {
+        "id": "X01",
+        "status": "implemented",
+        "evidence": [{"path": "pyproject.toml", "start_line": 1, "end_line": 1}],
+    }
+    (source / "security.json").write_text(
+        json.dumps({"domain": "security", "coverage": [row]}), encoding="utf-8"
+    )
+    checkout = prepare_checkout(
+        world.state,
+        "github",
+        "example/repo",
+        "refs/pull/8/head",
+        renamed,
+        tmp_path / "co",
+        url=str(world.origin.path),
+        protocols=("file",),
+    )
+    job = {
+        "resume_from": old["attempt_id"],
+        "identity": audits.audit_identity(route.policy.audit, "full", repository, renamed),
+    }
+    target = tmp_path / "target"
+    target.mkdir()
+    assert runner.resume(store, job, checkout, target) == []
+
+
+def test_first_worker_pass_runs_the_schedule_check(world, monkeypatch):
+    from cirra import worker
+
+    route, _ = world.make()
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    old, _ = audits.begin(
+        store, audits.audit_identity(route.policy.audit, "full", repository, world.base)
+    )
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE audits SET state='complete', completed_at=?, report_json=? WHERE attempt_id=?",
+            (
+                time.time() - 8 * 86400,
+                json.dumps(build_report("full", world.base)),
+                old["attempt_id"],
+            ),
+        )
+    monkeypatch.setattr(worker, "default_branch_head", lambda route, reader: ("main", world.base))
+    processor = worker.Processor(world.state, lambda name: None, None)
+    [receipt] = processor.schedule_audits({"main": route}, now=0)
+    assert receipt["reason"] == "schedule" and not receipt["attached"]
+
+
+def test_attention_jobs_are_archived_too(env):
+    queue, store, _, pr = env
+    first = pr(1)
+    path = queue.directory / (first["job_id"] + ".json")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    old = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+    path.write_text(
+        json.dumps({**record, "state": "attention", "updated_at": old}), encoding="utf-8"
+    )
+    pr(2)
+    assert (queue.directory / "archive" / (first["job_id"] + ".json")).is_file()

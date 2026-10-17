@@ -143,7 +143,7 @@ def test_superseded_full_audit_reuses_domains_whose_files_did_not_change(world, 
     target = tmp_path / "target"
     target.mkdir()
     copied = runner.resume(store, job, checkout, target)
-    assert copied == ["security", "traffic-caching-and-edge"]
+    assert copied == ["security"]  # app.py changed; the evidence-free domain reruns
     assert sorted(path.stem for path in target.glob("*.json")) == copied
     # An attempt that already has checkpoints keeps its own progress.
     assert runner.resume(store, job, checkout, target) == []

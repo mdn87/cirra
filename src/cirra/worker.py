@@ -110,7 +110,7 @@ class Processor:
             return [{"error": str(exc)}]
 
     def schedule_audits(self, routes, now=None):
-        """Registration (first pass) and hourly schedule ticks for full audits."""
+        """Hourly full-audit schedule checks, starting with the first pass."""
         now = time.monotonic() if now is None else now
         schedule = self.__dict__.setdefault("audit_schedule", {})
         receipts = []
@@ -123,7 +123,8 @@ class Processor:
             receipts += request_audits(
                 self.directory,
                 route,
-                {"kind": "registered" if due is None else "schedule"},
+                # Every pass is a schedule check, so restarts cannot postpone a due audit.
+                {"kind": "schedule"},
                 default_head=lambda route=route, reader=reader: default_branch_head(route, reader),
             )
         return receipts
