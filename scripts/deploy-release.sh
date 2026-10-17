@@ -53,6 +53,10 @@ UNITS="cirra-webhook.service cirra-worker.service"
 R=$RELEASES/$SHA
 
 case "$SHA" in *[!0-9a-f]*|"") echo "invalid release id: $SHA" >&2; exit 2 ;; esac
+# One deploy or rollback at a time: a second run would rebuild the release
+# directory under the first one's test run.
+exec 9>"$STAGING/deploy.lock"
+flock -n 9 || { echo "another deploy or rollback is running on this host" >&2; exit 1; }
 current() { readlink -f "$SERVICE/current"; }
 switch_to() { ln -sfn "$1" "$SERVICE/current.next" && mv -T "$SERVICE/current.next" "$SERVICE/current"; }
 restart_and_check() {
