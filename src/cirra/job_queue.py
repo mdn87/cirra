@@ -69,6 +69,23 @@ class Queue:
             key=lambda job: (job["accepted_at"], job["id"]),
         )
 
+    def tested_head(self, route, change, head):
+        """Whether a finished job on this route already tested `head` for `change`."""
+        for path in self.directory.glob("*.json"):
+            try:
+                job = self.read(path)
+            except (OSError, ValueError, CirraError):
+                continue
+            ci = (job.get("result") or {}).get("ci") or {}
+            if (
+                job.get("route") == route.name
+                and job.get("state") == "done"
+                and ci.get("change") == change
+                and ci.get("head_sha") == head
+            ):
+                return True
+        return False
+
     def request(self, route, change, *, source="manual", revision=None):
         number(change, "change number", 1, 2**31 - 1, integral=True)
         identity = revision if revision is not None else uuid.uuid4().hex
@@ -105,6 +122,7 @@ class Queue:
             write_receipt(
                 self.directory / "history" / (identifier + "-" + uuid.uuid4().hex + ".json"),
                 {"previous": job, "reason": reason, "recorded_at": utc_now()},
+                history=False,  # this record is the archive; no nested copy
             )
             job = {
                 **job,

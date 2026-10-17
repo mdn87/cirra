@@ -61,16 +61,35 @@ def sync(config, queue, credential, *, route_name=None, discover_changes=discove
             continue
         try:
             changes = discover_changes(route, credential(route.reader_env))
-            queued = [
-                queue.request(route, change, source="reconcile", revision=revision)
-                for change, revision in changes
-            ]
-            for branch in getattr(route, "branches", ()):
-                data = capture_branch(route, branch, credential(route.reader_env))
+            # Key polling jobs on the PR head only. Tests run on the head, so a
+            # target-only move would otherwise re-queue every open PR and spend
+            # daily admission. Heads another job (webhook, manual) already
+            # tested are skipped.
+            queued, tested = [], []
+            for change, revision in changes:
+                if queue.tested_head(route, change, revision["head"]):
+                    tested.append(change)
+                    continue
                 queued.append(
-                    queue.request_branch(route, branch, revision=data["change"]["head_sha"])
+                    queue.request(route, change, source="reconcile", revision=revision["head"])
                 )
-            results.append({"route": name, "jobs": queued})
+            entry = {"route": name, "jobs": queued}
+            if tested:
+                entry["already_tested"] = tested
+            branch_errors = {}
+            for branch in getattr(route, "branches", ()):
+                try:
+                    data = capture_branch(route, branch, credential(route.reader_env))
+                    queued.append(
+                        queue.request_branch(route, branch, revision=data["change"]["head_sha"])
+                    )
+                except (CirraError, OSError, ValueError) as exc:
+                    branch_errors[branch] = (
+                        str(exc) if isinstance(exc, CirraError) else "branch capture failed"
+                    )
+            if branch_errors:
+                entry["branch_errors"] = branch_errors
+            results.append(entry)
         except (CirraError, OSError, ValueError) as exc:
             results.append(
                 {

@@ -114,7 +114,7 @@ def run(args, credential, capture):
             config, Queue(args.state_dir, config.max_jobs), credential, route_name=args.route
         )
         print(json.dumps(result))
-        return int(any("error" in row for row in result))
+        return int(any("error" in row or "branch_errors" in row for row in result))
     if args.command == "serve-webhooks":
         with WebhookServer(("127.0.0.1", args.port), config, args.state_dir, credential) as server:
             print(
