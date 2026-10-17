@@ -23,7 +23,60 @@ def request_identity(request):
     )
 
 
-def plan(report, workflow_id, ref):
+def audit_gate(store, config, report, ref, *, waiver=None):
+    """The release audit gate for a reviewed candidate.
+
+    Returns None when the policy has no release audit tier (behavior unchanged),
+    else a `passed` or `waived` record. Refuses while the audit is missing,
+    pending or blocking; a missing audit is queued first, so the next attempt
+    finds it running or complete.
+    """
+    policy = getattr(config, "audit", None)
+    if policy is None or "release" not in policy.tiers:
+        return None
+    from cirra import audits
+    from cirra.job_queue import AuditQueue
+
+    string(ref, "release branch", 250)
+    snapshot = report["snapshot"]
+    repository = {key: snapshot[key] for key in ("provider", "instance", "repository_id")}
+    identity = audits.audit_identity(policy, "release", repository, snapshot["head_sha"])
+    attempt_id = audits.completed(store, digest(identity))
+    result = audits.gate(policy, "release", audits.get(store, attempt_id) if attempt_id else None)
+    record = {
+        "audit_id": digest(identity),
+        "attempt_id": attempt_id,
+        "level": result["level"],
+        "gate": result["state"],
+        "blocking": [audits.finding_key(item) for item in result["blocking"]],
+    }
+    if result["state"] == "pass":
+        return {**record, "state": "passed"}
+    if waiver is not None:
+        return {
+            **record,
+            "state": "waived",
+            "reason": string(waiver, "audit waiver reason", 1000),
+            "waived_at": utc_now(),
+        }
+    if result["state"] == "pending":
+        queued = AuditQueue(store.path.parent, store).request(
+            identity,
+            "release:" + ref,
+            reason="release",
+            context={"route": None, "change": None, "ref": "refs/heads/" + ref},
+        )
+        raise CirraError(
+            f"release audit of {snapshot['head_sha'][:12]} is not complete "
+            f"(audit job {queued.get('job_id')}); retry when it completes or record a waiver"
+        )
+    raise CirraError(
+        f"release audit has {len(result['blocking'])} finding(s) at or above "
+        f"{result['level']}: {', '.join(record['blocking'])}; fix them or record a waiver"
+    )
+
+
+def plan(report, workflow_id, ref, audit=None):
     number(workflow_id, "workflow ID", 1, 2**63 - 1, integral=True)
     string(ref, "release branch", 250)
     if ref.startswith("refs/"):
@@ -63,6 +116,8 @@ def plan(report, workflow_id, ref):
             "Name the run cirra-release-<cirra_request_id>."
         ),
     }
+    if audit is not None:
+        request["audit_gate"] = audit
     request["request_id"] = request_identity(request)
     request["request_digest"] = digest(request)
     return request
@@ -126,6 +181,10 @@ def dispatch(
     ):
         raise CirraError("release request no longer matches the saved review and policy")
     plan(saved, request["workflow_id"], request["ref"])
+    recorded = request.get("audit_gate")
+    waiver = recorded.get("reason") if recorded and recorded.get("state") == "waived" else None
+    if audit_gate(store, config, saved, request["ref"], waiver=waiver) and not recorded:
+        raise CirraError("release request predates the audit gate; plan it again")
     snapshot = request["snapshot"]
     key = digest(
         [snapshot[name] for name in ("provider", "instance", "repository_id", "change_id")]

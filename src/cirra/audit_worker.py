@@ -183,9 +183,16 @@ class AuditRunner:
         return self.directory / "audit-attempts" / attempt_id
 
     def __call__(self, job, attempt, stop):
-        route = self.routes.get(job["context"]["route"])
+        route = self.routes.get(job["context"].get("route")) or next(
+            (
+                item
+                for item in self.routes.values()
+                if repository_of(item) == job["identity"]["repository"]
+            ),
+            None,
+        )
         if route is None:
-            raise CirraError("the audit's route no longer has an audit policy")
+            raise CirraError("no route with an audit policy serves this repository")
         policy = route.policy.audit
         identity = job["identity"]
         root = self.attempt_dir(attempt["attempt_id"])

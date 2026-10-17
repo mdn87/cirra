@@ -299,6 +299,21 @@ The `release` tier on release requests and the gate in `release.plan`, with
 waivers. Acceptance: `plan` refuses without a current audit and with a
 blocking finding, and proceeds with a waiver whose reason is recorded.
 
+Implemented as `cirra.release.audit_gate`, used by `cirra plan-release
+--config` (with `--waive-audit REASON`) and re-checked by `dispatch-release`;
+tested in `tests/test_audit_release.py`. Choices made while implementing:
+
+- A policy without the `release` tier changes nothing, including request IDs.
+- A missing release audit is queued (scope `release:<ref>`, the protected
+  branch as fetch ref) before the refusal, so the release request is what
+  triggers it. The worker finds the route by repository identity.
+- The gate record (`passed` or `waived`, the attempt, the level, and blocking
+  finding keys) is stored in the release request and covered by its digest. A
+  waiver also writes `audit-waivers/<request_id>.json`.
+- `dispatch-release` evaluates the gate again with the request's recorded
+  waiver, so planning without `--config` cannot skip it, and a request planned
+  before the gate existed must be planned again.
+
 ### Stage 6: full audits, schedule and preemption
 
 Baseline on first registration, the schedule and age triggers, structural
