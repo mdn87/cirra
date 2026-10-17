@@ -5,7 +5,9 @@ A runner is `run(job, attempt, stop)` and returns one of
 `{"state": "imported", "audit": summary}` (the runner imported a report), or
 `{"state": "stopped", "reason": ...}` after `stop()` returned a reason at a
 checkpoint. Cancellation and supersession are cooperative: `stop()` reports
-them and the attempt's stored state already refuses a late import.
+them and the attempt's stored state already refuses a late import. A runner
+calls `stop(checkpoints=[...])` when the completed domains change; for a full
+audit that is where runnable pr or release work preempts it.
 """
 
 import json
@@ -62,8 +64,17 @@ def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
     job = queue.update(job["id"], attempt_id=attempt["attempt_id"])
     if attempt["state"] == "complete":
         return settle(queue, store, job, on_complete)  # Attached to an existing result.
+
+    def stop(checkpoints=None):
+        reason = queue.stop_reason(job["id"])
+        if reason is None and checkpoints is not None:
+            queue.update(job["id"], checkpoints=checkpoints)
+            if job["tier"] == "full" and queue.priority_waiting(now):
+                return "preempted"
+        return reason
+
     try:
-        outcome = run(job, attempt, lambda: queue.stop_reason(job["id"]))
+        outcome = run(job, attempt, stop)
     except CirraError as exc:
         audits.mark(store, attempt["attempt_id"], "cancelled")
         return queue.update(job["id"], state="failed", error=str(exc))
@@ -76,6 +87,12 @@ def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
         if reason in ("cancelled", "superseded"):
             audits.mark(store, attempt["attempt_id"], reason)
             return queue.update(job["id"], state=reason)
+        if reason == "preempted":
+            # The attempt stays prepared, so the next run resumes its checkpoints.
+            current = queue.read(job["id"])
+            return queue.update(
+                job["id"], state="queued", preemptions=current.get("preemptions", 0) + 1
+            )
         raise CirraError(f"unsupported runner stop reason {reason!r}")
     if outcome["state"] == "imported":
         return settle(queue, store, queue.read(job["id"]), on_complete)
@@ -217,8 +234,52 @@ class AuditRunner:
         if policy.runner_kind == "session":
             return {"state": "awaiting_import", "packet_path": packet_path}
         work = root / "work"
-        work.mkdir(parents=True, exist_ok=True)
+        (work / "checkpoints").mkdir(parents=True, exist_ok=True)
+        # A preempted run leaves its stop file and possibly a partial report.
+        (work / "stop").unlink(missing_ok=True)
+        for stale in work.glob("production-audit-*"):
+            stale.unlink()
+        if identity["tier"] == "full":
+            self.resume(store, job, checkout, work / "checkpoints")
         return self.run_agent(policy, identity, attempt, packet_path, checkout, work, stop)
+
+    def resume(self, store, job, checkout, target):
+        """Copy a superseded attempt's checkpoints whose evidence files did not change."""
+        source_id = job.get("resume_from")
+        if not source_id or any(target.glob("*.json")):
+            return []
+        source = self.attempt_dir(source_id) / "work" / "checkpoints"
+        if not source.is_dir():
+            return []
+        old_head = json.loads(audits.get(store, source_id)["identity_json"])["head"]
+        listing = audits.git(checkout, "diff", "--name-only", old_head, job["identity"]["head"])
+        if listing is None:
+            return []  # The old head is unavailable: rerun every domain.
+        changed = set(listing.splitlines())
+        copied = []
+        domains = audits.catalog_domains()
+        for path in sorted(source.glob("*.json")):
+            data = audits.valid_checkpoint(path, domains)
+            if data is None:
+                continue
+            cited = {
+                item.get("path")
+                for row in data["coverage"]
+                for item in row.get("evidence") or []
+                if isinstance(item, dict)
+            }
+            if not cited & changed:
+                (target / path.name).write_bytes(path.read_bytes())
+                copied.append(path.stem)
+        return copied
+
+    def checkpoints(self, work):
+        domains = audits.catalog_domains()
+        return sorted(
+            path.stem
+            for path in (work / "checkpoints").glob("*.json")
+            if audits.valid_checkpoint(path, domains) is not None
+        )
 
     def run_agent(self, policy, identity, attempt, packet_path, checkout, work, stop):
         env = tool_environment()
@@ -240,9 +301,15 @@ class AuditRunner:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             deadline = time.monotonic() + policy.audit_timeout_seconds
+            completed = self.checkpoints(work)
             try:
                 while process.poll() is None:
-                    reason = stop()
+                    current = self.checkpoints(work)
+                    if current != completed:
+                        completed = current
+                        reason = stop(checkpoints=current)
+                    else:
+                        reason = stop()
                     if reason:
                         # Checkpoint protocol: the agent checks for `stop` between domains.
                         (work / "stop").write_text(reason, encoding="utf-8")

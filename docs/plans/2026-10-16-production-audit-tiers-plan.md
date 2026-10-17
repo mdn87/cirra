@@ -1,7 +1,8 @@
 # Production audit tiers in Cirra
 
-Date: 2026-10-16. Status: stage 1 implemented (`src/cirra/audit.py`); stages 2 to 6
-proposed.
+Date: 2026-10-16. Status: stages 1 to 6 implemented; see the
+[audit guide](../audit-workflow.md). The live acceptance runs on lugos-host
+(stage 4) are still open.
 
 ## Purpose
 
@@ -321,6 +322,30 @@ escalation from stage 1 wired to the queue, domain checkpoints, resume, and
 preemption by `pr` and `release` work. Acceptance: a preempted full audit
 resumes without rerunning completed domains; a catalog version change
 triggers a new baseline.
+
+Implemented in `cirra.worker` (`schedule_audits`), `cirra.audit_worker` and
+`cirra.audits`; tested in `tests/test_audit_full.py`, including a real
+preemption of a stand-in agent between domains. Choices made while
+implementing:
+
+- The worker emits `registered` on its first audit pass and `schedule` once an
+  hour after that; `select_tiers` decides whether either queues a full audit of
+  the default branch head. The hourly pace also limits provider reads when they
+  fail.
+- Domains are the catalog's ten numbered sections, listed with their IDs in
+  full-audit packets. A checkpoint is `checkpoints/<slug>.json` holding that
+  domain's coverage rows; malformed ones are ignored.
+- Preemption is checked only when the set of valid checkpoints changes. A
+  preempted job returns to `queued` with its attempt still `prepared`, so the
+  next run reuses the same attempt, checkout and checkpoints. Each run still
+  counts toward daily admission.
+- A request that replaces work which already had an attempt records it as
+  `resume_from`. A full audit then copies that attempt's checkpoints whose
+  cited evidence files are unchanged between the two heads; if the old head is
+  unavailable, every domain reruns.
+- The packet instructions tell agents the checkpoint and stop protocol. The
+  skill itself does not yet read packets; an operator's command wrapper (or a
+  later skill change) has to follow them.
 
 ## Decisions
 

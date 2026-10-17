@@ -32,6 +32,10 @@ from cirra.publish import (
 from cirra.report import export_report
 from cirra.store import Store
 
+# Full-audit schedule checks read the default branch head, so they run once an
+# hour; `schedule_days` and `max_age_days` decide whether a check queues work.
+AUDIT_SCHEDULE_SECONDS = 3600
+
 
 def is_open(route, change, reader):
     if route.provider == "github":
@@ -105,6 +109,25 @@ class Processor:
         except CirraError as exc:
             return [{"error": str(exc)}]
 
+    def schedule_audits(self, routes, now=None):
+        """Registration (first pass) and hourly schedule ticks for full audits."""
+        now = time.monotonic() if now is None else now
+        schedule = self.__dict__.setdefault("audit_schedule", {})
+        receipts = []
+        for name, route in routes.items():
+            due = schedule.get(name)
+            if due is not None and now < due:
+                continue
+            schedule[name] = now + AUDIT_SCHEDULE_SECONDS  # Also paces failing reads.
+            reader = self.credential(route.reader_env) if route.reader_env else None
+            receipts += request_audits(
+                self.directory,
+                route,
+                {"kind": "registered" if due is None else "schedule"},
+                default_head=lambda route=route, reader=reader: default_branch_head(route, reader),
+            )
+        return receipts
+
     def audit(self, config):
         """Run one production-audit pass over routes whose policy has an audit block."""
         routes = {
@@ -114,6 +137,7 @@ class Processor:
         }
         if not routes:
             return None
+        self.schedule_audits(routes)
         store = Store(self.directory)
         runner = AuditRunner(self.directory, routes, self.credential)
         publication = AuditPublication(

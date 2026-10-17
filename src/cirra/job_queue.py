@@ -287,8 +287,12 @@ class AuditQueue:
             for other in jobs:
                 if other["work_key"] != work_key:
                     continue
+                if other.get("attempt_id") and other["state"] in ACTIVE_AUDIT:
+                    # A newer head can reuse unchanged domains of this attempt.
+                    job["resume_from"] = other["attempt_id"]
                 if other["state"] in ("queued", "deferred"):
                     other.update(state="superseded", superseded_by=job["id"])
+                    self._mark_attempt(other, "superseded")  # A preempted full audit.
                     self.save(other)
                 elif (
                     other["state"] in ("running", "awaiting_import") and not other["superseded_by"]
@@ -316,6 +320,10 @@ class AuditQueue:
             ),
             key=lambda job: (AUDIT_PRIORITY[job["tier"]], job["sequence"]),
         )
+
+    def priority_waiting(self, now=None):
+        """Whether pr or release work is runnable; it may preempt a full audit."""
+        return any(job["tier"] != "full" for job in self.runnable(now))
 
     def usage_path(self, now):
         day = datetime.fromtimestamp(now, UTC).date().isoformat()
