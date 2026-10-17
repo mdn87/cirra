@@ -24,7 +24,7 @@ from cirra.audit_checkout import change_ref, prepare_checkout, remove_checkout
 from cirra.dispatch import stop_process, tool_environment
 from cirra.domain import CirraError, sha
 from cirra.github import API_VERSION, native_id, record, repository_name
-from cirra.job_queue import AuditQueue
+from cirra.job_queue import AUDIT_PRIORITY, AuditQueue
 from cirra.publish import write_receipt
 from cirra.store import Store
 from cirra.transport import JSONClient, pages
@@ -114,11 +114,17 @@ def audit_once(queue, store, maximum, run, *, on_complete=None, now=None, interr
         reason = queue.stop_reason(job_id)
         if reason is None and checkpoints is not None:
             queue.update(job_id, checkpoints=checkpoints)
+            rank = queue.priority(job)
             if (
                 job["tier"] == "full"
                 # Once every domain is done, only the report remains: let it finish.
                 and len(checkpoints) < len(audits.catalog_domains())
-                and (queue.priority_waiting(now) or (interrupt is not None and interrupt()))
+                and (
+                    queue.outranked(rank, now)
+                    # A pending delivery becomes at most pr work; a baseline that
+                    # waiting pr gates depend on outranks it.
+                    or (interrupt is not None and rank > AUDIT_PRIORITY["pr"] and interrupt())
+                )
                 and queue.admission_left(maximum, now)
             ):
                 return "preempted"
@@ -186,6 +192,8 @@ def default_branch_head(route, reader):
 
         client = GitHubClient(route.repository, token=reader)
         repo, _ = client.get()
+        if native_id(record(repo).get("id")) != route.repository_id:
+            raise CirraError("audit repository identity changed")
         branch = record(repo).get("default_branch")
         item, _ = client.get("branches/" + quote(str(branch), safe=""))
         return branch, sha(record(record(item).get("commit")).get("sha"))
@@ -193,6 +201,8 @@ def default_branch_head(route, reader):
 
     client = GitLabClient(route.repository, token=reader)
     project, _ = client.get()
+    if native_id(record(project).get("id")) != route.repository_id:
+        raise CirraError("audit project identity changed")
     branch = record(project).get("default_branch")
     item, _ = client.get("repository/branches/" + quote(str(branch), safe=""))
     return branch, sha(record(record(item).get("commit")).get("id"))
@@ -215,11 +225,13 @@ def request_audits(
     queue = AuditQueue(directory, store)
     repository = repository_of(route)
     latest = audits.history(audits.latest_full(store, audits.repository_key(repository)))
+    current = audits.vendored_identity()
     selected = select_tiers(
         policy,
         event,
         latest,
-        catalog_digest=audits.vendored_identity()["catalog_digest"],
+        catalog_digest=current["catalog_digest"],
+        skill_version=current["skill_version"],
         now=datetime.now(UTC),
     )
     receipts = []

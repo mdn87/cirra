@@ -195,15 +195,26 @@ def _event(event):
     return event
 
 
-def _full_reason(policy, event, latest_full, catalog_digest, now):
+def _full_reason(policy, event, latest_full, catalog_digest, skill_version, now):
     if latest_full is None:
         return "baseline"
-    fields(latest_full, ["completed_at", "catalog_digest"], label="stored full audit")
+    fields(
+        latest_full,
+        ["completed_at", "catalog_digest"],
+        ["skill_version"],
+        label="stored full audit",
+    )
     if not isinstance(latest_full["catalog_digest"], str) or not re.fullmatch(
         r"[a-f0-9]{64}", latest_full["catalog_digest"]
     ):
         raise CirraError("stored catalog_digest must be a lowercase SHA-256 digest")
-    if latest_full["catalog_digest"] != catalog_digest:
+    stored_skill = latest_full.get("skill_version")
+    if stored_skill is not None:
+        string(stored_skill, "stored skill_version", 64)
+    if latest_full["catalog_digest"] != catalog_digest or (
+        # A pr audit publishes only against a baseline of the same skill and catalog.
+        None not in (stored_skill, skill_version) and stored_skill != skill_version
+    ):
         return "catalog"
     age = max(now - datetime.fromisoformat(timestamp(latest_full["completed_at"])), timedelta(0))
     if age > timedelta(days=policy.max_age_days):
@@ -215,17 +226,21 @@ def _full_reason(policy, event, latest_full, catalog_digest, now):
     return None
 
 
-def select_tiers(policy, event, latest_full, *, catalog_digest, now):
+def select_tiers(policy, event, latest_full, *, catalog_digest, now, skill_version=None):
     """Map one event and the newest stored full audit to ordered (tier, reason) pairs.
 
-    `latest_full` is None or {"completed_at", "catalog_digest"}; `catalog_digest`
-    is the catalog Cirra currently validates against. Output order is run
-    priority: release, then pr, then full. Disabled tiers are never returned.
+    `latest_full` is None or {"completed_at", "catalog_digest"[, "skill_version"]};
+    `catalog_digest` and `skill_version` are what Cirra currently validates
+    against. A difference in either is reason "catalog"; the skill version is
+    compared only when both sides carry one. Output order is run priority:
+    release, then pr, then full. Disabled tiers are never returned.
     """
     if not isinstance(now, datetime) or now.tzinfo is None:
         raise CirraError("selection time must carry a timezone")
     if not isinstance(catalog_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", catalog_digest):
         raise CirraError("catalog_digest must be a lowercase SHA-256 digest")
+    if skill_version is not None:
+        string(skill_version, "skill_version", 64)
     if policy is None:
         return ()
     event = _event(event)
@@ -238,7 +253,7 @@ def select_tiers(policy, event, latest_full, *, catalog_digest, now):
         selected.append(("release", "release"))
     if event["kind"] == "change":
         selected.append(("pr", "change"))
-    reason = _full_reason(policy, event, latest_full, catalog_digest, now)
+    reason = _full_reason(policy, event, latest_full, catalog_digest, skill_version, now)
     if reason:
         selected.append(("full", reason))
     return tuple((tier, why) for tier, why in selected if tier in policy.tiers)

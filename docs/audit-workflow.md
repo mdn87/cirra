@@ -46,7 +46,7 @@ head. That audit is scoped to the change and never replaces the baseline.
 | --- | --- |
 | A pull or merge request is captured by the worker | `pr`, plus a change-scoped `full` when it touches structural paths |
 | A release is planned with `plan-release --config` | `release` for the candidate commit |
-| The worker starts, then hourly | `full` of the default branch when there is no baseline, the catalog changed, the baseline is `schedule_days` old, or older than `max_age_days` |
+| The worker starts, then hourly | `full` of the default branch when there is no baseline, the skill version or catalog changed, the baseline is `schedule_days` old, or older than `max_age_days` |
 | `cirra request-audit` | the named tier |
 
 Requests are queued under `audit-queue/` in the state directory. Per
@@ -74,8 +74,11 @@ most 10,000 requests can be active. On Linux and macOS a command agent holds an
 inherited lock on `agent.lock`, so recovery kills an agent that outlived its
 worker before starting another; Windows workers cannot detect one. While `pr`
 audits wait on a first baseline, that baseline runs ahead of further `pr`
-work. Operator requests run on the route that serves the repository with the
-policy they were made under.
+and `release` work. Operator requests run on the route that serves the
+repository with the policy they were made under. Before queueing a default
+branch audit, the worker checks that the provider's repository or project ID
+still matches the route, so a renamed or recreated repository is refused
+rather than audited under the old identity.
 
 ## Running an audit
 
@@ -103,9 +106,11 @@ audits the agent also writes `checkpoints/<domain>.json` after each catalog
 domain, holding that domain's coverage rows and findings, and stops between
 domains when a `stop` file appears. That lets a `pr` or `release` request
 preempt a running full audit, which then resumes without redoing finished
-domains. Preemption happens when `pr` or `release` work is runnable or a
-review delivery is waiting, while domains remain, and when the waiting request
-can be admitted today; resuming the same day uses no extra admission. A full
+domains. Preemption happens when runnable work outranks the running audit, or
+a review delivery is waiting, while domains remain, and when the waiting
+request can be admitted today; resuming the same day uses no extra admission.
+A baseline that waiting `pr` audits depend on outranks all other work, so
+neither new requests nor review deliveries preempt it. A full
 audit replaced by a newer head reuses the old checkpoints only when no file
 changed between the heads and the skill and catalog match; cited evidence is not
 a complete dependency set, so any change reruns every domain. A scheduled or

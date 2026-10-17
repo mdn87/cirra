@@ -368,24 +368,30 @@ class AuditQueue:
             self.save(job)
             return {"job_id": job["id"], "attached": False}
 
-    def runnable(self, now=None):
-        now = time.time() if now is None else now
-        today = datetime.fromtimestamp(now, UTC).date().isoformat()
-        jobs = self.jobs()
-        # Repositories whose finished pr audits wait on a first baseline: that
-        # baseline runs ahead of further pr work, so traffic cannot starve it.
-        blocked = {
+    @staticmethod
+    def blocked(jobs):
+        """Repositories whose finished pr audits wait on a first baseline."""
+        return {
             json.dumps(job["identity"]["repository"], sort_keys=True)
             for job in jobs
             if job["state"] == "awaiting_baseline"
         }
 
-        def priority(job):
-            repository = json.dumps(job["identity"]["repository"], sort_keys=True)
-            if job["tier"] == "full" and job["scope"] == "repository" and repository in blocked:
-                return -1  # ahead of releases too: waiting pr gates depend on it
-            return AUDIT_PRIORITY[job["tier"]]
+    def priority(self, job, blocked=None):
+        """The job's effective rank: lower runs first and may preempt higher."""
+        blocked = self.blocked(self.jobs()) if blocked is None else blocked
+        repository = json.dumps(job["identity"]["repository"], sort_keys=True)
+        if job["tier"] == "full" and job["scope"] == "repository" and repository in blocked:
+            # Ahead of releases too: waiting pr gates depend on it, so traffic
+            # cannot starve it.
+            return -1
+        return AUDIT_PRIORITY[job["tier"]]
 
+    def runnable(self, now=None):
+        now = time.time() if now is None else now
+        today = datetime.fromtimestamp(now, UTC).date().isoformat()
+        jobs = self.jobs()
+        blocked = self.blocked(jobs)
         return sorted(
             (
                 job
@@ -396,12 +402,13 @@ class AuditQueue:
                     or (job["state"] == "deferred" and job.get("deferred_on") != today)
                 )
             ),
-            key=lambda job: (priority(job), job["sequence"]),
+            key=lambda job: (self.priority(job, blocked), job["sequence"]),
         )
 
-    def priority_waiting(self, now=None):
-        """Whether pr or release work is runnable; it may preempt a full audit."""
-        return any(job["tier"] != "full" for job in self.runnable(now))
+    def outranked(self, rank, now=None):
+        """Whether runnable work strictly outranks `rank`; it may preempt that job."""
+        blocked = self.blocked(self.jobs())
+        return any(self.priority(job, blocked) < rank for job in self.runnable(now))
 
     def admission_left(self, maximum, now=None):
         now = time.time() if now is None else now
