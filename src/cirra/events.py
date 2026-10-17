@@ -9,6 +9,22 @@ from cirra.domain import CirraError, digest, number, string, utc_now
 from cirra.publish import write_receipt
 from cirra.reviewer import unique_object
 
+# Accounts with write access to the repository. Anyone else can open a pull
+# request against a public repository, so their changes must not spend
+# sandboxed execution, reviewer budget, or daily admission, whether they
+# arrive by webhook or by polling discovery.
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+
+def trusted_change(provider, change):
+    """Whether a GitHub pull request or GitLab merge request record may run automatically."""
+    if provider == "github":
+        return change.get("author_association") in TRUSTED_ASSOCIATIONS
+    # GitLab: only merge requests whose source branch lives in the target
+    # project, which requires Developer access to push.
+    source = change.get("source_project_id")
+    return source is not None and source == change.get("target_project_id")
+
 
 def authenticate(provider, raw, headers, secret):
     if len(raw) > 1024 * 1024 or not isinstance(headers, dict):

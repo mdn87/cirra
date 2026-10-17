@@ -219,17 +219,23 @@ class GitLabPublisher:
         return {"id": native_id(item.get("id")), "metadata": metadata_from(item.get("body"))}
 
 
-def write_receipt(path, receipt):
+def write_receipt(path, receipt, *, history=True):
+    """Atomically replace `path`, keeping every distinct version as evidence.
+
+    `history=False` is only for overwrite-in-place state such as heartbeats,
+    whose every write differs and would otherwise grow history without bound.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    history = path.parent / "history" / path.stem
-    history.mkdir(parents=True, exist_ok=True)
-    historical = history / f"{digest(receipt)}.json"
     content = canonical(receipt) + "\n"
-    if not historical.exists():
-        with historical.open("x", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
+    if history:
+        versions = path.parent / "history" / path.stem
+        versions.mkdir(parents=True, exist_ok=True)
+        historical = versions / f"{digest(receipt)}.json"
+        if not historical.exists():
+            with historical.open("x", encoding="utf-8") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
     temporary = path.with_name(f".{uuid.uuid4().hex}.tmp")
     with temporary.open("w", encoding="utf-8") as stream:
         stream.write(content)

@@ -92,6 +92,10 @@ It includes explicit configuration, Linux service units, credential separation,
 and the HTTPS webhook setup for reviews triggered by an open pull or merge request.
 The isolated observer supports both GitHub and GitLab; GitLab test receipts stay
 separate from native pipelines and are summarized in the maintained MR note.
+Backup CI can run without the reviewer, recover missed PR/MR events by polling,
+and accept manual `enqueue`, `sync`, and `requeue` commands. Signed test results
+are retained before publication. See the service guide for the coverage limits
+and the settings that enable this independently of GitHub Actions.
 
 GitHub App publishing, recovery and revision-change handling have been exercised
 on [PR #5](https://github.com/mdn87/cirra/pull/5). GitLab sandbox MR !1 demonstrated

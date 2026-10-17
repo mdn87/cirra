@@ -14,11 +14,14 @@ from cirra.domain import CirraError, number, path_name, sha
 from cirra.github import repository_name
 from cirra.gitlab import project_name
 from cirra.observer_process import control_environment, run_control
+from cirra.service_config import branch_name
 
 MAX_SOURCE = 64 * 1024 * 1024
 
 
-def export_source(repository, change, expected_sha, directory, token=None, *, provider="github"):
+def export_source(
+    repository, change, expected_sha, directory, token=None, *, provider="github", branch=None
+):
     if provider == "github":
         repository_name(repository)
         origin, username, ref = "https://github.com", "x-access-token", "pull"
@@ -27,7 +30,11 @@ def export_source(repository, change, expected_sha, directory, token=None, *, pr
         origin, username, ref = "https://gitlab.com", "oauth2", "merge-requests"
     else:
         raise CirraError("independent checkout requires GitHub or GitLab")
-    number(change, "change number", 1, 2**31 - 1, integral=True)
+    if branch is None:
+        number(change, "change number", 1, 2**31 - 1, integral=True)
+        source_ref = f"refs/{ref}/{change}/head"
+    else:
+        source_ref = "refs/heads/" + branch_name(branch)
     sha(expected_sha)
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=False)
@@ -75,7 +82,7 @@ def export_source(repository, change, expected_sha, directory, token=None, *, pr
         "--depth=1",
         "--no-recurse-submodules",
         origin + "/" + repository + ".git",
-        f"refs/{ref}/{change}/head",
+        source_ref,
     )
     actual = git("rev-parse", "--verify", "FETCH_HEAD^{commit}").decode().strip()
     if actual != expected_sha:

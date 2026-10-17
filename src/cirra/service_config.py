@@ -32,6 +32,22 @@ def local_path(root, value):
     return (root / string(value, "configuration path")).resolve()
 
 
+def branch_name(value):
+    # Deliberately narrow operator allowlist; never accept arbitrary refspecs.
+    if (
+        not isinstance(value, str)
+        or len(value) > 200
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value)
+        or any(
+            part in ("", ".", "..") or part.startswith(".") or part.endswith((".", ".lock"))
+            for part in value.split("/")
+        )
+        or ".." in value
+    ):
+        raise CirraError("branch must be a safe short branch name")
+    return value
+
+
 @dataclass(frozen=True)
 class Route:
     name: str
@@ -45,6 +61,8 @@ class Route:
     observer: Path | None
     witness_env: str | None
     digest: str
+    review_enabled: bool = True
+    branches: tuple[str, ...] = ()
 
     @property
     def instance(self):
@@ -59,6 +77,8 @@ class ServiceConfig:
     max_attempts: int
     max_jobs: int
     max_jobs_per_day: int = 30
+    max_retry_seconds: float = 3600
+    reconcile_seconds: float = 0
 
 
 def load_service(path):
@@ -72,7 +92,15 @@ def load_service(path):
     worker = fields(
         data.get("worker", {}),
         [],
-        ["poll_seconds", "retry_seconds", "max_attempts", "max_jobs", "max_jobs_per_day"],
+        [
+            "poll_seconds",
+            "retry_seconds",
+            "max_attempts",
+            "max_jobs",
+            "max_jobs_per_day",
+            "max_retry_seconds",
+            "reconcile_seconds",
+        ],
         label="worker",
     )
     settings = {
@@ -81,6 +109,8 @@ def load_service(path):
         "max_attempts": 3,
         "max_jobs": 10000,
         "max_jobs_per_day": 30,
+        "max_retry_seconds": 3600,
+        "reconcile_seconds": 0,
     }
     settings.update(worker)
     number(settings["poll_seconds"], "poll seconds", 0.1, 60)
@@ -88,6 +118,10 @@ def load_service(path):
     number(settings["max_attempts"], "maximum attempts", 1, 10, integral=True)
     number(settings["max_jobs"], "maximum retained deliveries", 1, 100000, integral=True)
     number(settings["max_jobs_per_day"], "maximum daily job attempts", 1, 1000, integral=True)
+    number(settings["max_retry_seconds"], "maximum retry seconds", settings["retry_seconds"], 86400)
+    number(settings["reconcile_seconds"], "reconcile seconds", 0, 86400)
+    if 0 < settings["reconcile_seconds"] < 60:
+        raise CirraError("reconciliation must be disabled or at least 60 seconds apart")
     routes = {}
     for item in data["routes"]:
         fields(
@@ -101,7 +135,7 @@ def load_service(path):
                 "webhook_secret_env",
                 "publisher",
             ],
-            ["reader_token_env", "observer", "witness_key_env"],
+            ["reader_token_env", "observer", "witness_key_env", "review_enabled", "branches"],
             label="service route",
         )
         name = string(item["name"], "route name", 64)
@@ -124,7 +158,12 @@ def load_service(path):
             "instance": f"https://{provider}.com",
             "repository_id": repository_id,
         }
-        if identity not in policy.repositories or policy.reviewer_kind != "claude":
+        review_enabled = item.get("review_enabled", True)
+        if type(review_enabled) is not bool:
+            raise CirraError("review_enabled must be a boolean")
+        if identity not in policy.repositories or (
+            review_enabled and policy.reviewer_kind != "claude"
+        ):
             raise CirraError("service route needs an allowlisted automatic Claude review policy")
         if not isinstance(item["publisher"], dict):
             raise CirraError("publisher configuration must be an object")
@@ -149,6 +188,14 @@ def load_service(path):
         witness_env = env_name(item["witness_key_env"]) if item.get("witness_key_env") else None
         if bool(observer) != bool(witness_env):
             raise CirraError("Docker observation requires a policy and a witness key reference")
+        if not review_enabled and not observer:
+            raise CirraError("CI-only routes require an observer")
+        branches = item.get("branches", [])
+        if not isinstance(branches, list) or len(branches) > 10:
+            raise CirraError("branches must be a list of at most ten operator-selected branches")
+        branches = tuple(branch_name(branch) for branch in branches)
+        if len(set(branches)) != len(branches) or (branches and not observer):
+            raise CirraError("branch CI requires unique branches and an observer")
         routes[name] = Route(
             name,
             provider,
@@ -161,5 +208,7 @@ def load_service(path):
             observer,
             witness_env,
             digest({"route": item, "policy": policy.digest}),
+            review_enabled,
+            branches,
         )
     return ServiceConfig(routes=routes, **settings)

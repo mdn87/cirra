@@ -120,6 +120,12 @@ def test_lost_native_ack_reconciles_without_reexecuting_or_creating_duplicate(
     publisher.lose_ack = True
     with pytest.raises(RemoteUncertain):
         observe(data, observer_policy, tmp_path, KEY, publisher, executor=executor, source=source)
+    # Even when the native acknowledgement is lost, independently signed CI is
+    # available locally and accurately identifies the executed revision.
+    local = list((tmp_path / "observer").glob("*-execution-witness.json"))
+    assert len(local) == 1
+    standalone = provenance.apply({**data, "checks": []}, local[0], KEY)["checks"][0]
+    assert standalone["raw_state"] == "success" and standalone["provenance"]["trusted"]
     publisher.hide = True
     with pytest.raises(CirraError, match="uncertain"):
         observe(data, observer_policy, tmp_path, KEY, publisher, executor=executor, source=source)
@@ -198,8 +204,9 @@ def test_docker_launch_isolated_and_pinned(observer_policy, tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("provider,ref", [("github", "pull"), ("gitlab", "merge-requests")])
+@pytest.mark.parametrize("branch", [None, "main"])
 def test_real_git_export_ignores_attributes_and_never_checks_out_code(
-    tmp_path, monkeypatch, provider, ref
+    tmp_path, monkeypatch, provider, ref, branch
 ):
     repository = tmp_path / "repo"
     repository.mkdir()
@@ -234,7 +241,10 @@ def test_real_git_export_ignores_attributes_and_never_checks_out_code(
 
     def redirected(argv, directory, **kwargs):
         if "fetch" in argv:
-            assert argv[-2:] == [f"https://{provider}.com/example/repo.git", f"refs/{ref}/1/head"]
+            assert argv[-2:] == [
+                f"https://{provider}.com/example/repo.git",
+                "refs/heads/main" if branch else f"refs/{ref}/1/head",
+            ]
             assert "reader-canary" not in str(argv)
             env = kwargs["env"]
             headers = [env[f"GIT_CONFIG_KEY_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))]
@@ -253,7 +263,13 @@ def test_real_git_export_ignores_attributes_and_never_checks_out_code(
 
     monkeypatch.setattr("cirra.observer_source.run_control", redirected)
     archive, parents = export_source(
-        "example/repo", 1, head, tmp_path / "export", "reader-canary", provider=provider
+        "example/repo",
+        1,
+        head,
+        tmp_path / "export",
+        "reader-canary",
+        provider=provider,
+        branch=branch,
     )
     assert parents == []
     with tarfile.open(archive) as tar:
@@ -262,7 +278,13 @@ def test_real_git_export_ignores_attributes_and_never_checks_out_code(
     assert not (archive.parent / "git" / "test.py").exists()
     with pytest.raises(CirraError, match="head moved"):
         export_source(
-            "example/repo", 1, "f" * 40, tmp_path / "wrong-head", "reader-canary", provider=provider
+            "example/repo",
+            1,
+            "f" * 40,
+            tmp_path / "wrong-head",
+            "reader-canary",
+            provider=provider,
+            branch=branch,
         )
 
 

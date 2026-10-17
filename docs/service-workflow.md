@@ -68,9 +68,71 @@ cirra jobs --state-dir <state>
 
 `worker --once` handles one available job and exits. A normal worker stays
 running. `examples/systemd/` contains restartable Linux service templates.
-The selected account must already have Docker access and its own Claude login.
-The worker startup check waits for that login; never copy another account's
-session credentials to make it pass.
+The selected account must have Docker access. Claude review uses that account's
+own login; never copy another account's session credentials. The worker starts
+without a Claude login so independent CI can still run. An unavailable reviewer
+leaves the review needing attention while retaining the separate CI result.
+
+### Backup CI without GitHub Actions
+
+The observer runs directly on the configured host; Actions does not schedule or
+execute it. The example policy runs lint, formatting, tests and a distribution
+build with preinstalled dependencies (`python -m build --no-isolation`).
+This is Linux/Python 3.11 coverage, not the Windows/Python 3.14 matrix in the
+repository's Actions workflow. It tests the PR head, not a synthetic merge.
+
+Keep `review_enabled: true` (the default) on a route for the existing Claude bug
+review, or set `review_enabled: false` for CI only. CI-only routes must configure
+an observer. A failed test remains a failed test even when its job is `done`:
+that state means processing finished. `worker --once` exits nonzero for failed
+CI or a job requiring retry/attention.
+
+Enable missed-event recovery in the operator service configuration:
+
+```yaml
+worker:
+  reconcile_seconds: 900
+  retry_seconds: 30
+  max_retry_seconds: 3600
+  max_attempts: 10
+  max_jobs_per_day: 30
+```
+
+Every 15 minutes the worker lists open non-draft PRs/MRs and reads their current
+target branches. Each head/target/policy combination queues once through this
+path. Webhook and polling jobs can both exist, but completed tests and model
+responses are reused. Failures in one provider's scan do not prevent another
+route or queued work from being processed. Polling errors appear in `cirra jobs`.
+Set `branches: [main]` on a route to also queue each new main-branch commit.
+Branch CI reads and verifies the current branch tip, uses the same isolated
+tests and native check, and skips AI review. Branch runs are discovered by
+polling or requested manually; the existing webhook remains PR/MR-only.
+Provider reads and Git downloads must still be available; this is an Actions
+backup, not an offline replacement for GitHub hosting.
+
+Operators can request CI without fabricating a webhook:
+
+```text
+cirra enqueue --service-config <service.yaml> --state-dir <state> --route cirra-github --change <PR-number>
+cirra enqueue --service-config <service.yaml> --state-dir <state> --route cirra-github --branch main
+cirra sync --service-config <service.yaml> --env-file <worker.env> --state-dir <state>
+cirra requeue --service-config <service.yaml> --state-dir <state> --route cirra-github --job <job-id> --reason "provider recovered"
+cirra jobs --state-dir <state>
+```
+
+`enqueue` requests fresh provider state; it reuses an existing test execution and
+review for unchanged inputs. `requeue` only accepts terminal jobs and archives the
+prior job and operator reason before resetting its attempts. It does not reset
+the daily budget or force an uncertain model call/native write to repeat.
+Inspect those separately using the existing review/publication recovery flow.
+
+Each finished execution has a signed standalone receipt before GitHub publication
+is attempted. The worker also records the latest CI conclusion, tested SHA,
+receipt path and publication status under `ci/`, displayed by `cirra jobs`.
+If native publication is unavailable, retry resumes from the saved execution.
+The independent receipt does not authenticate other providers' CI jobs.
+Worker status includes the last loop heartbeat; it can remain unchanged during
+a bounded test/review execution and is not a readiness guarantee.
 
 The HTTP listener binds only to `127.0.0.1`. Put an existing HTTPS reverse proxy
 or tunnel in front of it. For an installation using Tailscale Funnel, a dedicated
@@ -191,6 +253,8 @@ creating another check or note. Jobs requiring inspection say `attention` with
 a reason. Policy changes also stop old queued jobs for inspection.
 
 Defaults permit three attempts per job and 30 admitted job attempts per UTC day.
+Retry delays increase exponentially from `retry_seconds` to `max_retry_seconds`
+(one hour by default). `reconcile_seconds` defaults to zero (disabled).
 The daily limit survives restart; remaining jobs wait for the next day. Per-call
 review time and budget limits still apply. `cirra jobs` shows results and today's
 admission count. The queue retains up to 10,000 unique accepted bodies, after
@@ -245,8 +309,8 @@ ssh lugos-host
 /home/matt/.local/bin/claude auth login
 ```
 
-The service retries startup after login. The public repository currently uses
-anonymous collection; configure a separate read-only reader credential for
+The service can run CI even while the reviewer login needs renewal. The public
+repository currently uses anonymous collection; configure a separate read-only reader credential for
 sustained traffic to avoid anonymous API rate limits. Opening or updating an
 open, non-draft PR queues its current revision for isolated tests and review.
 
@@ -305,6 +369,46 @@ head `e104fd0f212c7b4a849a4aa332a06fcb669cfb51`. Run
 review, zero findings, and [advisory check 116822006340](https://github.com/mdn87/cirra/runs/116822006340).
 The previous runtime and protected configuration backup remain available for
 rollback. No database schema changed.
+
+### Backup CI rollout
+
+On 2026-10-17 release `5263626be17d14efb1bdd364c3123de0d6fdb798` (this PR,
+with `main` merged in) replaced `bc7939200ea846a78853f1bcdafa0b04db24c67e`.
+All 191 tests passed on lugos-host, including the three real Docker checks
+against the deployed observer image `sha256:47826cde8764…`. The operator
+configuration gained `worker.reconcile_seconds: 900` and `branches: [main]`
+on the `cirra-github` route. The prior release and a configuration backup
+(`staging/config-before-5263626`) remain for rollback.
+
+The release changes the observer supervisor, so both observer definition
+digests changed: GitHub `06d28457…` to `e5532136…`, GitLab `bdb34ea0…` to
+`20d07506…`. The first branch job started before the review policies were
+re-pinned. The worker refused it with "review policy must pin the observer
+source, check name, and definition digest", exhausted three attempts, and
+left it in `attention` without running or publishing anything. After the pins
+were updated and the services restarted, reconcile queued a fresh job.
+Recompute the digests with `cirra observer-definition` for every release that
+touches observer code, before restarting.
+
+Observed results:
+
+- Branch CI: reconcile queued `main` at
+  `b8e98e9a854d577c460af1837e6f5079b7f2ecd9`. The isolated tests succeeded,
+  the signed witness receipt was recorded, and the
+  [native check 117316369284](https://github.com/mdn87/cirra/runs/117316369284)
+  was published with review disabled.
+- PR flow: marking this PR ready produced a `ready_for_review` delivery
+  (HTTP 202). The worker tested head `5263626` with a verified checkout,
+  published [isolated tests 117316664098](https://github.com/mdn87/cirra/runs/117316664098),
+  and a complete Claude review as
+  [advisory check 117316945160](https://github.com/mdn87/cirra/runs/117316945160)
+  with two low findings and one informational note, recorded on the PR.
+- Heartbeat: `worker-status.json` is rewritten in place on each pass. No
+  `history/worker-status` directory exists in the service state.
+
+The installed worker unit still runs the Claude login check in
+`ExecStartPre`; the template's removal of that line has not been applied on
+this host.
 
 To inspect the deployment without printing credentials:
 

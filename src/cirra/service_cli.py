@@ -18,6 +18,9 @@ def register(commands):
     for name, help_text in (
         ("serve-webhooks", "accept authenticated events on loopback HTTP"),
         ("worker", "process durable review jobs until stopped"),
+        ("enqueue", "queue current PR/MR CI and optional review without a webhook"),
+        ("requeue", "recover an inspected terminal job, retaining its prior record"),
+        ("sync", "find missed open PR/MR revisions using provider reads"),
     ):
         parser = commands.add_parser(name, help=help_text)
         parser.add_argument("--service-config", type=Path, required=True)
@@ -27,8 +30,19 @@ def register(commands):
         )
         if name == "serve-webhooks":
             parser.add_argument("--port", type=int, default=8787)
-        else:
+        elif name == "worker":
             parser.add_argument("--once", action="store_true")
+        elif name == "enqueue":
+            parser.add_argument("--route", required=True)
+            selection = parser.add_mutually_exclusive_group(required=True)
+            selection.add_argument("--change", type=int)
+            selection.add_argument("--branch")
+        elif name == "requeue":
+            parser.add_argument("--route", required=True)
+            parser.add_argument("--job", required=True)
+            parser.add_argument("--reason", required=True)
+        elif name == "sync":
+            parser.add_argument("--route")
     status = commands.add_parser("jobs", help="inspect durable worker job results")
     status.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
     observer = commands.add_parser(
@@ -44,21 +58,63 @@ def run(args, credential, capture):
         return 0
     if args.command == "jobs":
         queue = Queue(args.state_dir)
-        print(json.dumps({"jobs": queue.status(), "daily_usage": queue.usage()}, indent=2))
+        status = queue.directory.parent / "worker-status.json"
+        reconciliation = queue.directory.parent / "reconciliation.json"
+        ci = queue.directory.parent / "ci"
+        print(
+            json.dumps(
+                {
+                    "jobs": queue.status(),
+                    "daily_usage": queue.usage(),
+                    "worker": queue.read(status) if status.exists() else None,
+                    "reconciliation": queue.read(reconciliation)
+                    if reconciliation.exists()
+                    else None,
+                    "ci": [queue.read(p) for p in sorted(ci.glob("*.json"))],
+                },
+                indent=2,
+            )
+        )
         return 0
-    if args.command not in ("serve-webhooks", "worker"):
+    if args.command not in ("serve-webhooks", "worker", "enqueue", "requeue", "sync"):
         return None
     config = load_service(args.service_config)
+    if args.command in ("enqueue", "requeue"):
+        route = config.routes.get(args.route)
+        if route is None:
+            raise CirraError("unknown service route")
+        queue = Queue(args.state_dir, config.max_jobs)
+        result = (
+            (
+                queue.request_branch(route, args.branch)
+                if args.branch
+                else queue.request(route, args.change)
+            )
+            if args.command == "enqueue"
+            else queue.requeue(args.job, route, args.reason)
+        )
+        print(json.dumps(result))
+        return 0
     if args.env_file:
         names = set()
         for route in config.routes.values():
             if args.command == "serve-webhooks":
                 names.add(route.secret_env)
+            elif args.command == "sync":
+                names.add(route.reader_env)
             else:
                 names.update(
                     [route.reader_env, route.witness_env, route.publisher.get("token_env")]
                 )
         credential = credential_file(args.env_file, names - {None})
+    if args.command == "sync":
+        from cirra.reconcile import sync
+
+        result = sync(
+            config, Queue(args.state_dir, config.max_jobs), credential, route_name=args.route
+        )
+        print(json.dumps(result))
+        return int(any("error" in row for row in result))
     if args.command == "serve-webhooks":
         with WebhookServer(("127.0.0.1", args.port), config, args.state_dir, credential) as server:
             print(
@@ -87,7 +143,15 @@ def run(args, credential, capture):
             once=args.once,
             stopped=stopped,
         )
-        return 1 if result and result["state"] in ("retry", "attention") else 0
+        return int(
+            bool(
+                result
+                and (
+                    result["state"] in ("retry", "attention")
+                    or (result.get("result", {}).get("ci") or {}).get("conclusion") == "failure"
+                )
+            )
+        )
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
