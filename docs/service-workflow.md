@@ -432,6 +432,27 @@ The installed worker unit still runs the Claude login check in
 `ExecStartPre`; the template's removal of that line has not been applied on
 this host.
 
+### Host recovery facts
+
+Checked on lugos-host on 2026-10-17 for the production audit:
+
+- Backups: `lugos-host-backup.timer` archives `/srv/lugos` nightly to
+  `/srv/lugos/backups` with 14-day retention; the last run succeeded. The
+  archive includes `state/cirra` (the SQLite review state and the signed
+  witness and publication receipts), but its secret filter leaves out
+  `services/cirra/config`, which holds the witness key and tokens.
+- Disaster recovery: those archives are on the same disk, and the only
+  off-host copy (restic to nodens) covers a different service. Losing the disk
+  loses Cirra's receipts and witness key. Reviews can be re-run and
+  publications reconciled from the providers, but past receipts cannot be
+  re-signed. An off-host copy of `state/cirra`, and an offline copy of the
+  witness key, would close this.
+- Encryption at rest: the root filesystem is unencrypted ext4. State written
+  under `UMask=0077` includes diffs from the private GitLab sandbox.
+- Ingress: Tailscale Funnel on port 8443 proxies directly to the loopback
+  receiver. The receiver's own 10-second total request deadline and 1 MiB body
+  limit apply regardless of what Funnel enforces.
+
 ### Deploying and rolling back
 
 `scripts/deploy-release.sh` replaces the manual steps above. From a checkout
