@@ -70,7 +70,12 @@ applies, and anything else runs again on the same attempt. A runner failure of
 any kind fails the job and fences its attempt. A request made under a policy
 that has since changed is refused rather than run or published under the new
 one. Finished records move to `audit-queue/archive/` after seven days, and at
-most 10,000 requests can be active.
+most 10,000 requests can be active. On Linux and macOS a command agent holds an
+inherited lock on `agent.lock`, so recovery kills an agent that outlived its
+worker before starting another; Windows workers cannot detect one. While `pr`
+audits wait on a first baseline, that baseline runs ahead of further `pr`
+work. Operator requests run on the route that serves the repository with the
+policy they were made under.
 
 ## Running an audit
 

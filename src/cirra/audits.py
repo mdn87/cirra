@@ -97,6 +97,9 @@ def valid_checkpoint(path, domains=None):
         or not isinstance(data.get("findings", []), list)
     ):
         return None
+    ids = [row.get("id") if isinstance(row, dict) else None for row in data["coverage"]]
+    if sorted(map(str, ids)) != sorted(domains[slug]):
+        return None  # every concept of the domain, exactly once
     for row in data["coverage"]:
         if (
             not isinstance(row, dict)

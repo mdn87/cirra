@@ -56,6 +56,8 @@ def settle(queue, store, job, on_complete=None):
         result["publication"] = on_complete(job, attempt)
         if result["publication"]["state"] == "waiting":
             return queue.update(job["id"], state="awaiting_baseline", result=result)
+        if result["publication"]["state"] == "stopped":
+            return queue.update(job["id"], state=result["publication"]["reason"], result=result)
         if result["publication"]["state"] == "failed":
             state = "attention"
     return queue.update(job["id"], state=state, result=result)
@@ -149,6 +151,19 @@ def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
     except Exception as exc:  # noqa: BLE001 - any runner failure must end and fence the job
         message = str(exc) if isinstance(exc, CirraError) else f"{type(exc).__name__}: {exc}"
         return fail(queue, store, job, attempt_id, message, on_complete)
+
+
+def route_for(routes, name, identity):
+    """The named route, else one serving this repository with the identity's policy."""
+    if routes.get(name):
+        return routes[name]
+    serving = [route for route in routes.values() if repository_of(route) == identity["repository"]]
+    matching = [
+        route
+        for route in serving
+        if audits.policy_digest(route.policy.audit) == identity["policy_digest"]
+    ]
+    return (matching or serving or [None])[0]
 
 
 def repository_of(route):
@@ -256,14 +271,7 @@ class AuditRunner:
         return self.directory / "audit-attempts" / attempt_id
 
     def __call__(self, job, attempt, stop):
-        route = self.routes.get(job["context"].get("route")) or next(
-            (
-                item
-                for item in self.routes.values()
-                if repository_of(item) == job["identity"]["repository"]
-            ),
-            None,
-        )
+        route = route_for(self.routes, job["context"].get("route"), job["identity"])
         if route is None:
             raise CirraError("no route with an audit policy serves this repository")
         policy = route.policy.audit
@@ -332,6 +340,7 @@ class AuditRunner:
             if not data["coverage"] or any(not row["evidence"] for row in data["coverage"]):
                 continue
             cited = {item["path"] for row in data["coverage"] for item in row["evidence"]}
+            cited |= {finding["path"] for finding in data.get("findings", [])}
             if not cited & changed:
                 (target / path.name).write_bytes(path.read_bytes())
                 copied.append(path.stem)
@@ -345,6 +354,57 @@ class AuditRunner:
             if audits.valid_checkpoint(path, domains) is not None
         )
 
+    def launch(self, argv, work, env, log):
+        """Start the agent after any agent a crashed worker left in this directory is gone.
+
+        On POSIX the agent inherits a lock on `agent.lock`, so the lock stays held for
+        as long as it (or anything it started) runs, even after the worker dies.
+        Windows has no inherited lock; there a surviving agent is not detected.
+        """
+        if os.name == "nt":
+            return subprocess.Popen(
+                argv,
+                cwd=work,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        import fcntl
+        import signal
+
+        with (work / "agent.lock").open("a+b") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                previous = int((work / "agent.pid").read_text(encoding="utf-8"))
+                try:
+                    os.killpg(previous, signal.SIGKILL)  # its own session: pgid == pid
+                except ProcessLookupError:
+                    pass
+                deadline = time.monotonic() + self.grace_seconds
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise CirraError("a previous audit agent is still running") from None
+                        time.sleep(0.1)
+            process = subprocess.Popen(
+                argv,
+                cwd=work,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                pass_fds=(lock.fileno(),),
+            )
+            (work / "agent.pid").write_text(str(process.pid), encoding="utf-8")
+        return process
+
     def run_agent(self, policy, identity, attempt, packet_path, checkout, work, stop):
         env = tool_environment()
         env.update(
@@ -354,16 +414,7 @@ class AuditRunner:
         )
         log_path = work / "agent.log"
         with log_path.open("ab") as log:
-            process = subprocess.Popen(
-                list(policy.runner_command),
-                cwd=work,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=os.name != "nt",
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-            )
+            process = self.launch(list(policy.runner_command), work, env, log)
             deadline = time.monotonic() + policy.audit_timeout_seconds
             completed = self.checkpoints(work)
             try:
@@ -486,18 +537,11 @@ class AuditPublication:
             receipt = json.loads(path.read_text(encoding="utf-8"))
             if receipt["state"] == "published":
                 return {**receipt, "duplicate": True}
-        route = self.routes.get(job["context"].get("route")) or next(
-            (
-                item
-                for item in self.routes.values()
-                if audits.repository_key(repository_of(item)) == attempt["repository_key"]
-            ),
-            None,
-        )
+        identity = json.loads(attempt["identity_json"])
+        route = route_for(self.routes, job["context"].get("route"), identity)
         if route is None:
             return {"state": "failed", "reason": "no route with an audit policy serves this audit"}
         policy = route.policy.audit
-        identity = json.loads(attempt["identity_json"])
         if identity["policy_digest"] != audits.policy_digest(policy):
             return {
                 "state": "failed",
@@ -524,6 +568,9 @@ class AuditPublication:
             "conclusion": conclusion,
             "blocking": len(result["blocking"]),
         }
+        if reason := AuditQueue(self.directory).stop_reason(job["id"]):
+            # Cancelled or superseded while waiting: never publish stopped work.
+            return {"state": "stopped", "reason": reason}
         if route.provider != "github":
             receipt.update(
                 state="unsupported", reason="audit publication is implemented for GitHub only"

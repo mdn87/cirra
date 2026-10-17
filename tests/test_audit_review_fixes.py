@@ -1,12 +1,14 @@
 """Regression tests for the review findings on the audit queue and worker (#17, #18)."""
 
 import json
+import os
+import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from audit_fixtures import audit_policy, build_report
+from audit_fixtures import audit_policy, build_report, domain_rows
 from test_audit_worker import FakeGitHub, agent, request, store_baseline
 
 from cirra import audit_worker, audits, job_queue
@@ -331,14 +333,21 @@ def test_checkpoints_carry_findings_and_reject_malformed_rows(tmp_path):
         "evidence": "No timeout.",
     }
     row = {"id": "C011", "status": "missing", "evidence": []}
-    good = {"domain": "reliability-and-resilience", "coverage": [row], "findings": [finding]}
+    others = [r for r in domain_rows("reliability-and-resilience") if r["id"] != "C011"]
+    good = {
+        "domain": "reliability-and-resilience",
+        "coverage": [row, *others],
+        "findings": [finding],
+    }
     path = tmp_path / "reliability-and-resilience.json"
     path.write_text(json.dumps(good), encoding="utf-8")
     assert audits.valid_checkpoint(path)["findings"] == [finding]
     for bad in (
-        {**good, "coverage": [{**row, "evidence": 1}]},
-        {**good, "coverage": [{**row, "evidence": [{"path": "a.py", "start_line": "1"}]}]},
-        {**good, "coverage": [{**row, "status": "sort of"}]},
+        {**good, "coverage": [{**row, "evidence": 1}, *others]},
+        {**good, "coverage": [{**row, "evidence": [{"path": "a.py", "start_line": "1"}]}, *others]},
+        {**good, "coverage": [{**row, "status": "sort of"}, *others]},
+        {**good, "coverage": others},  # a concept is missing
+        {**good, "coverage": [row, row, *others[1:]]},  # a duplicate instead of a concept
         {**good, "findings": [{**finding, "title": "[C058] Another domain"}]},
         {**good, "findings": [{**finding, "extra": True}]},
         {**good, "findings": "none"},
@@ -445,7 +454,8 @@ def test_checkpoints_are_not_reused_across_catalogs(world, tmp_path):
     source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
     source.mkdir(parents=True)
     (source / "security.json").write_text(
-        json.dumps({"domain": "security", "coverage": []}), encoding="utf-8"
+        json.dumps({"domain": "security", "coverage": domain_rows("security", ["app.py"])}),
+        encoding="utf-8",
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -462,17 +472,21 @@ def test_evidence_free_domains_are_rerun_after_a_new_head(world, tmp_path):
     )
     source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
     source.mkdir(parents=True)
-    cited = {
-        "id": "C064",
-        "status": "implemented",
-        "evidence": [{"path": "pyproject.toml", "start_line": 1, "end_line": 1}],
-    }
     absent = {"id": "C065", "status": "not_applicable", "evidence": []}
     (source / "security.json").write_text(
-        json.dumps({"domain": "security", "coverage": [{**cited, "id": "X01"}]}), encoding="utf-8"
+        json.dumps({"domain": "security", "coverage": domain_rows("security", ["pyproject.toml"])}),
+        encoding="utf-8",
     )
     (source / "observability-and-operations.json").write_text(
-        json.dumps({"domain": "observability-and-operations", "coverage": [cited, absent]}),
+        json.dumps(
+            {
+                "domain": "observability-and-operations",
+                "coverage": [
+                    *domain_rows("observability-and-operations", ["pyproject.toml"])[1:],
+                    {**absent, "id": domain_rows("observability-and-operations")[0]["id"]},
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     from cirra.audit_checkout import prepare_checkout
@@ -554,13 +568,9 @@ def test_a_renamed_cited_file_invalidates_its_checkpoint(world, tmp_path):
     )
     source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
     source.mkdir(parents=True)
-    row = {
-        "id": "X01",
-        "status": "implemented",
-        "evidence": [{"path": "pyproject.toml", "start_line": 1, "end_line": 1}],
-    }
     (source / "security.json").write_text(
-        json.dumps({"domain": "security", "coverage": [row]}), encoding="utf-8"
+        json.dumps({"domain": "security", "coverage": domain_rows("security", ["pyproject.toml"])}),
+        encoding="utf-8",
     )
     checkout = prepare_checkout(
         world.state,
@@ -616,3 +626,136 @@ def test_attention_jobs_are_archived_too(env):
     )
     pr(2)
     assert (queue.directory / "archive" / (first["job_id"] + ".json")).is_file()
+
+
+# --- Third Codex round on #20 -----------------------------------------------
+
+
+def test_a_changed_finding_path_invalidates_its_checkpoint(world, tmp_path):
+    from cirra.audit_checkout import prepare_checkout
+
+    route, runner = world.make()
+    store = Store(world.state)
+    repository = audits.select_repository(route.policy)
+    old, _ = audits.begin(
+        store, audits.audit_identity(route.policy.audit, "full", repository, world.base)
+    )
+    source = runner.attempt_dir(old["attempt_id"]) / "work" / "checkpoints"
+    source.mkdir(parents=True)
+    rows = domain_rows("security", ["pyproject.toml"])
+    finding = {
+        "path": "app.py",  # changed between the heads, unlike the cited evidence
+        "side": "new",
+        "start_line": 1,
+        "end_line": 1,
+        "severity": "high",
+        "title": f"[{rows[0]['id']}] Fixture",
+        "evidence": "Fixture.",
+    }
+    (source / "security.json").write_text(
+        json.dumps({"domain": "security", "coverage": rows, "findings": [finding]}),
+        encoding="utf-8",
+    )
+    checkout = prepare_checkout(
+        world.state,
+        "github",
+        "example/repo",
+        "refs/pull/7/head",
+        world.head,
+        tmp_path / "co",
+        url=str(world.origin.path),
+        protocols=("file",),
+    )
+    job = {
+        "resume_from": old["attempt_id"],
+        "identity": audits.audit_identity(route.policy.audit, "full", repository, world.head),
+    }
+    target = tmp_path / "target"
+    target.mkdir()
+    assert runner.resume(store, job, checkout, target) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="agents inherit the lock only on POSIX")
+def test_a_surviving_agent_is_killed_before_relaunch(world, tmp_path):
+    _, runner = world.make()
+    work = tmp_path / "work"
+    work.mkdir()
+    with (work / "first.log").open("ab") as log:
+        survivor = runner.launch(
+            [sys.executable, "-c", "import time; time.sleep(60)"], work, None, log
+        )
+    # The worker "crashed": only the survivor still holds the lock.
+    with (work / "second.log").open("ab") as log:
+        second = runner.launch([sys.executable, "-c", "pass"], work, None, log)
+    assert survivor.wait(10) is not None
+    assert second.wait(10) == 0
+
+
+def test_a_stop_during_baseline_wait_prevents_publication(world, tmp_path):
+    route, runner = world.make(agent(tmp_path))
+    request(world, route, "app.py")
+    store = Store(world.state)
+    queue = AuditQueue(world.state, store)
+    github = FakeGitHub()
+    publication = AuditPublication(
+        world.state,
+        {"main": route},
+        lambda r: AuditCheckPublisher(r.repository, 5, "t", http=github),
+    )
+    waiting = audit_once(queue, store, 20, runner, on_complete=publication)
+    assert waiting["state"] == "awaiting_baseline"
+    store_baseline(world, route)
+    queue.update(waiting["id"], superseded_by="f" * 32)  # lands while it waits
+    audit_once(
+        queue, store, 20, lambda *args: {"state": "awaiting_import"}, on_complete=publication
+    )
+    assert queue.read(waiting["id"])["state"] == "superseded"
+    assert github.posts == []
+
+
+def test_a_baseline_that_prs_wait_on_runs_before_more_pr_work(env):
+    queue, store, config, pr = env
+    repository = audits.select_repository(config)
+    baseline = queue.request(
+        audits.audit_identity(config.audit, "full", repository, head(50)),
+        "repository",
+        reason="baseline",
+    )
+    waiting = pr(1)
+    queue.update(waiting["job_id"], state="awaiting_baseline")
+    pr(2, change=2)
+    assert queue.runnable()[0]["id"] == baseline["job_id"]
+
+
+def test_operator_requests_pick_the_route_with_their_policy(world, policy_data, tmp_path):
+    from types import SimpleNamespace
+
+    from cirra.audit_worker import route_for
+
+    route, _ = world.make()
+    strict = audit_policy(
+        tmp_path, policy_data, {"tiers": ["pr", "full"], "gates": {"pr": "low"}}, "strict.yaml"
+    )
+    other = SimpleNamespace(**{**vars(route), "name": "strict", "policy": strict})
+    identity = audits.audit_identity(
+        strict.audit, "full", audits.select_repository(strict), world.head
+    )
+    assert route_for({"main": route, "strict": other}, None, identity) is other
+
+
+def test_publication_rechecks_for_a_stop_right_before_writing(world, tmp_path):
+    route, runner = world.make(agent(tmp_path))
+    store_baseline(world, route)
+    request(world, route, "app.py")
+    store = Store(world.state)
+    queue = AuditQueue(world.state, store)
+    job = audit_once(queue, store, 20, runner)  # completes without publishing
+    github = FakeGitHub()
+    publication = AuditPublication(
+        world.state,
+        {"main": route},
+        lambda r: AuditCheckPublisher(r.repository, 5, "t", http=github),
+    )
+    queue.update(job["id"], cancel_requested=True)  # arrives after settle's own check
+    receipt = publication(job, audits.get(store, job["attempt_id"]))
+    assert receipt == {"state": "stopped", "reason": "cancelled"} and github.posts == []

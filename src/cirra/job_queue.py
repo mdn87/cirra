@@ -361,17 +361,32 @@ class AuditQueue:
     def runnable(self, now=None):
         now = time.time() if now is None else now
         today = datetime.fromtimestamp(now, UTC).date().isoformat()
+        jobs = self.jobs()
+        # Repositories whose finished pr audits wait on a first baseline: that
+        # baseline runs ahead of further pr work, so traffic cannot starve it.
+        blocked = {
+            json.dumps(job["identity"]["repository"], sort_keys=True)
+            for job in jobs
+            if job["state"] == "awaiting_baseline"
+        }
+
+        def priority(job):
+            repository = json.dumps(job["identity"]["repository"], sort_keys=True)
+            if job["tier"] == "full" and job["scope"] == "repository" and repository in blocked:
+                return 0.5
+            return AUDIT_PRIORITY[job["tier"]]
+
         return sorted(
             (
                 job
-                for job in self.jobs()
+                for job in jobs
                 if job["not_before"] <= now
                 and (
                     job["state"] == "queued"
                     or (job["state"] == "deferred" and job.get("deferred_on") != today)
                 )
             ),
-            key=lambda job: (AUDIT_PRIORITY[job["tier"]], job["sequence"]),
+            key=lambda job: (priority(job), job["sequence"]),
         )
 
     def priority_waiting(self, now=None):

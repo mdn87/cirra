@@ -4,7 +4,7 @@ import json
 import sys
 import time
 
-from audit_fixtures import build_report
+from audit_fixtures import build_report, domain_rows
 from test_audit_worker import TESTS, store_baseline
 
 from cirra import audits
@@ -99,15 +99,7 @@ def test_preempted_full_audit_resumes_without_rerunning_completed_domains(world,
 
 
 def checkpoint(directory, slug, evidence_paths):
-    domain = next(item for item in audits.catalog_domains() if item["slug"] == slug)
-    rows = [
-        {
-            "id": cid,
-            "status": "implemented",
-            "evidence": [{"path": path, "start_line": 1, "end_line": 1} for path in evidence_paths],
-        }
-        for cid in domain["ids"][:1]
-    ]
+    rows = domain_rows(slug, evidence_paths)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{slug}.json").write_text(
         json.dumps({"domain": slug, "coverage": rows}), encoding="utf-8"
