@@ -209,6 +209,26 @@ baseline matching. Acceptance: importing the same report twice is a no-op;
 an invalid report is stored as a failed attempt with the validator output; a
 second audit marks findings new, open or resolved.
 
+Implemented in `cirra.audits` and `cirra.audit_cli`, tested in
+`tests/test_audit_import.py`. The validator and catalog are vendored under
+`src/cirra/vendor/production_audit/` (see its `SOURCE.md`). The lugos-side
+identity change had already landed (skill 1.1.0 records `skill_version` and
+`catalog_digest`). Choices made while implementing:
+
+- Attempts live in a new `audits` table (state schema version 2). An identity
+  with a prepared or complete attempt is reused; after a failed, cancelled or
+  superseded attempt, preparing again opens the next attempt number.
+- The identity's skill version is the vendored one. The agent's own
+  `skill_version` is stored with its report; only the catalog digest must match.
+- A report for another tier, head or base is refused without spending the
+  attempt. Validator problems, including a catalog mismatch, fail it.
+- The attempt's state is the cancellation fence: import re-checks it in the
+  transaction that stores the result.
+- Findings match by concept IDs plus path. Only a full audit can mark a finding
+  resolved, since `pr` and `release` audits cover a subset of concepts.
+- The newest full audit's profile goes into `pr` packets. Whether the skill uses
+  it is still the skill's change to make.
+
 ### Stage 3: queueing rules
 
 Work keys, coalescing, debounce, supersession flags, cooperative fenced

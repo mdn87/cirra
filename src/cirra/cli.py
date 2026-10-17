@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from cirra import __version__, extensions, gitlab, provenance, service_cli
+from cirra import __version__, audit_cli, extensions, gitlab, provenance, service_cli
 from cirra.config import load_config
 from cirra.coordinator import review
 from cirra.domain import CirraError
@@ -101,6 +101,7 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     extensions.register(commands)
     service_cli.register(commands)
+    audit_cli.register(commands)
     for name, help_text in (
         ("review", "review a captured change with the configured fake or automatic reviewer"),
         ("prepare-review", "export a packet for an existing agent session"),
@@ -169,6 +170,9 @@ def main(argv=None):
         extension_result = extensions.run(args, token_from, capture_change)
         if extension_result is not None:
             return extension_result
+        audit_result = audit_cli.run(args)
+        if audit_result is not None:
+            return audit_result
         if args.command == "sign-provenance":
             statement = extensions.read_json(args.statement)
             signed = provenance.sign(statement, token_from(args.key_env))

@@ -170,18 +170,21 @@ def test_store_upgrades_through_ordered_migrations_and_refuses_newer_schemas(tmp
     from cirra import store
     from cirra.domain import CirraError
 
+    current = store.SCHEMA_VERSION
     store.Store(tmp_path)
-    monkeypatch.setattr(store, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(store, "SCHEMA_VERSION", current + 1)
     monkeypatch.setattr(
-        store, "MIGRATIONS", {1: ["ALTER TABLE reports ADD COLUMN migrated_note TEXT"]}
+        store,
+        "MIGRATIONS",
+        {**store.MIGRATIONS, current: ["ALTER TABLE reports ADD COLUMN migrated_note TEXT"]},
     )
     store.Store(tmp_path)
     with sqlite3.connect(tmp_path / "cirra.sqlite3") as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == current + 1
         columns = [row[1] for row in connection.execute("PRAGMA table_info(reports)")]
     assert "migrated_note" in columns
     store.Store(tmp_path)  # already current: no-op
-    monkeypatch.setattr(store, "SCHEMA_VERSION", 1)
+    monkeypatch.setattr(store, "SCHEMA_VERSION", current)
     with pytest.raises(CirraError, match="newer"):
         store.Store(tmp_path)
 
