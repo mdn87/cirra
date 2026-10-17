@@ -53,7 +53,12 @@ def authenticate(provider, raw, headers, secret):
             kind = normalized.get("x-forgejo-event", normalized.get("x-gitea-event"))
         else:
             raise CirraError("unsupported webhook provider")
-    if not isinstance(supplied, str) or not hmac.compare_digest(expected, supplied):
+    # compare_digest raises TypeError for non-ASCII str; such a header cannot match.
+    if (
+        not isinstance(supplied, str)
+        or not supplied.isascii()
+        or not hmac.compare_digest(expected, supplied)
+    ):
         raise CirraError("webhook authentication failed")
     string(delivery, "webhook delivery identity", 200)
     return delivery, kind

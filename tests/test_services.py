@@ -2,7 +2,9 @@ import copy
 import hashlib
 import hmac
 import json
+import socket
 import threading
+import time
 from dataclasses import replace
 from http.client import HTTPConnection
 from types import SimpleNamespace
@@ -213,6 +215,80 @@ def test_http_receiver_acknowledges_without_calling_provider_and_rejects_duplica
             server.shutdown()
             thread.join(timeout=5)
     assert len(Queue(tmp_path).pending()) == 1
+
+
+def test_non_ascii_signature_is_an_authentication_failure_not_a_crash(route, tmp_path):
+    # Production audit X05: hmac.compare_digest raised TypeError on a non-ASCII
+    # header, which handle_error swallowed without a response record.
+    raw, headers = delivery()
+    headers["X-Hub-Signature-256"] = "sha256=" + "é" * 64
+    with pytest.raises(CirraError, match="authentication"):
+        accept(route, raw, headers, SECRET, Queue(tmp_path))
+
+
+def serve(route, tmp_path, **attributes):
+    server = WebhookServer(("127.0.0.1", 0), settings(route), tmp_path, lambda _: SECRET)
+    for name, value in attributes.items():
+        setattr(server, name, value)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def test_receiver_closes_slow_requests_at_a_total_deadline(route, tmp_path):
+    # Production audit C011/C075: a 5 s per-read timeout let a client trickling
+    # bytes hold one of 16 slots for hours.
+    server, thread = serve(route, tmp_path, request_deadline=0.5)
+    try:
+        slow = socket.create_connection(("127.0.0.1", server.server_port), timeout=5)
+        slow.sendall(b"POST /hooks/test HTTP/1.1\r\nContent-Length: 100\r\n")
+        started = time.monotonic()
+        closed = False
+        while time.monotonic() - started < 4:
+            try:
+                slow.sendall(b"X-Slow: 1\r\n")
+                if slow.recv(1024, socket.MSG_PEEK) == b"":
+                    closed = True
+                    break
+            except (ConnectionError, OSError):
+                closed = True
+                break
+            time.sleep(0.2)
+        slow.close()
+        assert closed and time.monotonic() - started < 3
+        raw, headers = delivery()
+        client = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        client.request("POST", "/hooks/test", raw, headers)
+        assert client.getresponse().status == 202
+        client.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_receiver_logs_one_line_per_request_without_headers_or_body(route, tmp_path, capsys):
+    # Production audit C059/C066: refused deliveries left no local trace.
+    server, thread = serve(route, tmp_path)
+    try:
+        raw, headers = delivery(identity="delivery-logged")
+        headers["X-Hub-Signature-256"] = "sha256=" + "0" * 64
+        client = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        client.request("POST", "/hooks/test", raw, headers)
+        assert client.getresponse().status == 401
+        client.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert {
+        "event": "webhook_request",
+        "method": "POST",
+        "path": "/hooks/test",
+        "status": 401,
+        "delivery": "delivery-logged",
+        "bytes": len(raw),
+    } in lines
+    assert SECRET not in json.dumps(lines) and "sha256" not in json.dumps(lines)
 
 
 def test_worker_restart_retry_limit_and_policy_changes(route, tmp_path):
