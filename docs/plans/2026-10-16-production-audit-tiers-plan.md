@@ -1,6 +1,7 @@
 # Production audit tiers in Cirra
 
-Date: 2026-10-16. Status: proposed; nothing in this plan is implemented.
+Date: 2026-10-16. Status: stage 1 implemented (`src/cirra/audit.py`); stages 2 to 6
+proposed.
 
 ## Purpose
 
@@ -180,6 +181,24 @@ The `audit` policy block with validation, and the pure selection function
 (event plus history to tiers, including structural escalation and baseline
 age). Acceptance: table-driven tests cover every row of the tier table;
 policies without an `audit` block load unchanged.
+
+Implemented as `cirra.audit.load_audit_policy` (called by `load_config`) and
+`cirra.audit.select_tiers`, tested in `tests/test_audit_tiers.py`. Choices made
+while implementing:
+
+- Only `tiers` is required. Omitted sections take the values in the policy
+  example above, with `runner.kind: session`.
+- `escalate_paths` replaces the default structural list;
+  `escalate_paths_add` extends it. A policy may use one, not both. In patterns,
+  `**` spans directories and `*` stays within one.
+- A missing baseline, a changed catalog digest, and a full audit older than
+  `max_age_days` are checked on every automatic event, as the table lists them
+  separately from the schedule tick. The tick itself selects `full` once the
+  newest full audit is `schedule_days` old, so `max_age_days` must be at least
+  `schedule_days`. At most one `full` is selected per event, with the first
+  matching reason: `baseline`, `catalog`, `stale`, `structural`, `schedule`.
+- An operator command for a tier not listed in `tiers` is refused.
+- Nothing calls `select_tiers` yet; the worker wiring is stages 3, 4 and 6.
 
 ### Stage 2: audit import and storage
 

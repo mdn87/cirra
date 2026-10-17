@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from cirra.audit import AuditPolicy, load_audit_policy
 from cirra.domain import CirraError, fields, number, string
 
 
@@ -44,6 +45,7 @@ class Config:
     wait_seconds: float
     review_timeout_seconds: float = 180
     review_budget_usd: float = 1
+    audit: AuditPolicy | None = None
 
 
 def load_config(path):
@@ -55,7 +57,7 @@ def load_config(path):
         data = yaml.load(raw.decode("utf-8"), Loader=UniqueLoader)
     except (yaml.YAMLError, UnicodeError, RecursionError) as exc:
         raise CirraError("operator policy is not valid safe YAML") from exc
-    fields(data, ["version", "repositories", "ci", "reviewer", "limits"], label="policy")
+    fields(data, ["version", "repositories", "ci", "reviewer", "limits"], ["audit"], label="policy")
     if type(data["version"]) is not int or data["version"] != 1:
         raise CirraError("only policy version 1 is supported")
     repositories = data["repositories"]
@@ -129,4 +131,5 @@ def load_config(path):
         reviewer_endpoint=reviewer["endpoint"],
         model=reviewer["model"],
         **limits,
+        audit=load_audit_policy(data["audit"]) if "audit" in data else None,
     )
