@@ -9,7 +9,7 @@ from cirra.domain import CirraError
 from cirra.evaluation import evaluate
 from cirra.fixture import FixtureProvider
 from cirra.github import API_VERSION, export_capture
-from cirra.publish import github_app_token
+from cirra.publish import github_app_token, write_receipt
 from cirra.store import Store
 from cirra.transport import JSONClient
 
@@ -37,6 +37,8 @@ def register(commands):
     candidate.add_argument("--ref", required=True)
     candidate.add_argument("--output", type=Path, required=True)
     candidate.add_argument("--state-dir", type=Path, default=Path(".cirra"))
+    candidate.add_argument("--config", type=Path, help="policy whose release audit gate applies")
+    candidate.add_argument("--waive-audit", metavar="REASON", help="record a release audit waiver")
     dispatch = commands.add_parser("dispatch-release", help="request an existing GitHub workflow")
     dispatch.add_argument("--request", type=Path, required=True)
     dispatch.add_argument("--config", type=Path, required=True)
@@ -94,8 +96,23 @@ def run(args, token_from, capture_change):
         print(json.dumps(result, indent=2))
         return 0
     if args.command == "plan-release":
-        report = Store(args.state_dir).latest_report(args.run)
-        request = release.plan(report, args.workflow_id, args.ref)
+        store = Store(args.state_dir)
+        report = store.latest_report(args.run)
+        if args.waive_audit and not args.config:
+            raise CirraError("an audit waiver needs the --config whose gate it waives")
+        gate = (
+            release.audit_gate(
+                store, load_config(args.config), report, args.ref, waiver=args.waive_audit
+            )
+            if args.config
+            else None
+        )
+        request = release.plan(report, args.workflow_id, args.ref, audit=gate)
+        if gate and gate["state"] == "waived":
+            write_receipt(
+                store.path.parent / "audit-waivers" / f"{request['request_id']}.json",
+                {"request_id": request["request_id"], **gate},
+            )
         args.output.write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
         print(
             json.dumps(
