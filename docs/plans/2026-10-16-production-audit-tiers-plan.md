@@ -87,9 +87,9 @@ base commit (`pr` only), skill version, catalog digest, and policy digest. An
 identical identity is never run twice; the stored result is reused, the way
 `store.attempt` reuses review attempts today.
 
-`cirra import-audit` validates a report with the skill's own validator
-(`scripts/validate_report.py --repo <checkout>`, vendored or invoked by
-path) before storing anything. A report that fails validation is recorded as
+`cirra import-audit` validates a report with a vendored copy of the skill's
+validator (`scripts/validate_report.py --repo <checkout>`, see Decisions)
+before storing anything. A report that fails validation is recorded as
 a failed attempt with the validator's output, never as a result.
 
 Stored per audit: identity, coverage rows, findings, profile, validator
@@ -221,12 +221,33 @@ preemption by `pr` and `release` work. Acceptance: a preempted full audit
 resumes without rerunning completed domains; a catalog version change
 triggers a new baseline.
 
-## Open questions
+## Decisions
 
-- Whether the validator is vendored into Cirra or invoked from the lugos
-  checkout. Vendoring keeps Cirra self-contained; invoking keeps one copy.
-  Stage 2 decides.
-- How a `kind: command` runner reports domain checkpoints back to the worker
-  (files in the attempt directory are the likely answer).
-- Whether `pr` audits and the existing AI review should share one agent run
-  to save model time, or stay separate for clearer attribution.
+Recorded 2026-10-16 by the operator. Each replaces an open question from the
+first draft.
+
+**The validator is vendored into Cirra.** Cirra runs as a service and must not
+depend on a lugos checkout being present or current. Stage 2 copies
+`validate_report.py` and the catalog it reads into Cirra with a note of the
+lugos commit they came from. The report-to-Cirra contract is the JSON format,
+so Cirra owns its own check of it. To make drift detectable, stage 2 also
+needs one change on the lugos side: reports record the skill version and the
+catalog digest, and `import-audit` refuses a report whose catalog digest
+differs from the vendored one, with a message naming both, instead of
+validating it against the wrong catalog. Updating the vendored copy is a
+deliberate Cirra commit.
+
+**Checkpoints are plain files.** For `kind: command`, the worker gives the
+agent an attempt directory. The agent writes one JSON file per finished
+domain there, named by domain, each holding that domain's coverage rows, and
+writes the final report last. The worker reads those files to track progress
+and to resume. To cancel, the worker writes a `stop` file that the agent
+checks between domains, then terminates the process after the grace period
+if it is still running. Files survive a worker restart and need no protocol
+beyond the directory layout, so any agent can implement them.
+
+**`pr` audits and the AI review run separately.** Each keeps its own agent
+run, output format, failure handling and evaluation. Stage 4 records how
+often the two report the same issue on the same lines; merging them into one
+run is reconsidered only if that overlap is high enough to justify losing
+the separate attribution.
