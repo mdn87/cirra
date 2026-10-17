@@ -1,0 +1,2 @@
+# Shell scripts run on Linux hosts (and generate remote scripts); never CRLF.
+*.sh text eol=lf

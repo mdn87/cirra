@@ -432,6 +432,29 @@ The installed worker unit still runs the Claude login check in
 `ExecStartPre`; the template's removal of that line has not been applied on
 this host.
 
+### Deploying and rolling back
+
+`scripts/deploy-release.sh` replaces the manual steps above. From a checkout
+on the operator machine:
+
+```text
+scripts/deploy-release.sh --host lugos-host --ref <commit>
+scripts/deploy-release.sh --host lugos-host --ref <commit> --repin
+scripts/deploy-release.sh --host lugos-host --rollback <previous-sha>
+```
+
+A deploy archives the commit, installs it as a new release from the hashed
+`requirements/dev.txt` lock, runs the full suite on the host with the deployed
+observer image, and saves `staging/config-before-<sha>`. It then runs
+`cirra observer-pins`, which fails when a release changes the observer
+definition digest. Review the release, then rerun with `--repin` to update the
+pins (each policy keeps a `.before-repin` copy). The script switches `current`
+atomically, restarts both services and checks `/healthz`. If they do not come
+up, it restores the saved configuration and the previous release. Old
+releases beyond `--keep` (3 by default) are removed; the current and previous
+releases are always kept. A rollback restores the configuration saved before
+the current release and switches back.
+
 To inspect the deployment without printing credentials:
 
 ```text

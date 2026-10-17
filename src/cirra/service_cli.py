@@ -55,6 +55,12 @@ def register(commands):
         "observer-definition", help="validate and fingerprint an observer policy"
     )
     observer.add_argument("--config", type=Path, required=True)
+    pins = commands.add_parser(
+        "observer-pins",
+        help="check each route's pinned observer digest; --repin updates stale pins",
+    )
+    pins.add_argument("--service-config", type=Path, required=True)
+    pins.add_argument("--repin", action="store_true")
 
 
 def run(args, credential, capture):
@@ -62,6 +68,10 @@ def run(args, credential, capture):
         data = load_observer(args.config)
         print(json.dumps({"definition_digest": data["definition_digest"], "image": data["image"]}))
         return 0
+    if args.command == "observer-pins":
+        from cirra.pins import main as pins
+
+        return pins(args.service_config, args.repin)
     if args.command == "health":
         from cirra.health import main as health
 

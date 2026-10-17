@@ -207,3 +207,76 @@ def test_hashed_locks_cover_every_declared_dependency():
     dev = service | names(project["optional-dependencies"]["dev"])
     assert service <= locked("service.txt")
     assert dev <= locked("dev.txt")
+
+
+def test_observer_pins_detects_and_repins_a_stale_definition_digest(tmp_path, policy_data):
+    # Production audit C006/C055/C104 follow-through: the 2026-10-17 rollout
+    # deployed a new observer supervisor while policies still pinned the old
+    # digest, so the worker refused CI until an operator re-pinned by hand.
+    import shutil
+    from pathlib import Path
+
+    import yaml
+
+    from cirra.observer import NAME, load_observer
+    from cirra.pins import check_pins
+
+    root = Path(__file__).resolve().parents[1]
+    shutil.copy(root / "examples" / "observer.yaml", tmp_path / "observer.yaml")
+    current = load_observer(tmp_path / "observer.yaml")["definition_digest"]
+    stale = "f" * 64
+    policy_data["reviewer"] = {"kind": "claude", "endpoint": "cli://claude", "model": "test"}
+    policy_data["repositories"] = [
+        {"provider": "github", "instance": "https://github.com", "repository_id": "42"}
+    ]
+    policy_data["ci"] = {
+        "mode": "required",
+        "expected": [
+            {"kind": "check_run", "source_id": "5", "name": NAME, "definition_digest": stale}
+        ],
+    }
+    (tmp_path / "policy.yaml").write_text(yaml.safe_dump(policy_data))
+    service = {
+        "version": 1,
+        "routes": [
+            {
+                "name": "test",
+                "provider": "github",
+                "repository": "example/repo",
+                "repository_id": "42",
+                "policy": "policy.yaml",
+                "webhook_secret_env": "HOOK_SECRET",
+                "publisher": {"app_id": 5, "installation_id": 6, "private_key_file": "app.pem"},
+                "observer": "observer.yaml",
+                "witness_key_env": "WITNESS_KEY",
+            }
+        ],
+    }
+    (tmp_path / "service.yaml").write_text(yaml.safe_dump(service))
+
+    [row] = check_pins(tmp_path / "service.yaml")
+    assert row == {"route": "test", "observer_digest": current, "pinned": [stale], "ok": False}
+    [row] = check_pins(tmp_path / "service.yaml", repin=True)
+    assert row["ok"] and row["repinned"]
+    assert stale in (tmp_path / "policy.yaml.before-repin").read_text()
+    [row] = check_pins(tmp_path / "service.yaml")
+    assert row["ok"] and row["pinned"] == [current]
+
+
+def test_deploy_script_and_its_remote_half_are_valid_lf_bash():
+    # Production audit C006/C055/C104: deploy and rollback were prose only.
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "deploy-release.sh"
+    assert b"\r" not in script.read_bytes()
+    subprocess.run([bash, "-n", str(script)], check=True)
+    remote = subprocess.run(
+        [bash, str(script), "--print-remote"], check=True, capture_output=True
+    ).stdout
+    assert b"\r" not in remote and b"observer-pins" in remote and b"--require-hashes" in remote
+    subprocess.run([bash, "-n"], input=remote, check=True)
