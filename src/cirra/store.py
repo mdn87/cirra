@@ -42,7 +42,7 @@ SCHEMA = [
 # SCHEMA creates version 1. MIGRATIONS[n] holds the statements that take a
 # version-n database to n + 1; append an entry and bump SCHEMA_VERSION for
 # every schema change so existing state (reviews, attempts) carries over.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIGRATIONS = {
     # Production audits: one row per attempt; audit_id is the identity digest.
     1: [
@@ -53,6 +53,9 @@ MIGRATIONS = {
             report_digest TEXT, comparison_json TEXT, validator_output TEXT,
             created_at REAL NOT NULL, completed_at REAL, UNIQUE(audit_id, number))""",
     ],
+    # Only repository-scoped full audits are baselines; a structural full audit of
+    # an unmerged pull request head is scoped to that change.
+    2: ["ALTER TABLE audits ADD COLUMN scope TEXT NOT NULL DEFAULT 'repository'"],
 }
 
 

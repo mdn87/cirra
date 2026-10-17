@@ -263,6 +263,36 @@ new findings and the check conclusion. Acceptance: a live pull request on
 the Cirra repository produces one audit, one publication, and no
 republication on redelivery.
 
+Implemented in `cirra.audit_worker` (`request_audits`, `AuditRunner`,
+`AuditPublication`), `cirra.audit_checkout`, and the worker loop; tested in
+`tests/test_audit_worker.py` against a local origin with a real
+`refs/pull/N/head`, a stand-in agent process, and a fake GitHub API. The live
+acceptance on lugos-host is still open: it needs a release deployed with an
+`audit` block in the route policy. Choices made while implementing:
+
+- The review processor queues audits right after it captures a change, before
+  observation and review. Audit errors are recorded on the review job and never
+  fail it; the worker loop runs one audit pass after each review pass.
+- The worker fetches the change ref into a hardened bare cache per repository
+  (no hooks, credential helpers, submodules or redirects; HTTPS only) and adds a
+  detached worktree per attempt. Worktrees of final attempts are removed.
+- `kind: session` exports the packet and leaves the job awaiting import.
+  `kind: command` runs the argv in the attempt's work directory with the same
+  reduced environment as the Claude reviewer plus `CIRRA_AUDIT_PACKET`,
+  `CIRRA_AUDIT_DIR` and `CIRRA_AUDIT_CHECKOUT`. The agent writes one report
+  there; the worker imports it. Stopping writes `stop` and, after a grace
+  period, terminates the process tree.
+- Baseline, catalog and age reasons request a full audit of the default branch
+  head (read from the provider) with scope `repository`. A structural full
+  audit runs on the change head with scope `change:N` and never becomes the
+  baseline (state schema 3 adds the scope column).
+- Only `pr` audits publish: one `cirra/audit` check run per identity, found by
+  external ID before any write, with a receipt under `audit-publication/`. The
+  conclusion is `failure` when a new finding meets `gates.pr`, `success`
+  otherwise, `neutral` for `none`. Publication failures put the job in
+  `attention`, which `cirra health` reports. GitLab publication is not
+  implemented and is recorded as `unsupported`.
+
 ### Stage 5: release gate
 
 The `release` tier on release requests and the gate in `release.plan`, with

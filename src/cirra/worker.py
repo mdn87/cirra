@@ -1,15 +1,24 @@
 """Single-operator worker: fresh provider reads, isolated observation, review, publication."""
 
 import json
+import sqlite3
 import time
 from pathlib import Path
 
 from cirra import gitlab, provenance
+from cirra.audit_worker import (
+    AuditCheckPublisher,
+    AuditPublication,
+    AuditRunner,
+    audit_once,
+    default_branch_head,
+    request_audits,
+)
 from cirra.coordinator import review
 from cirra.domain import CirraError, digest, utc_now
 from cirra.fixture import FixtureProvider
 from cirra.github import GitHubClient, GitHubRateLimited, export_capture, native_id, record
-from cirra.job_queue import Queue
+from cirra.job_queue import AuditQueue, Queue
 from cirra.locking import change_lock
 from cirra.observer import NAME, ObserverCheck, load_observer, observe
 from cirra.publish import (
@@ -68,6 +77,63 @@ class Processor:
         )
 
     def __call__(self, route, hint):
+        self.audit_requests = []
+        result = self.process(route, hint)
+        if self.audit_requests:
+            result["audits"] = self.audit_requests
+        return result
+
+    def request_audits(self, route, change, data, reader):
+        """Queue production audits for a captured change; never fails the review job."""
+        if getattr(route.policy, "audit", None) is None:
+            return []
+        files = data["files"]
+        paths = sorted(
+            {item["path"] for item in files}
+            | {item["old_path"] for item in files if item.get("old_path")}
+        )
+        try:
+            return request_audits(
+                self.directory,
+                route,
+                {"kind": "change", "changed_paths": paths},
+                head=data["change"]["head_sha"],
+                base=data["change"]["diff_base_sha"],
+                change=change,
+                default_head=lambda: default_branch_head(route, reader),
+            )
+        except CirraError as exc:
+            return [{"error": str(exc)}]
+
+    def audit(self, config):
+        """Run one production-audit pass over routes whose policy has an audit block."""
+        routes = {
+            name: route
+            for name, route in config.routes.items()
+            if getattr(route.policy, "audit", None) is not None
+        }
+        if not routes:
+            return None
+        store = Store(self.directory)
+        runner = AuditRunner(self.directory, routes, self.credential)
+        publication = AuditPublication(
+            self.directory,
+            routes,
+            lambda route: AuditCheckPublisher(
+                route.repository, route.publisher["app_id"], self.app_token(route)
+            ),
+        )
+        job = audit_once(
+            AuditQueue(self.directory, store),
+            store,
+            min(route.policy.audit.max_audits_per_day for route in routes.values()),
+            runner,
+            on_complete=publication,
+        )
+        runner.cleanup(store)
+        return job
+
+    def process(self, route, hint):
         reader = self.credential(route.reader_env)
         change = hint["change"]
         branch = hint.get("branch")
@@ -81,6 +147,7 @@ class Processor:
             data = self.capture(
                 route.provider, route.repository, change, route.policy, token=reader
             )
+            self.audit_requests = self.request_audits(route, change, data, reader)
         if data["change"]["repository_id"] != route.repository_id:
             raise CirraError("captured repository differs from the configured worker route")
         receipt_path, witness_key = None, None
@@ -290,7 +357,27 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                     json.dumps({key: job.get(key) for key in ("id", "state", "result", "error")}),
                     flush=True,
                 )
+            audit_job = None
+            if getattr(process, "audit", None):
+                try:
+                    audit_job = process.audit(config)
+                except (CirraError, OSError, sqlite3.Error) as exc:
+                    # Audits never stop review work; the failure is visible in the log.
+                    message = str(exc) if isinstance(exc, CirraError) else type(exc).__name__
+                    print(json.dumps({"audit_error": message}), flush=True)
+                if audit_job:
+                    print(
+                        json.dumps(
+                            {
+                                "audit": {
+                                    key: audit_job.get(key)
+                                    for key in ("id", "tier", "state", "result", "error")
+                                }
+                            }
+                        ),
+                        flush=True,
+                    )
             if once:
                 return job
-            if not job:
+            if not job and not audit_job:
                 stopped.wait(config.poll_seconds)
