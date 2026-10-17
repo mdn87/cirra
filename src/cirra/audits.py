@@ -129,6 +129,29 @@ def begin(store, identity):
         return _row(connection, attempt_id), False
 
 
+def mark(store, attempt_id, state):
+    """Fence a prepared attempt as cancelled or superseded; complete results stay."""
+    if state not in ("cancelled", "superseded"):
+        raise CirraError("attempts can only be fenced as cancelled or superseded")
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE audits SET state=? WHERE attempt_id=? AND state='prepared'",
+            (state, attempt_id),
+        )
+        return _row(connection, attempt_id)["state"]
+
+
+def completed(store, audit_id):
+    """The attempt ID of a complete audit with this identity, if any."""
+    with store.connection() as connection:
+        row = connection.execute(
+            "SELECT attempt_id FROM audits WHERE audit_id=? AND state='complete' "
+            "ORDER BY number DESC LIMIT 1",
+            (audit_id,),
+        ).fetchone()
+    return row["attempt_id"] if row else None
+
+
 def latest_full(store, key):
     """The newest complete full audit for a repository, or None."""
     with store.connection() as connection:

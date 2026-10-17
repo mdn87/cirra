@@ -193,3 +193,202 @@ class Queue:
             {"attempts": usage["attempts"] + 1, "maximum": maximum, "updated_at": utc_now()},
         )
         return True
+
+
+AUDIT_PRIORITY = {"release": 0, "pr": 1, "full": 2}
+ACTIVE_AUDIT = ("queued", "deferred", "running", "awaiting_import")
+
+
+class AuditQueue:
+    """Production-audit requests: one queued and one running request per work key.
+
+    A work key is repository, scope (change, release ref, or the repository for
+    full audits) and tier. Newer requests coalesce queued ones and flag running
+    ones as superseded; identical identities attach to existing work.
+    """
+
+    def __init__(self, directory, store=None):
+        self.directory = Path(directory).resolve() / "audit-queue"
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.store = store
+
+    def _lock(self):
+        return change_lock(self.directory / "locks", "audit-queue", 10)
+
+    def read(self, identifier):
+        if not re.fullmatch(r"[a-f0-9]{32}", identifier):
+            raise CirraError("invalid audit job identifier")
+        path = self.directory / (identifier + ".json")
+        if not path.is_file():
+            raise CirraError("audit job does not exist")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save(self, job):
+        job["updated_at"] = utc_now()
+        write_receipt(self.directory / (job["id"] + ".json"), job)
+
+    def jobs(self):
+        found = []
+        for path in self.directory.glob("*.json"):
+            try:
+                found.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue  # Reported by `cirra health` through the review queue's scan.
+        return sorted(found, key=lambda job: (job["sequence"], job["id"]))
+
+    def _mark_attempt(self, job, state):
+        if self.store is not None and job.get("attempt_id"):
+            from cirra.audits import mark
+
+            mark(self.store, job["attempt_id"], state)
+
+    def request(self, identity, scope, *, reason, debounce_seconds=0, context=None, now=None):
+        from cirra.audits import repository_key
+
+        string(scope, "audit scope", 300)
+        string(reason, "audit reason", 200)
+        now = time.time() if now is None else now
+        audit_id = digest(identity)
+        work_key = digest([repository_key(identity["repository"]), scope, identity["tier"]])
+        with self._lock():
+            jobs = self.jobs()
+            for job in jobs:
+                if job["audit_id"] == audit_id and job["state"] in (*ACTIVE_AUDIT, "done"):
+                    return {"job_id": job["id"], "attached": True}
+            if self.store is not None:
+                from cirra.audits import completed
+
+                attempt = completed(self.store, audit_id)
+                if attempt:
+                    return {"job_id": None, "attempt_id": attempt, "attached": True}
+            job = {
+                "id": uuid.uuid4().hex,
+                "sequence": max((item["sequence"] for item in jobs), default=0) + 1,
+                "work_key": work_key,
+                "audit_id": audit_id,
+                "identity": identity,
+                "tier": identity["tier"],
+                "scope": scope,
+                "reason": reason,
+                "context": context or {},
+                "state": "queued",
+                "attempt_id": None,
+                "superseded_by": None,
+                "cancel_requested": False,
+                "not_before": now + debounce_seconds,
+                "accepted_at": utc_now(),
+            }
+            for other in jobs:
+                if other["work_key"] != work_key:
+                    continue
+                if other["state"] in ("queued", "deferred"):
+                    other.update(state="superseded", superseded_by=job["id"])
+                    self.save(other)
+                elif (
+                    other["state"] in ("running", "awaiting_import") and not other["superseded_by"]
+                ):
+                    # The runner stops at its next checkpoint; the attempt's state is
+                    # the fence that refuses a late import of the old head.
+                    other["superseded_by"] = job["id"]
+                    self._mark_attempt(other, "superseded")
+                    self.save(other)
+            self.save(job)
+            return {"job_id": job["id"], "attached": False}
+
+    def runnable(self, now=None):
+        now = time.time() if now is None else now
+        today = datetime.fromtimestamp(now, UTC).date().isoformat()
+        return sorted(
+            (
+                job
+                for job in self.jobs()
+                if job["not_before"] <= now
+                and (
+                    job["state"] == "queued"
+                    or (job["state"] == "deferred" and job.get("deferred_on") != today)
+                )
+            ),
+            key=lambda job: (AUDIT_PRIORITY[job["tier"]], job["sequence"]),
+        )
+
+    def usage_path(self, now):
+        day = datetime.fromtimestamp(now, UTC).date().isoformat()
+        return self.directory.parent / "audit-usage" / (day + ".json")
+
+    def next_job(self, maximum, now=None):
+        """Claim the highest-priority runnable request within daily admission."""
+        now = time.time() if now is None else now
+        with self._lock():
+            for job in self.runnable(now):
+                path = self.usage_path(now)
+                used = (
+                    json.loads(path.read_text(encoding="utf-8"))["attempts"] if path.exists() else 0
+                )
+                if used >= maximum:
+                    if job["tier"] != "full":
+                        # Shown in status and retried tomorrow; a gate is never skipped.
+                        job.update(
+                            state="deferred",
+                            deferred_on=datetime.fromtimestamp(now, UTC).date().isoformat(),
+                        )
+                        self.save(job)
+                    continue  # Full audits simply wait for the next day.
+                write_receipt(
+                    path, {"attempts": used + 1, "maximum": maximum, "updated_at": utc_now()}
+                )
+                job.update(state="running", started_at=utc_now())
+                self.save(job)
+                return job
+        return None
+
+    def update(self, identifier, **changes):
+        with self._lock():
+            job = self.read(identifier)
+            job.update(changes)
+            self.save(job)
+            return job
+
+    def stop_reason(self, identifier):
+        """Checked by runners at each checkpoint."""
+        job = self.read(identifier)
+        if job["cancel_requested"]:
+            return "cancelled"
+        if job["superseded_by"]:
+            return "superseded"
+        return None
+
+    def cancel(self, identifier, reason):
+        string(reason, "cancellation reason", 1000)
+        with self._lock():
+            job = self.read(identifier)
+            if job["state"] in ("queued", "deferred"):
+                job.update(state="cancelled", cancel_reason=reason)
+            elif job["state"] in ("running", "awaiting_import"):
+                job.update(cancel_requested=True, cancel_reason=reason)
+                self._mark_attempt(job, "cancelled")
+                if job["state"] == "awaiting_import":
+                    job["state"] = "cancelled"  # No process to stop; the fence is set.
+            else:
+                raise CirraError(f"audit job is already {job['state']}")
+            self.save(job)
+            return job
+
+    def status(self):
+        keys = (
+            "id",
+            "tier",
+            "scope",
+            "reason",
+            "state",
+            "attempt_id",
+            "superseded_by",
+            "cancel_requested",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "error",
+        )
+        return [
+            {key: job.get(key) for key in keys} | {"head": job["identity"]["head"]}
+            for job in self.jobs()
+        ]
