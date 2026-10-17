@@ -8,7 +8,7 @@ from cirra import gitlab, provenance
 from cirra.coordinator import review
 from cirra.domain import CirraError, digest, utc_now
 from cirra.fixture import FixtureProvider
-from cirra.github import GitHubClient, export_capture, native_id, record
+from cirra.github import GitHubClient, GitHubRateLimited, export_capture, native_id, record
 from cirra.job_queue import Queue
 from cirra.locking import change_lock
 from cirra.observer import NAME, ObserverCheck, load_observer, observe
@@ -228,6 +228,15 @@ def work_once(config, queue, process):
             result = process(route, job["hint"])
             job.update(state=result["state"], result=result)
             job.pop("error", None)
+        except GitHubRateLimited as exc:
+            # Quota, not failure: wait for GitHub's reset and do not count the
+            # attempt, so a limited job never strands in `attention`.
+            job.update(
+                state="retry",
+                attempts=job["attempts"] - 1,
+                not_before=max(exc.retry_at, time.time() + config.retry_seconds),
+                error=str(exc),
+            )
         except (CirraError, OSError, ValueError) as exc:
             job.update(
                 state="retry" if job["attempts"] < config.max_attempts else "attention",
