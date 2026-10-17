@@ -184,3 +184,26 @@ def test_store_upgrades_through_ordered_migrations_and_refuses_newer_schemas(tmp
     monkeypatch.setattr(store, "SCHEMA_VERSION", 1)
     with pytest.raises(CirraError, match="newer"):
         store.Store(tmp_path)
+
+
+def test_hashed_locks_cover_every_declared_dependency():
+    # Production audit C108: the deployed venv must be reproducible from hashed locks.
+    import re
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+
+    def names(requirements):
+        return {re.split(r"[<>=\[ ;]", item, maxsplit=1)[0].lower() for item in requirements}
+
+    def locked(path):
+        text = (root / "requirements" / path).read_text(encoding="utf-8")
+        assert all("--hash=sha256:" in block for block in text.split("\n\n") if "==" in block)
+        return {line.split("==")[0].lower() for line in text.splitlines() if "==" in line}
+
+    service = names(project["dependencies"] + project["optional-dependencies"]["publish"])
+    dev = service | names(project["optional-dependencies"]["dev"])
+    assert service <= locked("service.txt")
+    assert dev <= locked("dev.txt")
