@@ -428,9 +428,37 @@ Observed results:
 - Heartbeat: `worker-status.json` is rewritten in place on each pass. No
   `history/worker-status` directory exists in the service state.
 
-The installed worker unit still runs the Claude login check in
-`ExecStartPre`; the template's removal of that line has not been applied on
-this host.
+### Audit follow-up rollout
+
+Later on 2026-10-17, `scripts/deploy-release.sh` deployed
+`c080b1fface9e2ca7fa3c45e6749c89499ca2668` (#12). The observer digests did not
+change, so the pins needed no update. A second run of the script overlapped the
+first: one run rebuilt the release directory under the other's test run, which
+failed (exit 4) while the other switched and restarted. #13 adds a host-side
+lock so this cannot recur. The live release was then verified directly: both
+services active, `/healthz` 200, both pins current, configuration unchanged,
+and each response logged as one JSON line.
+
+The worker unit was then replaced from the template. It no longer runs the
+Claude login check in `ExecStartPre`, and it uses `ProtectHome=tmpfs` with only
+the Claude login and CLI bound. Inside the running worker's mount namespace the
+home directory contains `.claude`, `.claude.json` and `.local`, and `~/.ssh` is
+not readable. `cirra-health.timer` runs every five minutes, with
+`OnFailure=cirra-health-alert.service` posting an `operator_attention.requested`
+event to lugos event-ingest, which sends a Pushover alert. The alert unit's
+token loads from `/etc/lugos/event-ingest.env`; no test alert was sent.
+
+Observed results:
+
+- Rate limits: a PR job that hit the anonymous GitHub limit stayed in `retry`
+  with no attempt counted until the reset, then ran. Under the previous
+  release, the same condition parked a job in `attention` after three
+  attempts in four minutes.
+- The two jobs parked in `attention` were requeued. The branch job then
+  tested `main` at `137b078` successfully under the hardened unit, and the
+  other was skipped because its PR had merged.
+- `cirra health` reported healthy (exit 0), and the timer's first run
+  succeeded.
 
 ### Host recovery facts
 
