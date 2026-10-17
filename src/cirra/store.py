@@ -39,6 +39,12 @@ SCHEMA = [
         FOREIGN KEY(run_id) REFERENCES attempts(run_id))""",
 ]
 
+# SCHEMA creates version 1. MIGRATIONS[n] holds the statements that take a
+# version-n database to n + 1; append an entry and bump SCHEMA_VERSION for
+# every schema change so existing state (reviews, attempts) carries over.
+SCHEMA_VERSION = 1
+MIGRATIONS = {}
+
 
 class Store:
     def __init__(self, directory):
@@ -57,8 +63,18 @@ class Store:
                 for statement in SCHEMA:
                     connection.execute(statement)
                 connection.execute("PRAGMA user_version=1")
-            elif version != 1:
-                raise CirraError("unsupported state schema; use a compatible Cirra version")
+                version = 1
+            if version > SCHEMA_VERSION:
+                raise CirraError(
+                    "state schema is newer than this Cirra version; upgrade Cirra or roll back"
+                )
+            while version < SCHEMA_VERSION:
+                if version not in MIGRATIONS:
+                    raise CirraError("unsupported state schema; use a compatible Cirra version")
+                for statement in MIGRATIONS[version]:
+                    connection.execute(statement)
+                version += 1
+                connection.execute(f"PRAGMA user_version={version}")
 
     @contextmanager
     def connection(self):

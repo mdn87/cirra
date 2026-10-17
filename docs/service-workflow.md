@@ -235,8 +235,10 @@ and the [Code Download permission for Git operations](https://docs.gitlab.com/au
 
 ## Recovery and operating limits
 
-Queue and observer receipts use atomic files; existing review state keeps its
-SQLite schema. No state database migration is required. Run one worker and one
+Queue and observer receipts use atomic files; review state lives in SQLite.
+Schema changes are applied at startup through ordered migrations, so existing
+reviews and attempts carry over; a database written by a newer Cirra is refused
+rather than downgraded. Run one worker and one
 receiver against a local filesystem, not a network share or synchronized folder.
 
 Duplicate authenticated bodies reuse their queued job even if delivery headers

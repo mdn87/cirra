@@ -160,3 +160,27 @@ def test_unreadable_queue_file_is_reported_and_does_not_crash_the_worker(tmp_pat
     assert queue.pending() == []
     result = check(tmp_path)
     assert any(problem["kind"] == "queue" for problem in result["problems"]), result
+
+
+def test_store_upgrades_through_ordered_migrations_and_refuses_newer_schemas(tmp_path, monkeypatch):
+    # Production audit C081: the first schema change would otherwise force a
+    # fresh state directory and repeat model calls.
+    import sqlite3
+
+    from cirra import store
+    from cirra.domain import CirraError
+
+    store.Store(tmp_path)
+    monkeypatch.setattr(store, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(
+        store, "MIGRATIONS", {1: ["ALTER TABLE reports ADD COLUMN migrated_note TEXT"]}
+    )
+    store.Store(tmp_path)
+    with sqlite3.connect(tmp_path / "cirra.sqlite3") as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(reports)")]
+    assert "migrated_note" in columns
+    store.Store(tmp_path)  # already current: no-op
+    monkeypatch.setattr(store, "SCHEMA_VERSION", 1)
+    with pytest.raises(CirraError, match="newer"):
+        store.Store(tmp_path)
