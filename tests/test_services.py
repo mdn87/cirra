@@ -41,12 +41,15 @@ def route(inputs):
     )
 
 
-def delivery(action="opened", identity="delivery-1", **extra):
+def delivery(action="opened", identity="delivery-1", author="OWNER", **extra):
+    pull_request = {"number": 1, "head": {"sha": "do-not-trust"}}
+    if author is not None:
+        pull_request["author_association"] = author
     raw = canonical(
         {
             "action": action,
             "repository": {"id": 42, "full_name": "example/repo"},
-            "pull_request": {"number": 1, "head": {"sha": "do-not-trust"}},
+            "pull_request": pull_request,
             **extra,
         }
     ).encode()
@@ -104,6 +107,86 @@ def test_authentication_route_action_and_capacity_guards(route, tmp_path):
     changed_headers["X-GitHub-Delivery"] = "delivery-2"
     with pytest.raises(CirraError, match="capacity"):
         accept(route, changed, changed_headers, SECRET, queue)
+
+
+@pytest.mark.parametrize(
+    "author", ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", None]
+)
+def test_untrusted_pull_request_authors_never_reach_the_queue(route, tmp_path, author):
+    # Any GitHub account can open a pull request against a public repository.
+    # Execution and review must not be spent on authors without write access.
+    queue = Queue(tmp_path)
+    raw, headers = delivery(author=author)
+    assert accept(route, raw, headers, SECRET, queue) == {
+        "state": "ignored",
+        "reason": "untrusted author",
+    }
+    assert not queue.pending()
+
+
+@pytest.mark.parametrize("author", ["OWNER", "MEMBER", "COLLABORATOR"])
+def test_trusted_pull_request_authors_are_queued(route, tmp_path, author):
+    raw, headers = delivery(author=author)
+    assert accept(route, raw, headers, SECRET, Queue(tmp_path))["state"] == "accepted"
+
+
+def test_metadata_only_edits_do_not_spend_admission(route, tmp_path):
+    queue = Queue(tmp_path)
+    raw, headers = delivery("edited", changes={"title": {"from": "old title"}})
+    assert accept(route, raw, headers, SECRET, queue) == {
+        "state": "ignored",
+        "reason": "metadata-only edit",
+    }
+    assert not queue.pending()
+    raw, headers = delivery(
+        "edited", identity="delivery-2", changes={"base": {"ref": {"from": "old-base"}}}
+    )
+    assert accept(route, raw, headers, SECRET, queue)["state"] == "accepted"
+
+
+def gitlab_delivery(identity, **attributes):
+    raw = canonical(
+        {
+            "project": {"id": 42, "path_with_namespace": "example/repo"},
+            "object_attributes": {
+                "iid": 1,
+                "action": "update",
+                "source_project_id": 42,
+                "target_project_id": 42,
+                **attributes,
+            },
+            "changes": {},
+        }
+    ).encode()
+    return raw, {
+        "X-Gitlab-Event": "Merge Request Hook",
+        "X-Gitlab-Event-UUID": identity,
+        "X-Gitlab-Token": SECRET,
+    }
+
+
+def test_gitlab_fork_and_metadata_only_merge_requests_are_ignored(route, tmp_path):
+    gitlab = SimpleNamespace(
+        **{
+            **vars(route),
+            "provider": "gitlab",
+            "instance": "https://gitlab.com",
+            "policy": replace(
+                route.policy,
+                repositories=(
+                    {"provider": "gitlab", "instance": "https://gitlab.com", "repository_id": "42"},
+                ),
+            ),
+        }
+    )
+    queue = Queue(tmp_path)
+    raw, headers = gitlab_delivery("g1", action="open", source_project_id=99)
+    assert accept(gitlab, raw, headers, SECRET, queue)["reason"] == "untrusted author"
+    raw, headers = gitlab_delivery("g2", title="new title")
+    assert accept(gitlab, raw, headers, SECRET, queue)["reason"] == "metadata-only edit"
+    assert not queue.pending()
+    raw, headers = gitlab_delivery("g3", oldrev="0" * 40)
+    assert accept(gitlab, raw, headers, SECRET, queue)["state"] == "accepted"
 
 
 def test_http_receiver_acknowledges_without_calling_provider_and_rejects_duplicate_headers(

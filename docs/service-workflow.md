@@ -149,6 +149,16 @@ A repository webhook works alongside the Checks-publishing GitHub App; the App
 does not need to receive the delivery itself. GitLab routes use
 `/hooks/<route-name>`, Merge request events, and their configured secret token.
 
+Only changes from authors with write access are queued. On GitHub that means a
+pull request whose `author_association` is `OWNER`, `MEMBER`, or
+`COLLABORATOR`; on GitLab, a merge request whose source branch is in the target
+project. Anything else, including fork pull requests from outside accounts and
+bots without write access, is acknowledged and ignored with the reason
+`untrusted author`, so it spends no execution, review, or daily admission.
+Title, description, and label edits that change neither the head nor the base
+are ignored as `metadata-only edit`. Run such a change by hand with
+`cirra review` after reading it.
+
 The receiver acknowledges after an atomic queue write, without waiting for a
 provider, test run, or model. It limits request bytes, connections, and time;
 rejects duplicate/framing headers; and accepts only configured repository

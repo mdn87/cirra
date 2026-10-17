@@ -30,7 +30,38 @@ def accept(route, raw, headers, secret, queue):
         actions = {"open", "reopen", "update"}
     if action not in actions:
         return {"state": "ignored", "reason": "event action"}
+    if not trusted_author(route.provider, payload):
+        return {"state": "ignored", "reason": "untrusted author"}
+    if metadata_only(route.provider, action, payload):
+        return {"state": "ignored", "reason": "metadata-only edit"}
     return {"state": "accepted", **queue.enqueue(route, hint)}
+
+
+# Accounts with write access to the repository. Anyone else can open a pull
+# request against a public repository, so their changes must not spend
+# sandboxed execution, reviewer budget, or daily admission.
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+
+def trusted_author(provider, payload):
+    if provider == "github":
+        return payload["pull_request"].get("author_association") in TRUSTED_ASSOCIATIONS
+    # GitLab: only merge requests whose source branch lives in the target
+    # project, which requires Developer access to push.
+    attributes = payload["object_attributes"]
+    source = attributes.get("source_project_id")
+    return source is not None and source == attributes.get("target_project_id")
+
+
+def metadata_only(provider, action, payload):
+    """Title, body, or label edits that change neither the head nor the base."""
+    if provider == "github":
+        return action == "edited" and "base" not in (payload.get("changes") or {})
+    return (
+        action == "update"
+        and "oldrev" not in payload["object_attributes"]
+        and "target_branch" not in (payload.get("changes") or {})
+    )
 
 
 class WebhookServer(ThreadingHTTPServer):
