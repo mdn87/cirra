@@ -370,6 +370,46 @@ review, zero findings, and [advisory check 116822006340](https://github.com/mdn8
 The previous runtime and protected configuration backup remain available for
 rollback. No database schema changed.
 
+### Backup CI rollout
+
+On 2026-10-17 release `5263626be17d14efb1bdd364c3123de0d6fdb798` (this PR,
+with `main` merged in) replaced `bc7939200ea846a78853f1bcdafa0b04db24c67e`.
+All 191 tests passed on lugos-host, including the three real Docker checks
+against the deployed observer image `sha256:47826cde8764…`. The operator
+configuration gained `worker.reconcile_seconds: 900` and `branches: [main]`
+on the `cirra-github` route. The prior release and a configuration backup
+(`staging/config-before-5263626`) remain for rollback.
+
+The release changes the observer supervisor, so both observer definition
+digests changed: GitHub `06d28457…` to `e5532136…`, GitLab `bdb34ea0…` to
+`20d07506…`. The first branch job started before the review policies were
+re-pinned. The worker refused it with "review policy must pin the observer
+source, check name, and definition digest", exhausted three attempts, and
+left it in `attention` without running or publishing anything. After the pins
+were updated and the services restarted, reconcile queued a fresh job.
+Recompute the digests with `cirra observer-definition` for every release that
+touches observer code, before restarting.
+
+Observed results:
+
+- Branch CI: reconcile queued `main` at
+  `b8e98e9a854d577c460af1837e6f5079b7f2ecd9`. The isolated tests succeeded,
+  the signed witness receipt was recorded, and the
+  [native check 117316369284](https://github.com/mdn87/cirra/runs/117316369284)
+  was published with review disabled.
+- PR flow: marking this PR ready produced a `ready_for_review` delivery
+  (HTTP 202). The worker tested head `5263626` with a verified checkout,
+  published [isolated tests 117316664098](https://github.com/mdn87/cirra/runs/117316664098),
+  and a complete Claude review as
+  [advisory check 117316945160](https://github.com/mdn87/cirra/runs/117316945160)
+  with two low findings and one informational note, recorded on the PR.
+- Heartbeat: `worker-status.json` is rewritten in place on each pass. No
+  `history/worker-status` directory exists in the service state.
+
+The installed worker unit still runs the Claude login check in
+`ExecStartPre`; the template's removal of that line has not been applied on
+this host.
+
 To inspect the deployment without printing credentials:
 
 ```text
