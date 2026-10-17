@@ -102,6 +102,10 @@ def select_repository(config, repository_id=None):
     return dict(matches[0])
 
 
+def policy_digest(policy):
+    return digest(asdict(policy))
+
+
 def audit_identity(policy, tier, repository, head, base=None):
     if policy is None:
         raise CirraError("operator policy has no audit block")
@@ -118,7 +122,7 @@ def audit_identity(policy, tier, repository, head, base=None):
         "head": head,
         "base": base,
         **vendored_identity(),
-        "policy_digest": digest(asdict(policy)),
+        "policy_digest": policy_digest(policy),
     }
 
 
@@ -389,17 +393,18 @@ def import_report(store, attempt_id, report_path, checkout):
 SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
-def gate(policy, tier, row):
+def gate(policy, tier, row, comparison=None):
     """Gate state for a stored attempt: pass, block, or pending (never passing by default).
 
-    A `pr` gate counts only findings new against the baseline, so a pull request
-    is not blamed for the backlog; a `release` gate counts every finding.
+    A `pr` gate counts only findings new against the baseline (the stored
+    comparison, or a fresher `comparison`), so a pull request is not blamed for
+    the backlog; a `release` gate counts every finding.
     """
     level = policy.gates[tier]
     if row is None or row["state"] != "complete":
         return {"state": "pending", "level": level, "blocking": [], "considered": []}
     report = json.loads(row["report_json"])
-    new = set(json.loads(row["comparison_json"])["new"])
+    new = set((comparison or json.loads(row["comparison_json"]))["new"])
     considered = [
         finding for finding in report["findings"] if tier != "pr" or finding_key(finding) in new
     ]

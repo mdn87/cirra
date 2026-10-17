@@ -200,7 +200,7 @@ def test_operator_commands_request_list_and_cancel(tmp_path, policy_data, capsys
     assert main([*request, "--ref", "main", *state]) == 0
     assert json.loads(capsys.readouterr().out) == {"job_id": job["job_id"], "attached": True}
     assert main([*request, *state]) == 2
-    assert "release requests need --ref" in capsys.readouterr().err
+    assert "release and full requests need --ref" in capsys.readouterr().err
     assert main(["audit-jobs", *state]) == 0
     [listed] = json.loads(capsys.readouterr().out)
     assert listed["scope"] == "release:main" and listed["reason"] == "operator"

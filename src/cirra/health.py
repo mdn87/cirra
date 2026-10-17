@@ -53,7 +53,12 @@ def check(
         if job.get("state") == "attention" and updated is not None and updated >= since:
             problems.append({"kind": "attention", "job": job.get("id"), "detail": job.get("error")})
 
-    for job in AuditQueue(state_dir).jobs():
+    audit_jobs, audit_unreadable = AuditQueue(state_dir).scan()
+    if audit_unreadable:
+        problems.append(
+            {"kind": "audit-queue", "detail": f"unreadable audit records: {audit_unreadable}"}
+        )
+    for job in audit_jobs:
         updated = _parse(job.get("updated_at"))
         if job.get("state") in ("attention", "failed") and updated and updated >= since:
             detail = job.get("error") or (job.get("result") or {}).get("publication")

@@ -139,7 +139,12 @@ class Processor:
             return None
         self.schedule_audits(routes)
         store = Store(self.directory)
-        runner = AuditRunner(self.directory, routes, self.credential)
+        runner = AuditRunner(
+            self.directory,
+            routes,
+            self.credential,
+            heartbeat=lambda: heartbeat(Queue(self.directory), audit_running=True),
+        )
         publication = AuditPublication(
             self.directory,
             routes,
@@ -300,6 +305,16 @@ class Processor:
         }
 
 
+def heartbeat(queue, **extra):
+    # Liveness is the file's content and mtime; a history copy per poll would add
+    # an fsync'd file every pass.
+    write_receipt(
+        queue.directory.parent / "worker-status.json",
+        {"state": "running", "heartbeat_at": utc_now(), "daily_usage": queue.usage(), **extra},
+        history=False,
+    )
+
+
 def work_once(config, queue, process):
     jobs = queue.pending()
     if not jobs:
@@ -364,17 +379,7 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                     history=False,
                 )
                 next_reconcile = time.monotonic() + interval
-            # Liveness is the file's content and mtime; a history copy per poll
-            # would add an fsync'd file every pass.
-            write_receipt(
-                queue.directory.parent / "worker-status.json",
-                {
-                    "state": "running",
-                    "heartbeat_at": utc_now(),
-                    "daily_usage": queue.usage(),
-                },
-                history=False,
-            )
+            heartbeat(queue)
             job = work_once(config, queue, process)
             if job:
                 print(

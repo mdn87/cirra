@@ -30,6 +30,9 @@ from cirra.store import Store
 from cirra.transport import JSONClient, pages
 
 CHECK_NAME = "cirra/audit"
+WAITING = ("awaiting_import", "awaiting_baseline")
+# A noisy or wedged agent must not fill the state filesystem.
+MAX_AGENT_LOG_BYTES = 16 * 1024 * 1024
 FINAL = {
     "complete": "done",
     "failed": "failed",
@@ -45,58 +48,99 @@ def settle(queue, store, job, on_complete=None):
         return job
     result = audits.summary(attempt)
     state = FINAL[attempt["state"]]
+    stopped = queue.stop_reason(job["id"])
+    if attempt["state"] == "complete" and stopped:
+        # Cancelled, or replaced by a newer head, before its result was published.
+        return queue.update(job["id"], state=stopped, result=result)
     if attempt["state"] == "complete" and on_complete:
         result["publication"] = on_complete(job, attempt)
+        if result["publication"]["state"] == "waiting":
+            return queue.update(job["id"], state="awaiting_baseline", result=result)
         if result["publication"]["state"] == "failed":
             state = "attention"
     return queue.update(job["id"], state=state, result=result)
 
 
-def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
-    """Settle imported session audits, then run at most one runnable request."""
+def recover(queue, store, on_complete=None):
+    """Settle waiting jobs and reconcile jobs a stopped worker left `running`.
+
+    The single worker runs one audit at a time inside `audit_once`, so a job
+    still `running` when a pass starts was orphaned by a restart: its final
+    attempt settles, a pending stop applies, and anything else runs again.
+    """
     for job in queue.jobs():
-        if job["state"] == "awaiting_import":
+        if job["state"] in WAITING:
             settle(queue, store, job, on_complete)
+        elif job["state"] == "running":
+            attempt_id = job.get("attempt_id")
+            if attempt_id and audits.get(store, attempt_id)["state"] in FINAL:
+                settle(queue, store, job, on_complete)
+            elif reason := queue.stop_reason(job["id"]):
+                if attempt_id:
+                    audits.mark(store, attempt_id, reason)
+                queue.update(job["id"], state=reason)
+            else:
+                queue.update(job["id"], state="queued", recovered=job.get("recovered", 0) + 1)
+
+
+def fail(queue, store, job, attempt_id, error, on_complete=None):
+    """End a job whose runner failed, unless a stop or an import already decided it."""
+    reason = queue.stop_reason(job["id"])
+    if attempt_id:
+        if not reason and audits.get(store, attempt_id)["state"] == "complete":
+            return settle(queue, store, queue.read(job["id"]), on_complete)
+        audits.mark(store, attempt_id, reason or "cancelled")
+    if reason:
+        return queue.update(job["id"], state=reason)
+    return queue.update(job["id"], state="failed", error=error)
+
+
+def audit_once(queue, store, maximum, run, *, on_complete=None, now=None):
+    """Recover and settle earlier work, then run at most one runnable request."""
+    recover(queue, store, on_complete)
     job = queue.next_job(maximum, now)
     if job is None:
         return None
-    attempt, _ = audits.begin(store, job["identity"], job["scope"])
-    job = queue.update(job["id"], attempt_id=attempt["attempt_id"])
-    if attempt["state"] == "complete":
-        return settle(queue, store, job, on_complete)  # Attached to an existing result.
+    job_id, attempt_id = job["id"], None
 
     def stop(checkpoints=None):
-        reason = queue.stop_reason(job["id"])
+        reason = queue.stop_reason(job_id)
         if reason is None and checkpoints is not None:
-            queue.update(job["id"], checkpoints=checkpoints)
+            queue.update(job_id, checkpoints=checkpoints)
             if job["tier"] == "full" and queue.priority_waiting(now):
                 return "preempted"
         return reason
 
     try:
+        attempt, _ = audits.begin(store, job["identity"], job["scope"])
+        attempt_id = attempt["attempt_id"]
+        job = queue.update(job_id, attempt_id=attempt_id)
+        if attempt["state"] == "complete":
+            return settle(queue, store, job, on_complete)  # Attached to an existing result.
+        if reason := queue.stop_reason(job_id):
+            # Cancelled or superseded before the attempt existed to be fenced.
+            audits.mark(store, attempt_id, reason)
+            return queue.update(job_id, state=reason)
         outcome = run(job, attempt, stop)
-    except CirraError as exc:
-        audits.mark(store, attempt["attempt_id"], "cancelled")
-        return queue.update(job["id"], state="failed", error=str(exc))
-    if outcome["state"] == "awaiting_import":
-        return queue.update(
-            job["id"], state="awaiting_import", packet_path=outcome.get("packet_path")
-        )
-    if outcome["state"] == "stopped":
-        reason = outcome["reason"]
-        if reason in ("cancelled", "superseded"):
-            audits.mark(store, attempt["attempt_id"], reason)
-            return queue.update(job["id"], state=reason)
-        if reason == "preempted":
-            # The attempt stays prepared, so the next run resumes its checkpoints.
-            current = queue.read(job["id"])
+        if outcome["state"] == "awaiting_import":
             return queue.update(
-                job["id"], state="queued", preemptions=current.get("preemptions", 0) + 1
+                job_id, state="awaiting_import", packet_path=outcome.get("packet_path")
             )
-        raise CirraError(f"unsupported runner stop reason {reason!r}")
-    if outcome["state"] == "imported":
-        return settle(queue, store, queue.read(job["id"]), on_complete)
-    raise CirraError("audit runner returned an unsupported outcome")
+        if outcome["state"] == "stopped" and outcome["reason"] in ("cancelled", "superseded"):
+            audits.mark(store, attempt_id, outcome["reason"])
+            return queue.update(job_id, state=outcome["reason"])
+        if outcome["state"] == "stopped" and outcome["reason"] == "preempted":
+            # The attempt stays prepared, so the next run resumes its checkpoints.
+            current = queue.read(job_id)
+            return queue.update(
+                job_id, state="queued", preemptions=current.get("preemptions", 0) + 1
+            )
+        if outcome["state"] == "imported":
+            return settle(queue, store, queue.read(job_id), on_complete)
+        raise CirraError(f"audit runner returned an unsupported outcome {outcome!r}")
+    except Exception as exc:  # noqa: BLE001 - any runner failure must end and fence the job
+        message = str(exc) if isinstance(exc, CirraError) else f"{type(exc).__name__}: {exc}"
+        return fail(queue, store, job, attempt_id, message, on_complete)
 
 
 def repository_of(route):
@@ -190,11 +234,13 @@ class AuditRunner:
         protocols=("https",),
         poll_seconds=2,
         grace_seconds=30,
+        heartbeat=None,
     ):
         self.directory = Path(directory).resolve()
         self.routes, self.credential = routes, credential
         self.url_for, self.protocols = url_for, protocols
         self.poll_seconds, self.grace_seconds = poll_seconds, grace_seconds
+        self.heartbeat = heartbeat  # Keeps worker liveness current during long audits.
 
     def attempt_dir(self, attempt_id):
         return self.directory / "audit-attempts" / attempt_id
@@ -212,6 +258,10 @@ class AuditRunner:
             raise CirraError("no route with an audit policy serves this repository")
         policy = route.policy.audit
         identity = job["identity"]
+        if identity["policy_digest"] != audits.policy_digest(policy):
+            raise CirraError("the audit policy changed after this request; request it again")
+        if not job["context"].get("ref"):
+            raise CirraError("the audit request names no ref to fetch")
         root = self.attempt_dir(attempt["attempt_id"])
         checkout = root / "checkout"
         if not checkout.exists():
@@ -320,6 +370,10 @@ class AuditRunner:
                         return {"state": "stopped", "reason": reason}
                     if time.monotonic() >= deadline:
                         raise CirraError("audit agent exceeded audit_timeout_seconds")
+                    if log_path.stat().st_size > MAX_AGENT_LOG_BYTES:
+                        raise CirraError("audit agent output exceeded 16 MiB")
+                    if self.heartbeat:
+                        self.heartbeat()
                     time.sleep(self.poll_seconds)
             finally:
                 if process.poll() is None:
@@ -416,10 +470,31 @@ class AuditPublication:
             receipt = json.loads(path.read_text(encoding="utf-8"))
             if receipt["state"] == "published":
                 return {**receipt, "duplicate": True}
-        route = self.routes.get(job["context"]["route"])
+        route = self.routes.get(job["context"].get("route")) or next(
+            (
+                item
+                for item in self.routes.values()
+                if audits.repository_key(repository_of(item)) == attempt["repository_key"]
+            ),
+            None,
+        )
         if route is None:
-            return {"state": "failed", "reason": "the audit's route no longer has an audit policy"}
-        result = audits.gate(route.policy.audit, "pr", attempt)
+            return {"state": "failed", "reason": "no route with an audit policy serves this audit"}
+        policy = route.policy.audit
+        identity = json.loads(attempt["identity_json"])
+        if identity["policy_digest"] != audits.policy_digest(policy):
+            return {
+                "state": "failed",
+                "reason": "the audit policy changed after this request; request it again",
+            }
+        comparison = None
+        if "full" in policy.tiers:
+            # Findings are only new against a baseline; without one, the gate waits.
+            baseline = audits.latest_full(Store(self.directory), attempt["repository_key"])
+            if baseline is None:
+                return {"state": "waiting", "reason": "waiting for the first full audit baseline"}
+            comparison = audits.compare(json.loads(attempt["report_json"]), baseline)
+        result = audits.gate(policy, "pr", attempt, comparison)
         conclusion = (
             "neutral"
             if result["level"] == "none"

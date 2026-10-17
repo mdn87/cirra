@@ -60,7 +60,17 @@ shown as `deferred` and retried the next UTC day, and `full` requests wait.
 
 `cirra audit-jobs` lists requests, `cirra cancel-audit --job ID --reason TEXT`
 cancels one, and `cirra jobs` and `cirra health` include them on a service
-state directory.
+state directory, along with unreadable audit records. `cirra request-audit`
+takes `--change` for a `pr` audit and `--ref`, the branch that contains
+`--head`, for `release` and `full` audits.
+
+Each worker pass first recovers work a stopped worker left behind: a running
+job whose report was already imported settles, a cancellation or supersession
+applies, and anything else runs again on the same attempt. A runner failure of
+any kind fails the job and fences its attempt. A request made under a policy
+that has since changed is refused rather than run or published under the new
+one. Finished records move to `audit-queue/archive/` after seven days, and at
+most 10,000 requests can be active.
 
 ## Running an audit
 
@@ -81,7 +91,9 @@ cirra import-audit --attempt ATTEMPT --report production-audit-pr-20261017-12000
 With `kind: command` the worker runs the argv in
 `audit-attempts/<attempt>/work` with the reviewer's reduced environment and
 `CIRRA_AUDIT_PACKET`, `CIRRA_AUDIT_DIR` and `CIRRA_AUDIT_CHECKOUT` set. The
-agent writes exactly one report there, and the worker imports it. For full
+agent writes exactly one report there, and the worker imports it. Its combined
+output goes to `agent.log` and is capped at 16 MiB, and the worker heartbeat
+stays current while it runs. For full
 audits the agent also writes `checkpoints/<domain>.json` after each catalog
 domain and stops between domains when a `stop` file appears. That lets a
 `pr` or `release` request preempt a running full audit, which then resumes
@@ -108,7 +120,10 @@ no-op.
 A completed `pr` audit publishes one `cirra/audit` check run on the head (GitHub
 only; GitLab is recorded as unsupported). Its conclusion is `failure` when a
 finding that is new against the baseline meets `gates.pr`, so a pull request is
-not blamed for the backlog. Each audit identity publishes once.
+not blamed for the backlog. When `full` is enabled but no baseline exists yet,
+the job waits as `awaiting_baseline` and publishes once the baseline completes,
+compared against it. Each audit identity publishes once, and a job superseded
+or cancelled before publication does not publish.
 
 `plan-release --config POLICY` refuses until a release audit of the candidate
 commit exists, queueing one if needed, and refuses while it has findings at or

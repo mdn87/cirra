@@ -196,7 +196,11 @@ class Queue:
 
 
 AUDIT_PRIORITY = {"release": 0, "pr": 1, "full": 2}
-ACTIVE_AUDIT = ("queued", "deferred", "running", "awaiting_import")
+ACTIVE_AUDIT = ("queued", "deferred", "running", "awaiting_import", "awaiting_baseline")
+# Finished records move to audit-queue/archive after this long, so each request
+# scans only recent and active work; completed results stay attachable in SQLite.
+ARCHIVE_AFTER_SECONDS = 7 * 86400
+ARCHIVED_STATES = ("done", "superseded", "cancelled", "failed")
 
 
 class AuditQueue:
@@ -207,10 +211,10 @@ class AuditQueue:
     ones as superseded; identical identities attach to existing work.
     """
 
-    def __init__(self, directory, store=None):
+    def __init__(self, directory, store=None, maximum=10000):
         self.directory = Path(directory).resolve() / "audit-queue"
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.store = store
+        self.store, self.maximum = store, maximum
 
     def _lock(self):
         return change_lock(self.directory / "locks", "audit-queue", 10)
@@ -227,20 +231,43 @@ class AuditQueue:
         job["updated_at"] = utc_now()
         write_receipt(self.directory / (job["id"] + ".json"), job)
 
-    def jobs(self):
-        found = []
+    def scan(self):
+        """Readable job records, and names of records that could not be read."""
+        found, unreadable = [], []
         for path in self.directory.glob("*.json"):
             try:
-                found.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, ValueError):
-                continue  # Reported by `cirra health` through the review queue's scan.
-        return sorted(found, key=lambda job: (job["sequence"], job["id"]))
+                job = json.loads(path.read_text(encoding="utf-8"))
+                found.append(job)
+                (job["sequence"], job["id"], job["state"])
+            except (OSError, ValueError, KeyError, TypeError):
+                unreadable.append(path.name)
+        jobs = [job for job in found if isinstance(job, dict) and "sequence" in job]
+        return sorted(jobs, key=lambda job: (job["sequence"], job["id"])), sorted(unreadable)
+
+    def jobs(self):
+        # Unreadable records are skipped here and reported by `cirra health`.
+        return self.scan()[0]
+
+    def archive(self, jobs, now):
+        """Move finished records older than ARCHIVE_AFTER_SECONDS out of the scan."""
+        kept = []
+        for job in jobs:
+            updated = datetime.fromisoformat(job["updated_at"]).timestamp()
+            if job["state"] in ARCHIVED_STATES and now - updated > ARCHIVE_AFTER_SECONDS:
+                target = self.directory / "archive" / (job["id"] + ".json")
+                target.parent.mkdir(exist_ok=True)
+                (self.directory / (job["id"] + ".json")).replace(target)
+            else:
+                kept.append(job)
+        return kept
 
     def _mark_attempt(self, job, state):
+        """Fence the job's attempt; returns the attempt's resulting state, if any."""
         if self.store is not None and job.get("attempt_id"):
             from cirra.audits import mark
 
-            mark(self.store, job["attempt_id"], state)
+            return mark(self.store, job["attempt_id"], state)
+        return None
 
     def request(self, identity, scope, *, reason, debounce_seconds=0, context=None, now=None):
         from cirra.audits import repository_key
@@ -251,14 +278,18 @@ class AuditQueue:
         audit_id = digest(identity)
         work_key = digest([repository_key(identity["repository"]), scope, identity["tier"]])
         with self._lock():
-            jobs = self.jobs()
+            jobs = self.archive(self.jobs(), time.time())
             for job in jobs:
                 if (
                     job["audit_id"] == audit_id
                     and job["scope"] == scope
                     and job["state"] in (*ACTIVE_AUDIT, "done")
+                    and not job["cancel_requested"]
+                    and not job["superseded_by"]
                 ):
                     return {"job_id": job["id"], "attached": True}
+            if sum(job["state"] in ACTIVE_AUDIT for job in jobs) >= self.maximum:
+                raise CirraError("audit queue capacity reached; cancel or finish queued audits")
             if self.store is not None:
                 from cirra.audits import begin, completed
 
@@ -295,7 +326,8 @@ class AuditQueue:
                     self._mark_attempt(other, "superseded")  # A preempted full audit.
                     self.save(other)
                 elif (
-                    other["state"] in ("running", "awaiting_import") and not other["superseded_by"]
+                    other["state"] in ("running", "awaiting_import", "awaiting_baseline")
+                    and not other["superseded_by"]
                 ):
                     # The runner stops at its next checkpoint; the attempt's state is
                     # the fence that refuses a late import of the old head.
@@ -377,10 +409,14 @@ class AuditQueue:
             job = self.read(identifier)
             if job["state"] in ("queued", "deferred"):
                 job.update(state="cancelled", cancel_reason=reason)
-            elif job["state"] in ("running", "awaiting_import"):
+            elif job["state"] in ("running", "awaiting_import", "awaiting_baseline"):
+                fenced = self._mark_attempt(job, "cancelled")
+                if job["state"] == "awaiting_import" and fenced == "complete":
+                    raise CirraError(
+                        "this audit's report was already imported; it settles on the next pass"
+                    )
                 job.update(cancel_requested=True, cancel_reason=reason)
-                self._mark_attempt(job, "cancelled")
-                if job["state"] == "awaiting_import":
+                if job["state"] != "running":
                     job["state"] = "cancelled"  # No process to stop; the fence is set.
             else:
                 raise CirraError(f"audit job is already {job['state']}")
