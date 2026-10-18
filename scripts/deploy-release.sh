@@ -67,7 +67,12 @@ restart_and_check() {
   done
   systemctl is-active $UNITS
   local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz" || true)
+  # "active" precedes the receiver binding its port; give it time to answer.
+  for _ in $(seq 1 20); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz" || true)
+    [ "$code" = 200 ] && break
+    sleep 1
+  done
   if [ "$code" != 200 ]; then
     echo "receiver /healthz returned $code" >&2
     return 1
