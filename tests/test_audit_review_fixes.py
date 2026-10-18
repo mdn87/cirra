@@ -1067,3 +1067,67 @@ def test_a_dead_workers_job_takes_the_agent_tree_with_it(world, tmp_path):
             break
         assert time.monotonic() < deadline, "the agent's child outlived the job"
         time.sleep(0.1)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="job objects are the Windows mechanism")
+def test_a_failed_job_assignment_kills_the_suspended_agent(world, tmp_path, monkeypatch):
+    from cirra import audit_worker as module
+
+    _, runner = world.make()
+    started = []
+    real_popen = module.subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        started.append(process)
+        return process
+
+    def refuse(self, process):
+        raise CirraError("could not place the audit agent in its Windows job object")
+
+    monkeypatch.setattr(module.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(module.WindowsJob, "adopt_and_resume", refuse)
+    work = tmp_path / "work"
+    work.mkdir()
+    with (work / "agent.log").open("ab") as log:
+        with pytest.raises(CirraError, match="job object"):
+            runner.launch([sys.executable, "-c", "import time; time.sleep(60)"], work, None, log)
+    [agent] = started
+    assert agent.poll() is not None  # terminated, not left suspended
+
+
+def test_the_job_closes_even_when_stopping_the_agent_fails(world, tmp_path, monkeypatch):
+    from cirra import audit_worker as module
+
+    route, runner = world.make(agent(tmp_path, source="import time\ntime.sleep(30)\n"))
+    route.policy = replace(
+        route.policy, audit=replace(route.policy.audit, audit_timeout_seconds=0.3)
+    )
+    store_baseline(world, route)
+    request(world, route, "app.py")
+    closed = []
+    real_launch = runner.launch
+
+    def launch(*args):
+        process = real_launch(*args)
+        real_job = getattr(process, "cirra_job", None)
+
+        class Recording:
+            def close(self):
+                closed.append(True)
+                if real_job:
+                    real_job.close()
+
+        process.cirra_job = Recording()
+        return process
+
+    def broken_stop(process):
+        process.kill()
+        raise OSError("taskkill timed out")
+
+    monkeypatch.setattr(runner, "launch", launch)
+    monkeypatch.setattr(module, "stop_process", broken_stop)
+    store = Store(world.state)
+    job = audit_once(AuditQueue(world.state, store), store, 20, runner)
+    assert job["state"] == "failed" and "timed out" in job["error"], job
+    assert closed  # the job handle was closed despite the failing stop

@@ -439,8 +439,13 @@ class AuditRunner:
         try:
             job.adopt_and_resume(process)
         except BaseException:
-            job.close()  # kills the suspended process with the job
-            process.wait(10)
+            # It may not have joined the job, so end it through its own handle.
+            process.kill()
+            job.close()
+            try:
+                process.wait(10)
+            except subprocess.TimeoutExpired:
+                pass  # never mask the original failure
             raise
         process.cirra_job = job
         return process
@@ -481,10 +486,12 @@ class AuditRunner:
                         self.heartbeat()
                     time.sleep(self.poll_seconds)
             finally:
-                if process.poll() is None:
-                    stop_process(process)
-                if getattr(process, "cirra_job", None):
-                    process.cirra_job.close()  # ends anything the agent left running
+                try:
+                    if process.poll() is None:
+                        stop_process(process)
+                finally:
+                    if getattr(process, "cirra_job", None):
+                        process.cirra_job.close()  # ends anything the agent left running
         if log_path.stat().st_size > MAX_AGENT_LOG_BYTES:
             raise CirraError("audit agent output exceeded 16 MiB")  # a fast exit skipped polling
         if process.returncode:
