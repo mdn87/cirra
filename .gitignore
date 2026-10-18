@@ -17,3 +17,12 @@ __pycache__/
 build/
 dist/
 cirra-checkout.json
+
+# Local credentials and agent scratch; sanitized templates remain versioned.
+.env*
+!.env.example
+!.env.*.example
+!.env.template
+!.env.*.template
+.lugos-wip/
+*.sync-conflict-*
