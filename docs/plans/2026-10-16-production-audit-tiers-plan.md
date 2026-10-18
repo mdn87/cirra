@@ -1,8 +1,8 @@
 # Production audit tiers in Cirra
 
 Date: 2026-10-16. Status: stages 1 to 6 implemented; see the
-[audit guide](../audit-workflow.md). The live acceptance runs on lugos-host
-(stage 4) are still open.
+[audit guide](../audit-workflow.md). The stage 4 live acceptance passed on
+lugos-host on 2026-10-18 (see stage 4).
 
 ## Purpose
 
@@ -268,8 +268,15 @@ Implemented in `cirra.audit_worker` (`request_audits`, `AuditRunner`,
 `AuditPublication`), `cirra.audit_checkout`, and the worker loop; tested in
 `tests/test_audit_worker.py` against a local origin with a real
 `refs/pull/N/head`, a stand-in agent process, and a fake GitHub API. The live
-acceptance on lugos-host is still open: it needs a release deployed with an
-`audit` block in the route policy. Choices made while implementing:
+acceptance passed on lugos-host on 2026-10-18: release `14f507d` with a
+`pr`-only session-runner `audit` block on the `cirra-github` route. Live pull
+request mdn87/cirra#23 produced one audit job (both of its webhook deliveries
+attached to it), one imported report, and one `cirra/audit` check run
+(`117571400198`, conclusion `success`: one low finding, C011, under a `critical`
+gate). Re-processing the change attached to the finished audit and published
+nothing new. The exact GitHub redelivery API needs a token with
+`admin:repo_hook`, so the re-trigger used `cirra enqueue`, which re-processes
+the same head through the same path a redelivery takes after webhook dedup. Choices made while implementing:
 
 - The review processor queues audits right after it captures a change, before
   observation and review. Audit errors are recorded on the review job and never
