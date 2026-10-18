@@ -681,7 +681,6 @@ def test_a_changed_finding_path_invalidates_its_checkpoint(world, tmp_path):
     assert runner.resume(store, job, checkout, target) == []
 
 
-@pytest.mark.skipif(os.name == "nt", reason="agents inherit the lock only on POSIX")
 def test_a_surviving_agent_is_killed_before_relaunch(world, tmp_path):
     _, runner = world.make()
     work = tmp_path / "work"
@@ -690,7 +689,7 @@ def test_a_surviving_agent_is_killed_before_relaunch(world, tmp_path):
         survivor = runner.launch(
             [sys.executable, "-c", "import time; time.sleep(60)"], work, None, log
         )
-    # The worker "crashed": only the survivor still holds the lock.
+    # The worker "crashed": only the survivor still runs (and holds the lock on POSIX).
     with (work / "second.log").open("ab") as log:
         second = runner.launch([sys.executable, "-c", "pass"], work, None, log)
     assert survivor.wait(10) is not None
@@ -1030,3 +1029,21 @@ def test_default_branch_head_verifies_the_repository_identity(monkeypatch, provi
     monkeypatch.setattr(FakeProvider, "native", 6)  # the path now names another repository
     with pytest.raises(CirraError, match="identity changed"):
         audit_worker.default_branch_head(route, None)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the PID marker is the Windows mechanism")
+def test_a_reused_pid_is_never_killed(world, tmp_path):
+    from cirra.audit_worker import windows_process_started
+
+    _, runner = world.make()
+    work = tmp_path / "work"
+    work.mkdir()
+    # Our own live PID with another creation time: a different process instance.
+    started = windows_process_started(os.getpid())
+    assert started is not None
+    (work / "agent.pid").write_text(f"{os.getpid()} {started - 1}", encoding="utf-8")
+    with (work / "agent.log").open("ab") as log:
+        agent = runner.launch([sys.executable, "-c", "pass"], work, None, log)
+    assert agent.wait(10) == 0
+    pid, recorded = (int(value) for value in (work / "agent.pid").read_text().split())
+    assert pid == agent.pid and recorded > 0

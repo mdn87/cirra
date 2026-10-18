@@ -378,18 +378,12 @@ class AuditRunner:
 
         On POSIX the agent inherits a lock on `agent.lock`, so the lock stays held for
         as long as it (or anything it started) runs, even after the worker dies.
-        Windows has no inherited lock; there a surviving agent is not detected.
+        Windows has no inherited lock, so `agent.pid` records the agent's PID and
+        creation time; only a live process matching both is the old agent, which
+        rules out killing an unrelated process that reused the PID.
         """
         if os.name == "nt":
-            return subprocess.Popen(
-                argv,
-                cwd=work,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            return self._launch_windows(argv, work, env, log)
         import fcntl
         import signal
 
@@ -422,6 +416,37 @@ class AuditRunner:
                 pass_fds=(lock.fileno(),),
             )
             (work / "agent.pid").write_text(str(process.pid), encoding="utf-8")
+        return process
+
+    def _launch_windows(self, argv, work, env, log):
+        marker = work / "agent.pid"
+        try:
+            pid, started = (int(value) for value in marker.read_text(encoding="utf-8").split())
+        except (OSError, ValueError):
+            pid = started = None
+        if pid and windows_process_started(pid) == started:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+            deadline = time.monotonic() + self.grace_seconds
+            while windows_process_started(pid) == started:
+                if time.monotonic() >= deadline:
+                    raise CirraError("a previous audit agent is still running")
+                time.sleep(0.1)
+        process = subprocess.Popen(
+            argv,
+            cwd=work,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        marker.write_text(f"{process.pid} {windows_process_started(process.pid)}", encoding="utf-8")
         return process
 
     def run_agent(self, policy, identity, attempt, packet_path, checkout, work, stop):
@@ -489,6 +514,32 @@ class AuditRunner:
                 if repository_of(route) == identity["repository"]:
                     remove_checkout(self.directory, route.provider, route.repository, directory)
                     break
+
+
+def windows_process_started(pid):
+    """A running Windows process's creation time (FILETIME ticks), or None.
+
+    PID plus creation time identifies one process instance across PID reuse.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:
+            return None  # 259 is STILL_ACTIVE
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel32.GetProcessTimes(handle, *(ctypes.byref(item) for item in times)):
+            return None
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class AuditCheckPublisher:
