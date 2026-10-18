@@ -66,17 +66,21 @@ restart_and_check() {
     sleep 1
   done
   systemctl is-active $UNITS
-  local code
-  # "active" precedes the receiver binding its port; give it time to answer.
-  for _ in $(seq 1 20); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz" || true)
+  local code deadline=$((SECONDS + 20))
+  # "active" precedes the receiver binding its port; give it until the deadline,
+  # probing once more at the deadline itself. Each probe is bounded.
+  while :; do
+    code=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz" || true)
     [ "$code" = 200 ] && break
+    [ "$SECONDS" -ge "$deadline" ] && break
     sleep 1
   done
   if [ "$code" != 200 ]; then
     echo "receiver /healthz returned $code" >&2
     return 1
   fi
+  # /healthz only exercises the receiver; the worker must still be running too.
+  systemctl is-active $UNITS || return 1
 }
 
 if [ "$MODE" = rollback ]; then
