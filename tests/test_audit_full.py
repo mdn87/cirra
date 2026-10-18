@@ -18,7 +18,8 @@ from cirra.store import Store
 FULL_AGENT = """
 import json, os, sys, time
 from pathlib import Path
-sys.path.insert(0, {tests!r})
+# The agent gets no PYTHONPATH from Cirra; find cirra and the fixtures directly.
+sys.path[:0] = [{tests!r}, {src!r}]
 from audit_fixtures import build_report, write_report
 work = Path(os.environ["CIRRA_AUDIT_DIR"])
 packet = json.loads(Path(os.environ["CIRRA_AUDIT_PACKET"]).read_text(encoding="utf-8"))
@@ -54,7 +55,8 @@ write_report(work, report)
 def full_agent(tmp_path):
     log = tmp_path / "domains.log"
     script = tmp_path / "full-agent.py"
-    script.write_text(FULL_AGENT.format(tests=str(TESTS), log=str(log)), encoding="utf-8")
+    source = FULL_AGENT.format(tests=str(TESTS), src=str(TESTS.parent / "src"), log=str(log))
+    script.write_text(source, encoding="utf-8")
     return {"kind": "command", "command": [sys.executable, str(script)]}, log
 
 

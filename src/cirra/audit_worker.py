@@ -378,18 +378,12 @@ class AuditRunner:
 
         On POSIX the agent inherits a lock on `agent.lock`, so the lock stays held for
         as long as it (or anything it started) runs, even after the worker dies.
-        Windows has no inherited lock; there a surviving agent is not detected.
+        On Windows the agent's whole process tree runs in a job object that is
+        killed when its only handle, held by the worker, closes; a worker that dies
+        therefore takes its agent with it and no survivor can exist.
         """
         if os.name == "nt":
-            return subprocess.Popen(
-                argv,
-                cwd=work,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            return self._launch_windows(argv, work, env, log)
         import fcntl
         import signal
 
@@ -422,6 +416,38 @@ class AuditRunner:
                 pass_fds=(lock.fileno(),),
             )
             (work / "agent.pid").write_text(str(process.pid), encoding="utf-8")
+        return process
+
+    def _launch_windows(self, argv, work, env, log):
+        job = WindowsJob()
+        try:
+            # Suspended until it is in the job, so nothing it starts can escape it.
+            process = subprocess.Popen(
+                argv,
+                cwd=work,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | 0x00000004,  # CREATE_SUSPENDED
+            )
+        except BaseException:
+            job.close()
+            raise
+        try:
+            job.adopt_and_resume(process)
+        except BaseException:
+            # It may not have joined the job, so end it through its own handle.
+            process.kill()
+            job.close()
+            try:
+                process.wait(10)
+            except subprocess.TimeoutExpired:
+                pass  # never mask the original failure
+            raise
+        process.cirra_job = job
         return process
 
     def run_agent(self, policy, identity, attempt, packet_path, checkout, work, stop):
@@ -460,8 +486,12 @@ class AuditRunner:
                         self.heartbeat()
                     time.sleep(self.poll_seconds)
             finally:
-                if process.poll() is None:
-                    stop_process(process)
+                try:
+                    if process.poll() is None:
+                        stop_process(process)
+                finally:
+                    if getattr(process, "cirra_job", None):
+                        process.cirra_job.close()  # ends anything the agent left running
         if log_path.stat().st_size > MAX_AGENT_LOG_BYTES:
             raise CirraError("audit agent output exceeded 16 MiB")  # a fast exit skipped polling
         if process.returncode:
@@ -489,6 +519,83 @@ class AuditRunner:
                 if repository_of(route) == identity["repository"]:
                     remove_checkout(self.directory, route.provider, route.repository, directory)
                     break
+
+
+class WindowsJob:
+    """A Windows job object whose processes all die when its last handle closes.
+
+    Only the worker holds the handle (it is not inheritable), so the operating
+    system closes it, and kills the agent's process tree, if the worker dies.
+    """
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        self._kernel32 = kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._ntdll = ctypes.WinDLL("ntdll")
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+        kernel32.SetInformationJobObject.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        )
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self._ntdll.NtResumeProcess.argtypes = (wintypes.HANDLE,)
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                (name, ctypes.c_ulonglong)
+                for name in ("reads", "writes", "others", "read_bytes", "write_bytes", "other")
+            ]
+
+        class Basic(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class Extended(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", Basic),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        self.handle = kernel32.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise CirraError("could not create a Windows job object for the audit agent")
+        limits = Extended()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+        ):  # 9: JobObjectExtendedLimitInformation
+            self.close()
+            raise CirraError("could not configure the audit agent's Windows job object")
+
+    def adopt_and_resume(self, process):
+        if not self._kernel32.AssignProcessToJobObject(self.handle, int(process._handle)):
+            raise CirraError("could not place the audit agent in its Windows job object")
+        if self._ntdll.NtResumeProcess(int(process._handle)) != 0:
+            raise CirraError("could not resume the audit agent")
+
+    def close(self):
+        if self.handle:
+            self._kernel32.CloseHandle(self.handle)
+            self.handle = None
 
 
 class AuditCheckPublisher:
