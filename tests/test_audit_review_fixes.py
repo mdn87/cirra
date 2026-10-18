@@ -681,6 +681,7 @@ def test_a_changed_finding_path_invalidates_its_checkpoint(world, tmp_path):
     assert runner.resume(store, job, checkout, target) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses a job object instead")
 def test_a_surviving_agent_is_killed_before_relaunch(world, tmp_path):
     _, runner = world.make()
     work = tmp_path / "work"
@@ -689,7 +690,7 @@ def test_a_surviving_agent_is_killed_before_relaunch(world, tmp_path):
         survivor = runner.launch(
             [sys.executable, "-c", "import time; time.sleep(60)"], work, None, log
         )
-    # The worker "crashed": only the survivor still runs (and holds the lock on POSIX).
+    # The worker "crashed": only the survivor still holds the lock.
     with (work / "second.log").open("ab") as log:
         second = runner.launch([sys.executable, "-c", "pass"], work, None, log)
     assert survivor.wait(10) is not None
@@ -1031,19 +1032,38 @@ def test_default_branch_head_verifies_the_repository_identity(monkeypatch, provi
         audit_worker.default_branch_head(route, None)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="the PID marker is the Windows mechanism")
-def test_a_reused_pid_is_never_killed(world, tmp_path):
-    from cirra.audit_worker import windows_process_started
+@pytest.mark.skipif(os.name != "nt", reason="job objects are the Windows mechanism")
+def test_a_dead_workers_job_takes_the_agent_tree_with_it(world, tmp_path):
+    import ctypes
 
     _, runner = world.make()
     work = tmp_path / "work"
     work.mkdir()
-    # Our own live PID with another creation time: a different process instance.
-    started = windows_process_started(os.getpid())
-    assert started is not None
-    (work / "agent.pid").write_text(f"{os.getpid()} {started - 1}", encoding="utf-8")
+    child_pid = work / "child.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(child_pid)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(60)\n"
+    )
     with (work / "agent.log").open("ab") as log:
-        agent = runner.launch([sys.executable, "-c", "pass"], work, None, log)
-    assert agent.wait(10) == 0
-    pid, recorded = (int(value) for value in (work / "agent.pid").read_text().split())
-    assert pid == agent.pid and recorded > 0
+        agent = runner.launch([sys.executable, "-c", script], work, None, log)
+    deadline = time.monotonic() + 20
+    while not child_pid.exists() or not child_pid.read_text():
+        assert time.monotonic() < deadline, "agent never started its child"
+        time.sleep(0.05)
+    child = int(child_pid.read_text())
+    agent.cirra_job.close()  # what the OS does when the worker dies
+    assert agent.wait(10) is not None
+    kernel32 = ctypes.WinDLL("kernel32")
+    deadline = time.monotonic() + 10
+    while True:
+        handle = kernel32.OpenProcess(0x00100000, False, child)  # SYNCHRONIZE
+        if not handle:
+            break  # already gone
+        finished = kernel32.WaitForSingleObject(handle, 0) == 0
+        kernel32.CloseHandle(handle)
+        if finished:
+            break
+        assert time.monotonic() < deadline, "the agent's child outlived the job"
+        time.sleep(0.1)

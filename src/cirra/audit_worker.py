@@ -378,9 +378,9 @@ class AuditRunner:
 
         On POSIX the agent inherits a lock on `agent.lock`, so the lock stays held for
         as long as it (or anything it started) runs, even after the worker dies.
-        Windows has no inherited lock, so `agent.pid` records the agent's PID and
-        creation time; only a live process matching both is the old agent, which
-        rules out killing an unrelated process that reused the PID.
+        On Windows the agent's whole process tree runs in a job object that is
+        killed when its only handle, held by the worker, closes; a worker that dies
+        therefore takes its agent with it and no survivor can exist.
         """
         if os.name == "nt":
             return self._launch_windows(argv, work, env, log)
@@ -419,34 +419,30 @@ class AuditRunner:
         return process
 
     def _launch_windows(self, argv, work, env, log):
-        marker = work / "agent.pid"
+        job = WindowsJob()
         try:
-            pid, started = (int(value) for value in marker.read_text(encoding="utf-8").split())
-        except (OSError, ValueError):
-            pid = started = None
-        if pid and windows_process_started(pid) == started:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-                check=False,
+            # Suspended until it is in the job, so nothing it starts can escape it.
+            process = subprocess.Popen(
+                argv,
+                cwd=work,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | 0x00000004,  # CREATE_SUSPENDED
             )
-            deadline = time.monotonic() + self.grace_seconds
-            while windows_process_started(pid) == started:
-                if time.monotonic() >= deadline:
-                    raise CirraError("a previous audit agent is still running")
-                time.sleep(0.1)
-        process = subprocess.Popen(
-            argv,
-            cwd=work,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-        marker.write_text(f"{process.pid} {windows_process_started(process.pid)}", encoding="utf-8")
+        except BaseException:
+            job.close()
+            raise
+        try:
+            job.adopt_and_resume(process)
+        except BaseException:
+            job.close()  # kills the suspended process with the job
+            process.wait(10)
+            raise
+        process.cirra_job = job
         return process
 
     def run_agent(self, policy, identity, attempt, packet_path, checkout, work, stop):
@@ -487,6 +483,8 @@ class AuditRunner:
             finally:
                 if process.poll() is None:
                     stop_process(process)
+                if getattr(process, "cirra_job", None):
+                    process.cirra_job.close()  # ends anything the agent left running
         if log_path.stat().st_size > MAX_AGENT_LOG_BYTES:
             raise CirraError("audit agent output exceeded 16 MiB")  # a fast exit skipped polling
         if process.returncode:
@@ -516,30 +514,81 @@ class AuditRunner:
                     break
 
 
-def windows_process_started(pid):
-    """A running Windows process's creation time (FILETIME ticks), or None.
+class WindowsJob:
+    """A Windows job object whose processes all die when its last handle closes.
 
-    PID plus creation time identifies one process instance across PID reuse.
+    Only the worker holds the handle (it is not inheritable), so the operating
+    system closes it, and kills the agent's process tree, if the worker dies.
     """
-    import ctypes
-    from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return None
-    try:
-        code = wintypes.DWORD()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:
-            return None  # 259 is STILL_ACTIVE
-        times = [wintypes.FILETIME() for _ in range(4)]
-        if not kernel32.GetProcessTimes(handle, *(ctypes.byref(item) for item in times)):
-            return None
-        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
-    finally:
-        kernel32.CloseHandle(handle)
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        self._kernel32 = kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._ntdll = ctypes.WinDLL("ntdll")
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+        kernel32.SetInformationJobObject.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        )
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self._ntdll.NtResumeProcess.argtypes = (wintypes.HANDLE,)
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                (name, ctypes.c_ulonglong)
+                for name in ("reads", "writes", "others", "read_bytes", "write_bytes", "other")
+            ]
+
+        class Basic(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class Extended(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", Basic),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        self.handle = kernel32.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise CirraError("could not create a Windows job object for the audit agent")
+        limits = Extended()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+        ):  # 9: JobObjectExtendedLimitInformation
+            self.close()
+            raise CirraError("could not configure the audit agent's Windows job object")
+
+    def adopt_and_resume(self, process):
+        if not self._kernel32.AssignProcessToJobObject(self.handle, int(process._handle)):
+            raise CirraError("could not place the audit agent in its Windows job object")
+        if self._ntdll.NtResumeProcess(int(process._handle)) != 0:
+            raise CirraError("could not resume the audit agent")
+
+    def close(self):
+        if self.handle:
+            self._kernel32.CloseHandle(self.handle)
+            self.handle = None
 
 
 class AuditCheckPublisher:

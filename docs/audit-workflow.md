@@ -70,10 +70,11 @@ applies, and anything else runs again on the same attempt. A runner failure of
 any kind fails the job and fences its attempt. A request made under a policy
 that has since changed is refused rather than run or published under the new
 one. Finished records move to `audit-queue/archive/` after seven days, and at
-most 10,000 requests can be active. Recovery kills a command agent that outlived
-its worker before starting another: on Linux and macOS the agent holds an
-inherited lock on `agent.lock`; on Windows `agent.pid` records its PID and
-creation time, and only a live process matching both is stopped. While `pr`
+most 10,000 requests can be active. Recovery deals with a command agent that
+outlived its worker before starting another: on Linux and macOS the agent holds an
+inherited lock on `agent.lock`. On Windows the agent's process tree runs in a
+job object that only the worker holds, so the system kills it when the worker
+dies and no survivor can exist. While `pr`
 audits wait on a first baseline, that baseline runs ahead of further `pr`
 and `release` work. Operator requests run on the route that serves the
 repository with the policy they were made under. Before queueing a default

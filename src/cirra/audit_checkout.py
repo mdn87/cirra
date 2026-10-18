@@ -46,6 +46,10 @@ def _environment(cache, url, username, token, protocols):
         ("core.autocrlf", "false"),
         ("core.symlinks", "false"),
         ("submodule.recurse", "false"),
+        # Run automatic maintenance in the foreground: a detached gc is orphaned and,
+        # without an init process (a container), never reaped.
+        ("gc.autoDetach", "false"),
+        ("maintenance.autoDetach", "false"),
     ]
     values += [(f"protocol.{name}.allow", "always") for name in protocols]
     if token:
