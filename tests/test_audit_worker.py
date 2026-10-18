@@ -25,7 +25,8 @@ TESTS = Path(__file__).resolve().parent
 AGENT = """
 import json, os, sys
 from pathlib import Path
-sys.path.insert(0, {tests!r})
+# The agent gets no PYTHONPATH from Cirra; find cirra and the fixtures directly.
+sys.path[:0] = [{tests!r}, {src!r}]
 from audit_fixtures import build_report, write_report
 packet = json.loads(Path(os.environ["CIRRA_AUDIT_PACKET"]).read_text(encoding="utf-8"))
 gaps = {gaps!r}
@@ -63,7 +64,10 @@ class FakeGitHub:
 
 def agent(tmp_path, gaps=(), source=AGENT):
     script = tmp_path / f"agent-{time.monotonic_ns()}.py"
-    script.write_text(source.format(tests=str(TESTS), gaps=list(gaps)), encoding="utf-8")
+    script.write_text(
+        source.format(tests=str(TESTS), src=str(TESTS.parent / "src"), gaps=list(gaps)),
+        encoding="utf-8",
+    )
     return {"kind": "command", "command": [sys.executable, str(script)]}
 
 
