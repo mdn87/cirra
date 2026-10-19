@@ -1,8 +1,10 @@
 [Unit]
 Description=Cirra worker, queue, reconcile and budget health check
-# Route failures to your alerting, for example a unit that posts to an
-# operator-attention endpoint:
-# OnFailure=cirra-health-alert.service
+# Route failures to your alerting and clear the alert on recovery. The example
+# units post operator-attention events to lugos event-ingest; the resolve unit
+# only runs while an alert is outstanding.
+OnFailure=cirra-health-alert.service
+OnSuccess=cirra-health-resolve.service
 
 [Service]
 Type=oneshot

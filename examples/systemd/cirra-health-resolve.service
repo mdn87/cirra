@@ -1,0 +1,17 @@
+[Unit]
+Description=Resolve the Cirra operator-attention alert after the health check recovers
+# Only runs while cirra-health-alert.service has left an alert outstanding, so
+# a healthy host does not post a resolve event every five minutes.
+ConditionPathExists=/srv/lugos/state/cirra/health-alert.pending
+
+[Service]
+Type=oneshot
+User=matt
+Group=matt
+# Provides LUGOS_EVENT_HOST, LUGOS_EVENT_PORT and LUGOS_EVENT_AUTH_TOKEN.
+EnvironmentFile=-/etc/lugos/event-ingest.env
+# The resolved event carries no id: the attention daemon resolves the active
+# request for the dedupe_key, and request ids are primary keys that cannot be
+# reused across incidents. The marker is removed once the event is accepted,
+# so a failed post leaves it in place for the next successful run.
+ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -c "import json, os, pathlib, urllib.request; token = os.environ.get('LUGOS_EVENT_AUTH_TOKEN', ''); url = 'http://{}:{}/events'.format(os.environ.get('LUGOS_EVENT_HOST', '127.0.0.1'), os.environ.get('LUGOS_EVENT_PORT', '8787')); event = {'type': 'operator_attention.resolved', 'schema': 'lugos-operator-attention/v1', 'source': 'cirra-health', 'dedupe_key': 'cirra-health-lugos-host', 'reason': 'run_succeeded'}; request = urllib.request.Request(url, data=json.dumps(event).encode(), headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}, method='POST'); print('resolve posted: HTTP', urllib.request.urlopen(request, timeout=8).status) if token else print('no LUGOS_EVENT_AUTH_TOKEN; resolve skipped'); pathlib.Path('/srv/lugos/state/cirra/health-alert.pending').unlink(missing_ok=True)"

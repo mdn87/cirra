@@ -1,0 +1,17 @@
+[Unit]
+Description=Raise an operator-attention alert when the Cirra health check fails
+
+[Service]
+Type=oneshot
+User=matt
+Group=matt
+# Provides LUGOS_EVENT_HOST, LUGOS_EVENT_PORT and LUGOS_EVENT_AUTH_TOKEN.
+EnvironmentFile=-/etc/lugos/event-ingest.env
+# Posts one operator_attention.requested event per failed run. The daemon
+# keeps one active request per dedupe_key and only pushes again when the
+# urgency rises, so the request must be resolved on recovery
+# (cirra-health-resolve.service) or it suppresses the next incident. The
+# marker file tells the resolve unit that an alert is outstanding, and
+# ttl_seconds expires the request a day after the last failed run if the
+# resolve step never runs.
+ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -c "import json, os, pathlib, subprocess, urllib.request, uuid; token = os.environ.get('LUGOS_EVENT_AUTH_TOKEN', ''); url = 'http://{}:{}/events'.format(os.environ.get('LUGOS_EVENT_HOST', '127.0.0.1'), os.environ.get('LUGOS_EVENT_PORT', '8787')); detail = subprocess.run(['journalctl', '-u', 'cirra-health.service', '-n', '1', '-o', 'cat', '--no-pager'], capture_output=True, text=True).stdout.strip()[-900:]; event = {'type': 'operator_attention.requested', 'schema': 'lugos-operator-attention/v1', 'id': 'attn-' + uuid.uuid4().hex, 'source': 'cirra-health', 'host': 'lugos-host', 'title': 'Cirra needs attention', 'body': detail or 'cirra health failed; run cirra health on lugos-host', 'urgency': 'high', 'dedupe_key': 'cirra-health-lugos-host', 'ttl_seconds': 86400}; pathlib.Path('/srv/lugos/state/cirra/health-alert.pending').write_text(event['id'] + chr(10)); request = urllib.request.Request(url, data=json.dumps(event).encode(), headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}, method='POST'); print('alert posted: HTTP', urllib.request.urlopen(request, timeout=8).status) if token else print('no LUGOS_EVENT_AUTH_TOKEN; alert skipped')"
