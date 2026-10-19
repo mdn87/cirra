@@ -470,7 +470,10 @@ the last failed run. The resolve unit runs only while that marker exists
 `run_succeeded` and no `id` (the daemon resolves the active request for the
 dedupe key; request ids are primary keys and cannot be reused across
 incidents), and removes the marker once event-ingest accepts the event. A
-failed post leaves the marker for the next healthy run. All three units live
+failed post leaves the marker for the next healthy run, and so does a missing
+token: running the resolve command with an empty `LUGOS_EVENT_AUTH_TOKEN` on
+2026-10-19 exited 1 with `marker kept for the next healthy run` and left the
+marker in place. All three units live
 in `examples/systemd/`; `scripts/deploy-release.sh` does not install unit
 files, so a unit change is deployed with
 `sudo install -m 0644 examples/systemd/cirra-health*.service /etc/systemd/system/`
