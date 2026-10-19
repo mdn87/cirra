@@ -275,8 +275,11 @@ something needs an operator: the worker heartbeat is missing or older than
 hold the loop), a job entered `attention` within `--attention-window` (one day),
 the last reconcile reported a route or branch error, today's admission is
 exhausted, or a queue record is unreadable (the worker skips such records).
-`examples/systemd/cirra-health.service` and `.timer` run it every five minutes;
-point the service's `OnFailure=` at your alerting.
+`examples/systemd/cirra-health.service` and `.timer` run it every five minutes.
+`cirra-health-alert.service` (`OnFailure=`) posts an
+`operator_attention.requested` event to lugos event-ingest, and
+`cirra-health-resolve.service` (`OnSuccess=`) resolves it on the next healthy
+run; point both at your own units if you alert differently.
 
 The receiver closes any connection that has not finished its request within
 10 seconds, so slow clients cannot hold its 16 handler slots. It writes one
@@ -452,13 +455,37 @@ production rather than by a test: on 2026-10-17 the health check failed with
 unit posted 92 requests under dedupe key `cirra-health-lugos-host`, and the
 attention daemon recorded two Pushover deliveries with status `sent` (18:12Z
 and 18:42Z) that reached the operator's phone. The request stayed `active`
-afterwards because nothing resolves it on recovery and the event carries no
-`ttl_seconds`; while it is active the daemon suppresses repeat pushes at the
-same urgency. It was closed by hand on 2026-10-19 with an
-`operator_attention.resolved` event (same `id` as the active request,
-reason `operator_resolved`). Until the health unit gains an `OnSuccess=`
-resolve step, a cirra alert must be resolved the same way after each
-incident or the next failure will not push.
+afterwards because nothing resolved it on recovery and the event carried no
+`ttl_seconds`; while a request is active the daemon suppresses repeat pushes
+at the same urgency, so the next incident would not have pushed. It was closed
+by hand on 2026-10-19 with an `operator_attention.resolved` event (same `id`
+as the active request, reason `operator_resolved`).
+
+Since 2026-10-19 the health unit also carries
+`OnSuccess=cirra-health-resolve.service`. The alert unit writes
+`health-alert.pending` (the generated request id) under the state directory
+and sends `ttl_seconds: 86400`, so an unresolved request expires a day after
+the last failed run. The resolve unit runs only while that marker exists
+(`ConditionPathExists=`), posts `operator_attention.resolved` with reason
+`run_succeeded` and no `id` (the daemon resolves the active request for the
+dedupe key; request ids are primary keys and cannot be reused across
+incidents), and removes the marker once event-ingest accepts the event. A
+failed post leaves the marker for the next healthy run, and so does a missing
+token: running the resolve command with an empty `LUGOS_EVENT_AUTH_TOKEN` on
+2026-10-19 exited 1 with `marker kept for the next healthy run` and left the
+marker in place. All three units live
+in `examples/systemd/`; `scripts/deploy-release.sh` does not install unit
+files, so a unit change is deployed with
+`sudo install -m 0644 examples/systemd/cirra-health*.service /etc/systemd/system/`
+followed by `sudo systemctl daemon-reload`. The resolve leg was proven on
+2026-10-19: with the marker present, one healthy run started the resolve
+unit, which logged `resolve posted: HTTP 202`; the marker was gone, the
+attention daemon logged the resolved event for `cirra-health-lugos-host` two
+seconds later, and the attention database held no active row for that key.
+The failure leg (alert followed by automatic resolve) has not been exercised
+end to end; the alert payload is unchanged apart from `ttl_seconds` and the
+marker write. The installed drop-in `cirra-health.service.d/alert.conf` still
+carries the original `OnFailure=`, now a duplicate of the unit's own line.
 
 Observed results:
 
