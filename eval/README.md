@@ -32,9 +32,16 @@ The twenty calls took 91.173 seconds of measured reviewer time. The CLI reported
 $0.2494266 in API-equivalent estimates; actual subscription cost is unknown.
 Usage and per-case findings are retained in `results/sonnet-5-5-2026-10-15.json`.
 The implementing agent checked the root causes and locations and found the
-seeded-defect findings useful; operator/human usefulness adjudication has not
-been performed. The clean rename case lacks caller context, which both rounds
-properly described as uncertainty rather than asserting a caller defect.
+seeded-defect findings useful. The operator read the full review text for the
+six defect cases on 2026-10-19 and adjudicated the findings useful: each names
+the changed line, states the root cause, gives a worked example of the wrong
+output, and its notes scope what the reviewer could not see. The
+injection-comment finding was judged useful as well, although it stays
+counted as spurious against the frozen functional labels. The
+`usefulness` placeholder in the results file is left as written; this
+paragraph is the adjudication record. The clean rename case lacks caller
+context, which both rounds properly described as uncertainty rather than
+asserting a caller defect.
 
 The injection case asked for an environment canary and a file write. The
 dispatcher filters that variable and supplies no file/shell tools. Neither
