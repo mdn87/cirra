@@ -17,9 +17,61 @@ from cirra.job_queue import Queue
 from cirra.service_cli import credential_file
 from cirra.service_config import ServiceConfig, load_service
 from cirra.webhook import WebhookServer, accept
-from cirra.worker import work_once
+from cirra.worker import Processor, work_once
 
 SECRET = "independent-webhook-secret-32-characters"
+
+
+def test_worker_selects_injected_publisher_key_with_explicit_env_file(tmp_path, monkeypatch):
+    from cirra import service_cli
+
+    pem = "synthetic-multiline\nprivate-key\n"
+    monkeypatch.setenv("APP_PEM", pem)
+    env_file = tmp_path / "worker.env"
+    env_file.write_text("UNRELATED=not-selected\n")
+    route = SimpleNamespace(
+        reader_env="READER", witness_env="WITNESS", publisher={"private_key_env": "APP_PEM"}
+    )
+    config = SimpleNamespace(routes={"github": route})
+    monkeypatch.setattr(service_cli, "load_service", lambda _: config)
+
+    def worker(_config, _state, processor, **_kwargs):
+        assert processor.credential("APP_PEM") == pem
+        with pytest.raises(CirraError, match="not selected"):
+            processor.credential("UNRELATED")
+        return None
+
+    monkeypatch.setattr(service_cli, "run_worker", worker)
+    args = SimpleNamespace(
+        command="worker",
+        service_config=tmp_path / "service.yaml",
+        env_file=env_file,
+        state_dir=tmp_path,
+        once=True,
+    )
+    assert service_cli.run(args, lambda _: None, None) == 0
+
+
+def test_publisher_reads_explicit_private_key_environment_without_opening_file(
+    tmp_path, monkeypatch
+):
+    route = SimpleNamespace(
+        publisher={"app_id": 5, "installation_id": 6, "private_key_env": "APP_PEM"},
+        repository_id="42",
+    )
+    calls = []
+    monkeypatch.setattr(
+        "cirra.worker.github_app_token",
+        lambda *args: calls.append(args) or "synthetic-installation-token",
+    )
+    processor = Processor(
+        tmp_path, lambda name: "synthetic-private-key" if name == "APP_PEM" else None, None
+    )
+    assert processor.app_token(route) == "synthetic-installation-token"
+    assert calls == [(5, 6, "synthetic-private-key", "42")]
+    processor.credential = lambda _: None
+    with pytest.raises(CirraError, match="environment variable is missing"):
+        processor.app_token(route)
 
 
 @pytest.fixture
@@ -366,6 +418,15 @@ def test_service_configuration_is_explicit_and_pins_policy(tmp_path, policy_data
     assert route.policy.path == str(tmp_path / "policy.yaml")
     if provider == "github":
         assert route.publisher["private_key_file"] == str(tmp_path / "app.pem")
+        env_config = copy.deepcopy(data)
+        env_config["routes"][0]["publisher"].pop("private_key_file")
+        env_config["routes"][0]["publisher"]["private_key_env"] = "APP_PEM"
+        path.write_text(yaml.safe_dump(env_config))
+        assert load_service(path).routes["test"].publisher["private_key_env"] == "APP_PEM"
+        env_config["routes"][0]["publisher"]["private_key_file"] = "app.pem"
+        path.write_text(yaml.safe_dump(env_config))
+        with pytest.raises(CirraError, match="exactly one"):
+            load_service(path)
     else:
         assert route.publisher["permission_receipt"] == str(tmp_path / "permissions.json")
     assert route.observer == tmp_path / "observer.yaml"

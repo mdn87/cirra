@@ -140,3 +140,16 @@ python -m build
 Run these with the virtual environment's Python. Native GitHub Actions runs tests
 on Windows and Linux with Python 3.11 and 3.14. Tests create disposable Git
 repositories and kill their own child processes to verify restart behavior.
+
+## Local Bitwarden launch
+
+`scripts/with-glas.py` launches this application using the ignored reference manifest
+`config/glas.local.json` and the sibling Glas checkout. Run it with the application
+Python interpreter; normal arguments go to the application. Use `--exec` followed
+by an explicit trusted command for an alternate entry point. Secret values are
+fetched only into the child environment; no `.env` file is generated. Existing
+local configuration remains the fallback for launches outside this wrapper.
+
+A GitHub publisher may specify `private_key_env: CIRRA_GITHUB_APP_PRIVATE_KEY_PEM`
+instead of `private_key_file`. Exactly one source is required; an absent injected
+key fails closed. The worker uses the selected key in memory.

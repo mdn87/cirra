@@ -125,7 +125,12 @@ def run(args, credential, capture):
                 names.add(route.reader_env)
             else:
                 names.update(
-                    [route.reader_env, route.witness_env, route.publisher.get("token_env")]
+                    [
+                        route.reader_env,
+                        route.witness_env,
+                        route.publisher.get("token_env"),
+                        route.publisher.get("private_key_env"),
+                    ]
                 )
         credential = credential_file(args.env_file, names - {None})
     if args.command == "sync":

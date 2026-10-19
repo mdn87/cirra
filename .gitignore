@@ -26,3 +26,4 @@ cirra-checkout.json
 !.env.*.template
 .lugos-wip/
 *.sync-conflict-*
+/config/glas.local.json
