@@ -474,7 +474,12 @@ Checked on lugos-host on 2026-10-17 for the production audit:
   loses Cirra's receipts and witness key. Reviews can be re-run and
   publications reconciled from the providers, but past receipts cannot be
   re-signed. An off-host copy of `state/cirra`, and an offline copy of the
-  witness key, would close this.
+  witness key, would close this. On 2026-10-19 the whole
+  `services/cirra/config` directory (12 files, including the witness key,
+  the App key and the tokens) was copied off the host as an AES-256
+  encrypted archive, verified against the host by SHA-256 of the
+  uncompressed tar, and is kept outside lugos-host with its passphrase
+  stored separately. The off-host copy of `state/cirra` remains open.
 - Encryption at rest: the root filesystem is unencrypted ext4. State written
   under `UMask=0077` includes diffs from the private GitLab sandbox.
 - Ingress: Tailscale Funnel on port 8443 proxies directly to the loopback
