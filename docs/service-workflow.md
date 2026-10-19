@@ -446,7 +446,19 @@ home directory contains `.claude`, `.claude.json` and `.local`, and `~/.ssh` is
 not readable. `cirra-health.timer` runs every five minutes, with
 `OnFailure=cirra-health-alert.service` posting an `operator_attention.requested`
 event to lugos event-ingest, which sends a Pushover alert. The alert unit's
-token loads from `/etc/lugos/event-ingest.env`; no test alert was sent.
+token loads from `/etc/lugos/event-ingest.env`. The chain was proven in
+production rather than by a test: on 2026-10-17 the health check failed with
+`daily admission exhausted (30)` during the deployment windows, the alert
+unit posted 92 requests under dedupe key `cirra-health-lugos-host`, and the
+attention daemon recorded two Pushover deliveries with status `sent` (18:12Z
+and 18:42Z) that reached the operator's phone. The request stayed `active`
+afterwards because nothing resolves it on recovery and the event carries no
+`ttl_seconds`; while it is active the daemon suppresses repeat pushes at the
+same urgency. It was closed by hand on 2026-10-19 with an
+`operator_attention.resolved` event (same `id` as the active request,
+reason `operator_resolved`). Until the health unit gains an `OnSuccess=`
+resolve step, a cirra alert must be resolved the same way after each
+incident or the next failure will not push.
 
 Observed results:
 
