@@ -274,9 +274,18 @@ request mdn87/cirra#23 produced one audit job (both of its webhook deliveries
 attached to it), one imported report, and one `cirra/audit` check run
 (`117571400198`, conclusion `success`: one low finding, C011, under a `critical`
 gate). Re-processing the change attached to the finished audit and published
-nothing new. The exact GitHub redelivery API needs a token with
-`admin:repo_hook`, so the re-trigger used `cirra enqueue`, which re-processes
-the same head through the same path a redelivery takes after webhook dedup. Choices made while implementing:
+nothing new. At the time the GitHub redelivery API was assumed to need a token
+with `admin:repo_hook`, so the re-trigger used `cirra enqueue`, which
+re-processes the same head through the same path a redelivery takes after
+webhook dedup. That assumption was wrong. On 2026-10-19 the redelivery API
+(`POST /repos/mdn87/cirra/hooks/{hook_id}/deliveries/{id}/attempts`) accepted
+requests from a token with the `repo` scope and no `admin:repo_hook`.
+Redelivering PR #23's `closed` delivery returned 202 and the receiver answered
+`{"reason":"event action","state":"ignored"}`. Redelivering its
+`synchronize` delivery, the one that produced the audit, returned 202 and the
+receiver answered `{"duplicate":true,"state":"accepted"}` with the original
+job ID. The check runs on `e4bcf77` were unchanged afterwards: eight runs, one
+`cirra/audit`. Choices made while implementing:
 
 - The review processor queues audits right after it captures a change, before
   observation and review. Audit errors are recorded on the review job and never
