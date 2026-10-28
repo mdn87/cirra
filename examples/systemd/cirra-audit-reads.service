@@ -1,0 +1,29 @@
+[Unit]
+Description=Cirra read-only audit route on loopback (GET only, no credentials)
+After=network.target
+
+[Service]
+Type=simple
+User=matt
+Group=matt
+Environment=HOME=/home/matt
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/srv/lugos/services/cirra/current
+ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -m cirra serve-audit-reads \
+    --state-dir /srv/lugos/state/cirra \
+    --port 8797
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+ReadWritePaths=/srv/lugos/state/cirra
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

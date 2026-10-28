@@ -6,6 +6,7 @@ import signal
 import threading
 from pathlib import Path
 
+from cirra.audit_reads import DEFAULT_PORT, ROUTES, AuditReadServer
 from cirra.domain import CirraError
 from cirra.job_queue import AuditQueue, Queue
 from cirra.observer import load_observer
@@ -61,6 +62,12 @@ def register(commands):
     )
     pins.add_argument("--service-config", type=Path, required=True)
     pins.add_argument("--repin", action="store_true")
+    reads = commands.add_parser(
+        "serve-audit-reads",
+        help="serve the audit store read-only on loopback HTTP; GET only, no credentials",
+    )
+    reads.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
+    reads.add_argument("--port", type=int, default=DEFAULT_PORT)
 
 
 def run(args, credential, capture):
@@ -96,6 +103,19 @@ def run(args, credential, capture):
                 indent=2,
             )
         )
+        return 0
+    if args.command == "serve-audit-reads":
+        with AuditReadServer(("127.0.0.1", args.port), args.state_dir) as server:
+            print(
+                json.dumps(
+                    {"listening": f"http://127.0.0.1:{server.server_port}", "routes": list(ROUTES)}
+                ),
+                flush=True,
+            )
+            try:
+                server.serve_forever(poll_interval=0.5)
+            except KeyboardInterrupt:
+                pass
         return 0
     if args.command not in ("serve-webhooks", "worker", "enqueue", "requeue", "sync"):
         return None
