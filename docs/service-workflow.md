@@ -73,6 +73,41 @@ own login; never copy another account's session credentials. The worker starts
 without a Claude login so independent CI can still run. An unavailable reviewer
 leaves the review needing attention while retaining the separate CI result.
 
+### Read-only audit route
+
+`cirra serve-audit-reads --state-dir <state> --port 8797` serves the audit
+store to derived views such as Taskmaster. It is a separate process beside the
+receiver and worker: it takes no service configuration and no credential file,
+holds no webhook or publisher secret, opens `cirra.sqlite3` read-only and never
+writes. It binds 127.0.0.1 only and refuses any other address at startup, and
+every method except GET is answered 405.
+
+Routes, all GET with JSON bodies:
+
+- `/healthz`: `{"status": "ok", "version": ..., "audits": <count>}`.
+- `/audits?limit=&after=&head=&repository_key=&tier=&state=`: a page of attempt
+  summaries in store order, at most 200 per page (default 50). `next` is the
+  `after` cursor of the following page, or null. An unknown or repeated query
+  key or a malformed value is 400.
+- `/audits/<attempt_id>`: the summary plus `identity`, `report`, `comparison`
+  and `validator_output` as stored.
+- `/gates/<audit_id>`: the gate as Cirra published or waived it: the
+  `audit-publication/<audit_id>.json` receipt and every `audit-waivers/*.json`
+  receipt naming that audit, copied verbatim. Nothing is recomputed. A release
+  gate that passed leaves no receipt, so the route answers 404 until a
+  publication or a waiver exists.
+
+Every 200 response is `{"protocol": "cirra.audit-reads.v1", "schema_version":
+..., "generation": ..., "record": ..., "sha256": ...}`. `sha256` is the SHA-256
+of the canonical JSON of `record` (sorted keys, no spaces, ASCII), and
+`generation` digests every served audit row and receipt, read in the same
+transaction as the record, so a reader can hash exactly what it saw and refuse
+a store that changed between two reads. A missing store, a store at another
+schema version or an unreadable receipt is 503. Audit packets under
+`audit-packets/` are not served; they carry repository content.
+`examples/systemd/cirra-audit-reads.service` runs the route on lugos-host with
+the worker's sandboxing on port 8797.
+
 ### Backup CI without GitHub Actions
 
 The observer runs directly on the configured host; Actions does not schedule or
@@ -498,6 +533,26 @@ Observed results:
   other was skipped because its PR had merged.
 - `cirra health` reported healthy (exit 0), and the timer's first run
   succeeded.
+
+### Audit read route rollout
+
+The read-only audit route (`serve-audit-reads`, above) was added on 2026-10-19
+and is not yet deployed; nothing on the host has changed. The host change, when
+the operator makes it, is:
+
+```text
+sudo install -m 0644 examples/systemd/cirra-audit-reads.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cirra-audit-reads.service
+curl -s http://127.0.0.1:8797/healthz
+```
+
+The unit binds 127.0.0.1:8797 beside the receiver on 8796; nothing is forwarded
+through Tailscale Funnel. `scripts/deploy-release.sh` restarts only the receiver
+and the worker, so after a deployment the route keeps serving the previous
+release until it is restarted too; adding it to the script's restart list is a
+separate decision, to be made once the unit is installed. Taskmaster reads the
+route on the same host (`taskmaster/docs/work-view-concept.md`, section 11).
 
 ### Host recovery facts
 
