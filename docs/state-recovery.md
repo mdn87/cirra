@@ -30,6 +30,10 @@ The timer runs daily at 06:30 UTC and catches a missed scheduled run after boot.
 3. The helper verifies the full snapshot ID, tag and source path, then calls `restic restore --verify` into a new directory. It runs SQLite's integrity and foreign-key checks using a read-only connection, verifies the expected Cirra tables, and checks all current and historical observer signatures using the separate witness credential. Historical receipts must also match their content-addressed filenames. Restored code and provider actions are never executed.
 4. Root-only receipts under `/var/lib/cirra-recovery/` contain the backup identity, quiescence time, verification time, schema version and witness counts. `pause_seconds` covers the backup and return of the service units. `restore_verify_seconds` measures restoration and validation from Nodens or the configured repository. `restore_point_age_seconds` measures the age of the captured state at the end of that drill. The interval since the last verified capture determines exposure at a later failure.
 
+## Reviewing off-host retention
+
+The daily job keeps its tagged Cirra snapshots in Nodens. During monthly maintenance, Matt can list the oldest and newest recovery points with `restic snapshots --tag cirra-state` and check free space with the storage owner. Record the latest successful restore alongside those figures. The host archive's 14-copy rotation applies to a separate set of local archives. The Cirra job preserves the off-host snapshots. Any later expiration of those snapshots requires a retention decision for Nodens.
+
 ## Restoring service after host loss
 
 Provision a clean isolated target and retrieve the restic and witness credentials from their independent escrow. Select the exact ID of a Cirra snapshot from before the loss. Create private, operator-owned scratch and receipt directories, load the approved repository environment into the recovery process, and run the following command. The original host and its local receipt files are unnecessary.

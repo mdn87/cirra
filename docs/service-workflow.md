@@ -650,7 +650,10 @@ definition digest. Review the release, then rerun with `--repin` to update the
 pins (each policy keeps a `.before-repin` copy). The script switches `current`
 atomically and restarts the receiver, worker, and any active audit reader or
 health timer. Promotion requires every unit to be active, a healthy receiver
-and a heartbeat from the new worker. The heartbeat must identify the current
+and a heartbeat from the new worker. When the audit reader is active, its
+database-backed health endpoint must also return HTTP 200. Set
+`CIRRA_AUDIT_READ_PORT` to the configured port if it differs from 8797.
+The heartbeat must identify the current
 systemd invocation and a live process belonging to the unit's main process
 or its descendants. This supports hosts with a credential launcher.
 Installed unit templates are synchronized

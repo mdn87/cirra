@@ -17,7 +17,7 @@
 # current or previous one, are removed after a successful deploy.
 #
 # Paths default to the lugos-host layout; override with CIRRA_HOST,
-# CIRRA_SERVICE_DIR, CIRRA_RELEASES, CIRRA_STATE and CIRRA_PORT.
+# CIRRA_SERVICE_DIR, CIRRA_RELEASES, CIRRA_STATE, CIRRA_PORT and CIRRA_AUDIT_READ_PORT.
 set -euo pipefail
 
 HOST=${CIRRA_HOST:-lugos-host}
@@ -25,6 +25,7 @@ SERVICE_DIR=${CIRRA_SERVICE_DIR:-/srv/lugos/services/cirra}
 RELEASES=${CIRRA_RELEASES:-/srv/lugos/releases/cirra}
 STATE=${CIRRA_STATE:-/srv/lugos/state/cirra}
 PORT=${CIRRA_PORT:-8796}
+READ_PORT=${CIRRA_AUDIT_READ_PORT:-8797}
 MODE=deploy REF=HEAD TARGET="" FALLBACK="" REPIN=0 TESTS=1 KEEP=3
 
 usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
@@ -36,7 +37,7 @@ while [ $# -gt 0 ]; do
     --fallback) [[ ${2:-} =~ ^[0-9a-f]{40}$ ]] || usage; FALLBACK=$2; shift 2 ;;
     --repin) REPIN=1; shift ;;
     --skip-tests) TESTS=0; shift ;;
-    --keep) KEEP=$2; shift 2 ;;
+    --keep) [[ ${2:-} =~ ^[0-9]+$ ]] || usage; KEEP=$2; shift 2 ;;
     --rollback) MODE=rollback TARGET=$2; shift 2 ;;
     --print-remote) MODE=print; shift ;;
     -h|--help) usage 0 ;;
@@ -52,16 +53,27 @@ remote_script() {
 set -euo pipefail
 MODE=$1 SHA=$2 REPIN=$3 TESTS=$4 KEEP=$5 SERVICE=$6 RELEASES=$7 STATE=$8 PORT=$9
 FALLBACK_SHA=${10:-}
+READ_PORT=${11:-8797}
 FALLBACK=""
 CONFIG=$SERVICE/config
 STAGING=$SERVICE/staging
 UNITS=(cirra-webhook.service cirra-worker.service)
+HEALTH_PORTS=("$PORT")
 for optional in cirra-audit-reads.service cirra-health.timer; do
-  if systemctl is-active --quiet "$optional"; then UNITS+=("$optional"); fi
+  if systemctl is-active --quiet "$optional"; then
+    UNITS+=("$optional")
+    if [ "$optional" = cirra-audit-reads.service ]; then HEALTH_PORTS+=("$READ_PORT"); fi
+  fi
 done
 R=$RELEASES/$SHA
 
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release id" >&2; exit 2; }
+[[ "$KEEP" =~ ^[0-9]+$ ]] || { echo "invalid release retention count" >&2; exit 2; }
+for port in "${HEALTH_PORTS[@]}"; do
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || {
+    echo "invalid loopback health port" >&2; exit 2;
+  }
+done
 if [ -n "$FALLBACK_SHA" ]; then
   [[ "$MODE" = deploy && "$FALLBACK_SHA" =~ ^[0-9a-f]{40}$ && "$FALLBACK_SHA" != "$SHA" ]] || {
     echo "Fallback must identify a different installed release by full SHA." >&2; exit 2;
@@ -195,15 +207,17 @@ restart_and_check() {
   sudo -n systemctl restart "${UNITS[@]}" || return 1
   local wait_seconds=${CIRRA_READY_TIMEOUT:-120}
   [[ "$wait_seconds" =~ ^[1-9][0-9]{0,2}$ ]] || return 1
-  local barrier pid invocation unit deadline=$((SECONDS + wait_seconds))
+  local barrier pid invocation unit port deadline=$((SECONDS + wait_seconds))
   barrier=$(date +%s%N) || return 1
   while [ "$SECONDS" -lt "$deadline" ]; do
     local ready=1
     for unit in "${UNITS[@]}"; do systemctl is-active --quiet "$unit" || ready=0; done
+    for port in "${HEALTH_PORTS[@]}"; do
+      [ "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/healthz")" = 200 ] || ready=0
+    done
     pid=$(systemctl show cirra-worker.service --property=MainPID --value)
     invocation=$(systemctl show cirra-worker.service --property=InvocationID --value)
     if [ "$ready" = 1 ] && [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -n "$invocation" ] &&
-       [ "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")" = 200 ] &&
        python3 - "$STATE/worker-status.json" "$pid" "$invocation" "$barrier" <<'PY'
 import json, os, sys
 from pathlib import Path
@@ -242,7 +256,7 @@ PY
     fi
     sleep 1
   done
-  echo "Receiver or worker failed its post-restart readiness check" >&2
+  echo "A Cirra service failed its post-restart readiness check" >&2
   return 1
 }
 
@@ -371,19 +385,24 @@ fi
 echo "deployed $SHA (previous: $(basename "$PREV"))"
 "$PY" -m cirra health --state-dir "$STATE" || echo "health check reports problems (above)" >&2
 
-kept=0
-for dir in $(ls -1dt "$RELEASES"/*/ 2>/dev/null); do
-  dir=${dir%/}
-  name=$(basename "$dir")
-  case "$name" in *[!0-9a-f]*) continue ;; esac
-  [ "${#name}" = 40 ] || continue
-  if [ "$dir" = "$R" ] || [ "$dir" = "$PREV" ] || [ "$dir" = "$FALLBACK" ]; then continue; fi
-  kept=$((kept + 1))
-  if [ "$kept" -gt "$KEEP" ]; then
-    rm -rf "$dir"
-    echo "removed old release $name"
-  fi
-done
+python3 -I -B - "$RELEASES" "$KEEP" "$SHA" "${PREV##*/}" "$FALLBACK_SHA" <<'PY'
+import os, re, shutil, sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve(strict=True)
+keep = int(sys.argv[2])
+protected = set(sys.argv[3:])
+with os.scandir(root) as entries:
+    candidates = sorted(
+        (entry.stat(follow_symlinks=False).st_mtime_ns, entry.name)
+        for entry in entries
+        if entry.name not in protected and re.fullmatch(r"[0-9a-f]{40}", entry.name)
+        and entry.is_dir(follow_symlinks=False)
+    )
+for _, name in candidates[:max(0, len(candidates) - keep)]:
+    shutil.rmtree(root / name)
+    print(f"removed old release {name}")
+PY
 rollback=$PREV
 if [ -n "$FALLBACK" ] && ! check_release_state "$PREV"; then rollback=$FALLBACK; fi
 echo "rollback: scripts/deploy-release.sh --rollback $(basename "$rollback") --host <host>"
@@ -406,4 +425,4 @@ else
 fi
 remote_script | ssh "$HOST" "cat > '$SERVICE_DIR/staging/deploy-$SHA.sh'"
 ssh "$HOST" bash "$SERVICE_DIR/staging/deploy-$SHA.sh" \
-  "$MODE" "$SHA" "$REPIN" "$TESTS" "$KEEP" "$SERVICE_DIR" "$RELEASES" "$STATE" "$PORT" "$FALLBACK"
+  "$MODE" "$SHA" "$REPIN" "$TESTS" "$KEEP" "$SERVICE_DIR" "$RELEASES" "$STATE" "$PORT" "$FALLBACK" "$READ_PORT"
