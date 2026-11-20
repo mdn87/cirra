@@ -180,3 +180,10 @@ as a child process. A Linux regression reproduced the failure. The retry verifie
 the child's ancestry and systemd invocation and the service passed its health
 check. An isolated restore from the encrypted off-host backup passed SQLite
 integrity and foreign-key checks and verified all 321 signed receipts.
+
+PR 42 passed both required host checks and its audit recorded two findings. A
+paused retention manifest held a SQLite read lock, and a conflicting webhook
+delivery counted against service availability. Regression tests reproduced
+both findings. The release candidate closes the database between manifest pages
+and excludes conflicting delivery IDs from the admission indicator.
+[PR 42](https://github.com/mdn87/cirra/pull/42)
