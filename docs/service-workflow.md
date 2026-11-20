@@ -26,7 +26,7 @@ Relative paths resolve against the service configuration file.
 2. Build `examples/observer.Dockerfile` from trusted inputs:
 
    ```text
-   docker build -f examples/observer.Dockerfile -t cirra-observer:local examples
+   docker build -f examples/observer.Dockerfile -t cirra-observer:local .
    docker image inspect --format {{.Id}} cirra-observer:local
    ```
 
