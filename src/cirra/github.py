@@ -333,6 +333,79 @@ def checks_from(client, head, max_pages):
     return checks, sorted(set(errors))
 
 
+def review_comparisons(client, comparison, target, head, primary, max_bytes, max_pages):
+    """Cover possible advancing bases of a strictly up-to-date, commit-scoped check."""
+    if comparison["merge_base_commit"]["sha"] != target:
+        return [], ["update the PR with the current target before required review"]
+    route = f"compare/{target}...{head}"
+    count = number(
+        comparison.get("total_commits"), "comparison commit count", 0, 2**31 - 1, integral=True
+    )
+    if count > max_pages * 100:
+        return [], ["PR commit history exceeds the comparison page limit"]
+    commits = comparison.get("commits")
+    if not isinstance(commits, list):
+        return [], ["GitHub omitted the PR commit history"]
+    commits = commits.copy()
+    for page in range(2, (count + 99) // 100 + 1):
+        more, _ = client.get(route, {"per_page": 100, "page": page})
+        page_commits = record(more).get("commits")
+        if not isinstance(page_commits, list):
+            return [], ["GitHub omitted a page of PR commit history"]
+        commits.extend(page_commits)
+    children = {}
+    ids = set()
+    for commit in commits:
+        oid = sha(record(commit).get("sha"))
+        ids.add(oid)
+        if not isinstance(commit.get("parents"), list):
+            return [], ["GitHub omitted commit ancestry needed for review"]
+        for parent in commit["parents"]:
+            children.setdefault(sha(record(parent).get("sha")), []).append(oid)
+    if len(ids) != count or head not in ids:
+        return [], ["GitHub returned incomplete PR commit history"]
+    reachable, pending = {target}, [target]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child not in reachable:
+                reachable.add(child)
+                pending.append(child)
+    if head not in reachable:
+        return [], ["GitHub commit history does not connect the target to the PR head"]
+    # A future protected tip that still passes the strict up-to-date rule must be
+    # one of these ancestors. Identical file patches only need one review.
+    seen = {digest(f) for f in primary}
+    remaining = max_bytes - sum(len((f["patch"] or "").encode()) for f in primary)
+    variants, gaps = [], []
+    for base in sorted(reachable - {target, head}):
+        alternate, _ = client.get(f"compare/{base}...{head}", {"per_page": 1, "page": 1})
+        if (
+            record(alternate.get("base_commit")).get("sha") != base
+            or record(alternate.get("merge_base_commit")).get("sha") != base
+            or not isinstance(alternate.get("files"), list)
+            or len(alternate["files"]) >= 300
+        ):
+            return variants, [
+                *gaps,
+                "GitHub could not establish a complete intermediate comparison",
+            ]
+        files, missing = files_from(alternate, len(alternate["files"]))
+        gaps.extend(missing)
+        new = []
+        for file in files:
+            signature = digest(file)
+            if signature in seen:
+                continue
+            remaining -= len((file["patch"] or "").encode())
+            if remaining < 0:
+                return variants, [*gaps, "combined review comparisons exceed the diff byte limit"]
+            seen.add(signature)
+            new.append(file)
+        if new:
+            variants.append({"base_sha": base, "files": new})
+    return variants, gaps
+
+
 def collect(repository, change, config, *, client=None, max_pages=10):
     repository_name(repository)
     number(change, "pull request number", 1, 2**31 - 1, integral=True)
@@ -358,12 +431,22 @@ def collect(repository, change, config, *, client=None, max_pages=10):
         branch_name = string(pr["base"].get("ref"), "GitHub target branch", 1024)
         before = head, branch_name, count
         target = target_revision(client, branch_name)
-        comparison, _ = client.get(f"compare/{target}...{head}", {"per_page": 1, "page": 1})
+        gated = config.merge_gate and branch_name == config.merge_gate.branch
+        comparison, _ = client.get(
+            f"compare/{target}...{head}", {"per_page": 100 if gated else 1, "page": 1}
+        )
         record(comparison)
         if sha(record(comparison.get("base_commit")).get("sha")) != target:
             raise CirraError("GitHub comparison does not match the pinned target")
         base = sha(record(comparison.get("merge_base_commit")).get("sha"))
         files, gaps = files_from(comparison, count)
+        variants = {}
+        if gated:
+            extra, missing = review_comparisons(
+                client, comparison, target, head, files, config.max_diff_bytes, max_pages
+            )
+            variants["additional_comparisons"] = extra
+            gaps.extend(missing)
         checks, errors = checks_from(client, head, max_pages)
         after, _ = client.get(f"pulls/{change}")
         after_head, _, after_count = revisions(after, repository_id, change)
@@ -373,6 +456,7 @@ def collect(repository, change, config, *, client=None, max_pages=10):
             continue
         data = {
             "schema_version": 1,
+            **variants,
             "change": {
                 **identity,
                 "change_id": str(change),

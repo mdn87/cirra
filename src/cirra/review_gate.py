@@ -83,7 +83,8 @@ class RequiredReviewCheck:
         self.route, self.change, self.transport = route, change, transport
         self.current_merge = current_merge
         self.merge = current_merge()
-        self.slot = digest([NAME, route.repository_id, route.policy.digest, self.merge])
+        self.head = change["head_sha"]
+        self.slot = digest([NAME, route.repository_id, route.policy.digest, self.head])
         self.path = directory / "review-gates" / (self.slot + ".json")
         self.prefix = "/repos/" + route.repository
 
@@ -91,7 +92,7 @@ class RequiredReviewCheck:
         if (
             record(item).get("name") != NAME
             or item.get("external_id") != self.slot
-            or item.get("head_sha") != self.merge
+            or item.get("head_sha") != self.head
             or str(record(item.get("app")).get("id")) != str(self.route.publisher["app_id"])
             or item.get("status") != status
             or item.get("conclusion") != conclusion
@@ -113,12 +114,12 @@ class RequiredReviewCheck:
             item
             for item in pages(
                 get,
-                f"{self.prefix}/commits/{self.merge}/check-runs",
+                f"{self.prefix}/commits/{self.head}/check-runs",
                 params={"filter": "all", "check_name": NAME},
             )
             if item.get("name") == NAME
             and item.get("external_id") == self.slot
-            and item.get("head_sha") == self.merge
+            and item.get("head_sha") == self.head
             and str(record(item.get("app")).get("id")) == str(self.route.publisher["app_id"])
         ]
         prior = json.loads(self.path.read_text()) if self.path.exists() else {}
@@ -148,7 +149,7 @@ class RequiredReviewCheck:
         if identifier:
             path += "/" + identifier
         else:
-            body["head_sha"] = self.merge
+            body["head_sha"] = self.head
         write_receipt(self.path, {"state": "starting", "native_id": identifier}, history=False)
         try:
             item, _ = http.request("PATCH" if identifier else "POST", path, body=body)
@@ -174,6 +175,7 @@ class RequiredReviewCheck:
             branch = config.merge_gate.branch
             if (
                 provider.snapshot.record() != saved["snapshot"]
+                or provider.additional_comparisons is None
                 or provider.collection.get("target_branch") != branch
                 or saved["inputs"]["config_digest"] != config.digest
                 or any(self.change[k] != saved["snapshot"][k] for k in self.change)
@@ -203,6 +205,7 @@ class RequiredReviewCheck:
                 "",
                 f"PR #{self.change['change_id']} targeting {plain(branch)}.",
                 f"Head `{self.change['head_sha']}` · target `{self.change['target_sha']}`",
+                f"Verified test merge `{self.merge}`.",
                 f"Review `{saved['run_id']}` · report `{report['report_digest']}`",
             ]
             for finding in report["review"]["findings"][:10]:

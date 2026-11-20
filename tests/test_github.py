@@ -404,6 +404,41 @@ def test_transport_reads_only_the_named_pull_merge_ref_and_pinned_commit():
             client.get(path)
 
 
+def test_gate_reviews_changes_that_only_appear_against_an_intermediate_main(github_policy):
+    from dataclasses import replace
+
+    from cirra.config import MergeGate
+
+    api = API()
+    mid = "4" * 40
+    api.comparison.update(
+        merge_base_commit={"sha": TARGET},
+        total_commits=2,
+        commits=[
+            {"sha": mid, "parents": [{"sha": TARGET}]},
+            {"sha": HEAD, "parents": [{"sha": mid}]},
+        ],
+    )
+    shifted = copy.deepcopy(api.comparison["files"][0])
+    shifted["patch"] = "@@ -1 +1 @@\n-return a * b\n+return a - b\n"
+    api.overrides[(f"compare/{mid}...{HEAD}", 1)] = (
+        {
+            "base_commit": {"sha": mid},
+            "merge_base_commit": {"sha": mid},
+            "files": [shifted],
+        },
+        False,
+    )
+    config = replace(github_policy, merge_gate=MergeGate("main", "high"))
+    result = collect("example/repo", 9, config, client=api)
+    packet = FixtureProvider.from_data(result, config).packet()
+    assert packet["additional_comparisons"][0]["base_sha"] == mid
+    assert packet["additional_comparisons"][0]["patches"][0]["patch"] == shifted["patch"]
+    api.comparison["commits"].pop(0)
+    incomplete = FixtureProvider.from_data(collect("example/repo", 9, config, client=api), config)
+    assert "GitHub returned incomplete PR commit history" in incomplete.snapshot.coverage_gaps
+
+
 def test_redirect_does_not_forward_credentials():
     transport = Transport([(302, b"canary-secret", {"Location": "https://other.test/leak"})])
     with pytest.raises(GitHubError, match="redirect") as error:

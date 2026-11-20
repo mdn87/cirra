@@ -105,6 +105,7 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
     from cirra.transport import RemoteUncertain
 
     current = fixture_data["change"]
+    fixture_data["additional_comparisons"] = []
     check = fixture_data["checks"][0]
     check["name"] = "cirra/isolated-tests"
     check["provenance"]["definition_digest"] = "a" * 64
@@ -163,7 +164,7 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
         gate.start()
     gate.start()
     assert http.posts == 1 and http.item["status"] == "in_progress"
-    assert http.item["head_sha"] == "f" * 40
+    assert http.item["head_sha"] == current["head_sha"]
     provider.collection["target_branch"] = "different"
     with pytest.raises(CirraError, match="target branch"):
         gate.finish(store, saved, lambda: provider)
