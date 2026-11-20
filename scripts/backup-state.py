@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -74,23 +74,28 @@ def saved(path, value):
         os.close(fd)
 
 
-def resume(journal):
-    if not journal.exists():
+def resume(journal, *, deploy_lock=None):
+    try:
+        units = json.loads(journal.read_bytes())
+    except FileNotFoundError:
         return
-    units = json.loads(journal.read_bytes())
     if not isinstance(units, list) or any(unit not in UNITS for unit in units):
         raise RecoveryError("invalid recovery journal")
-    failed = []
-    for unit in reversed(units):
-        try:
-            command(["systemctl", "start", unit], timeout=90)
-            if unit_state(unit) != "active":
+    if not units:
+        return
+    # Quiesce already holds the shared deployment lock. A later replay must acquire it anew.
+    with exclusive(deploy_lock, shared=True) if deploy_lock is not None else nullcontext():
+        failed = []
+        for unit in reversed(units):
+            try:
+                command(["systemctl", "start", unit], timeout=90)
+                if unit_state(unit) != "active":
+                    failed.append(unit)
+            except RecoveryError:
                 failed.append(unit)
-        except RecoveryError:
-            failed.append(unit)
-    saved(journal, list(reversed(failed)))
-    if failed:
-        raise RecoveryError("could not resume " + ", ".join(failed))
+        saved(journal, list(reversed(failed)))
+        if failed:
+            raise RecoveryError("could not resume " + ", ".join(failed))
 
 
 @contextmanager
@@ -107,9 +112,24 @@ def exclusive(path, *, shared=False):
 
 def require_idle(state):
     for queue in ("queue", "audit-queue"):
-        for entry in (state / queue).glob("*.json"):
-            if json.loads(entry.read_bytes()).get("state") == "running":
-                raise RecoveryError("the worker has a running job; retry when idle")
+        try:
+            entries = os.scandir(state / queue)
+        except FileNotFoundError:
+            continue
+        with entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    raise RecoveryError("unexpected queue entry type")
+                raw = Path(entry.path).read_bytes()
+                try:
+                    job = json.loads(raw)
+                except (ValueError, RecursionError):
+                    # The scheduler skips malformed records. Restic keeps their original bytes.
+                    continue
+                if isinstance(job, dict) and job.get("state") == "running":
+                    raise RecoveryError("the worker has a running job; retry when idle")
 
 
 @contextmanager
@@ -250,7 +270,7 @@ def check_target(args):
 
 def backup(args):
     journal = args.admin / "resume.json"
-    resume(journal)
+    resume(journal, deploy_lock=args.deploy_lock)
     check_target(args)
     with exclusive(args.deploy_lock, shared=True):
         started = time.monotonic()
@@ -343,7 +363,7 @@ def main(argv=None):
         private_dir(args.admin)
         with exclusive(args.admin / "operation.lock"):
             if args.action == "resume":
-                resume(args.admin / "resume.json")
+                resume(args.admin / "resume.json", deploy_lock=args.deploy_lock)
             elif args.action == "backup":
                 backup(args)
             else:
