@@ -270,7 +270,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T09:35:49Z",
-        "updatedAt": "2026-11-20T11:59:48Z"
+        "updatedAt": "2026-11-20T12:06:24Z"
       },
       "evidence": [
         {
@@ -296,6 +296,12 @@
           "kind": "note",
           "at": "2026-11-20T11:59:48Z",
           "message": "A live comparison reproduced the saved review after the target advanced. The release audit and the native workflow permission still need verification."
+        },
+        {
+          "entryId": "cirra:prove-release-audit-gate:high-refusal",
+          "kind": "note",
+          "at": "2026-11-20T12:06:24Z",
+          "message": "The release audit found three high issues in pull request 38. The live planner refused the audited candidate and wrote no release request."
         }
       ]
     },
