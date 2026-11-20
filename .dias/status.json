@@ -8,10 +8,10 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T08:23:08Z",
+  "assessedAt": "2026-11-20T08:42:53Z",
   "confidence": "reported",
-  "currentMilestone": "Prove production audit operation beyond pull request reviews.",
-  "remainingSummary": "Restore the host reviewer login and verify its advisory check. The release audit and native workflow dispatch still need live proof.",
+  "currentMilestone": "Require the worker host to build, test and review an exact pull request commit before merge.",
+  "remainingSummary": "Enable package builds and a pass or fail review check. Prove GitHub blocks missing and failed checks and permits a passing pull request.",
   "nextChipId": "cirra:restore-host-pr-review",
   "source": {
     "label": "Repository baseline, pull request comparison, host test receipt and reviewer login status",

@@ -214,9 +214,9 @@
       "schemaVersion": 1,
       "chipId": "cirra:restore-host-pr-review",
       "projectId": "cirra",
-      "title": "Restore code review on the worker host",
-      "summary": "Restore the subscription login, then prove the worker publishes a completed advisory review alongside its isolated tests on the same pull request commit.",
-      "stage": "planned",
+      "title": "Enforce host builds, tests and code review on pull requests",
+      "summary": "Prove the host builds, tests and reviews a real pull request commit. Require its results on GitHub and verify both a blocked merge and a passing merge.",
+      "stage": "active",
       "sequence": 5,
       "prereqs": [
         "cirra:prove-full-audit-baseline"
@@ -225,7 +225,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T08:23:08Z",
-        "updatedAt": "2026-11-20T08:23:08Z"
+        "updatedAt": "2026-11-20T08:42:53Z"
       },
       "evidence": [
         {
@@ -233,6 +233,12 @@
           "kind": "created",
           "at": "2026-11-20T08:23:08Z",
           "message": "The host passed isolated tests on pull request 33. Claude reported that it was signed out and the worker saved the failed advisory review for operator attention."
+        },
+        {
+          "entryId": "cirra:restore-host-pr-review:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T08:42:53Z",
+          "message": "The host reviewer is signed in. The live observer omits the package build, advisory review reports neutral, and GitHub has no rules on the default branch."
         }
       ]
     }
