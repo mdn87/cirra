@@ -1,57 +1,110 @@
+import http.client
 import json
 import shlex
 import subprocess
+import threading
 from configparser import ConfigParser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
+from cirra import health_notify
+
 
 @pytest.fixture
-def alert_unit():
-    unit = Path(__file__).resolve().parents[1] / "examples/systemd/cirra-health-alert.service"
-    config = ConfigParser(interpolation=None)
-    config.read(unit, encoding="utf-8")
-    _, flag, program = shlex.split(config["Service"]["ExecStart"])
-    assert flag == "-c"
+def unit(tmp_path):
+    marker = tmp_path / "health-alert.pending"
 
-    # Exercise the shipped unit with the host journal, marker and receiver isolated.
-    def run():
-        exec(compile(program, str(unit), "exec"), {})
+    def run(mode):
+        path = Path(__file__).resolve().parents[1] / f"examples/systemd/cirra-health-{mode}.service"
+        config = ConfigParser(interpolation=None)
+        config.read(path, encoding="utf-8")
+        exe, flag, module, action, configured_marker = shlex.split(config["Service"]["ExecStart"])
+        assert exe.endswith("/python") and (flag, module) == ("-m", "cirra.health_notify")
+        assert (action, Path(configured_marker).name) == (mode, marker.name)
+        return health_notify.main([action, str(marker)])
 
-    with (
-        patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, stdout="failure")),
-        patch.object(Path, "write_text", autospec=True) as write_marker,
-        patch("urllib.request.urlopen", return_value=SimpleNamespace(status=202)) as post,
-    ):
-        yield run, write_marker, post
+    return run, marker
+
+
+@pytest.fixture
+def receiver(monkeypatch):
+    events = []
+    statuses = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            events.append(
+                (
+                    self.path,
+                    self.headers["Authorization"],
+                    json.loads(self.rfile.read(int(self.headers["Content-Length"]))),
+                )
+            )
+            self.send_response(statuses.pop(0))
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        monkeypatch.setenv("LUGOS_EVENT_HOST", "127.0.0.1")
+        monkeypatch.setenv("LUGOS_EVENT_PORT", str(server.server_port))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield statuses, events
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 @pytest.mark.parametrize("value", [None, ""])
-def test_missing_credential_fails_without_marking_or_sending(alert_unit, monkeypatch, value):
+def test_missing_credential_fails_without_marking_or_sending(unit, receiver, monkeypatch, value):
     if value is None:
         monkeypatch.delenv("LUGOS_EVENT_AUTH_TOKEN", raising=False)
     else:
         monkeypatch.setenv("LUGOS_EVENT_AUTH_TOKEN", value)
-    run, write_marker, post = alert_unit
-    with pytest.raises(SystemExit, match="LUGOS_EVENT_AUTH_TOKEN") as error:
-        run()
-    assert error.value.code
-    write_marker.assert_not_called()
-    post.assert_not_called()
+    run, marker = unit
+    assert run("alert") == 1
+    assert not marker.exists() and not receiver[1]
 
 
-def test_configured_alert_posts_the_marked_incident(alert_unit, monkeypatch):
+def test_alert_and_recovery_delivery_cycle(unit, receiver, monkeypatch):
+    run, marker = unit
+    statuses, events = receiver
     monkeypatch.setenv("LUGOS_EVENT_AUTH_TOKEN", "test-credential")
-    run, write_marker, post = alert_unit
-    run()
-    request = post.call_args.args[0]
-    event = json.loads(request.data)
-    assert request.get_header("Authorization") == "Bearer test-credential"
-    assert event["type"] == "operator_attention.requested"
-    assert event["dedupe_key"] == "cirra-health-lugos-host"
-    marker, body = write_marker.call_args.args
-    assert marker.name == "health-alert.pending"
-    assert body.strip() == event["id"]
+    statuses.extend([503, 202, 503, 202])
+
+    def stuck_journal(args, *, timeout, **kwargs):
+        assert timeout <= 3
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(health_notify.subprocess, "run", stuck_journal)
+    assert run("resolve") == 0 and not events
+    assert run("alert") == 1 and marker.exists()
+    assert run("alert") == 0
+    assert marker.read_text().strip() == events[1][2]["id"]
+    assert events[1][2]["body"] == "Cirra health check failed on lugos-host"
+    monkeypatch.delenv("LUGOS_EVENT_AUTH_TOKEN")
+    assert run("resolve") == 1 and marker.exists()
+    monkeypatch.setenv("LUGOS_EVENT_AUTH_TOKEN", "test-credential")
+    assert run("resolve") == 1 and marker.exists()
+    assert run("resolve") == 0 and not marker.exists()
+    assert run("resolve") == 0 and not statuses
+    assert [e["type"] for _, _, e in events] == [
+        "operator_attention.requested",
+        "operator_attention.requested",
+        "operator_attention.resolved",
+        "operator_attention.resolved",
+    ]
+    for path, auth, event in events:
+        assert path == "/events" and auth == "Bearer test-credential"
+        assert event["dedupe_key"] == "cirra-health-lugos-host"
+
+
+def test_only_loopback_uses_plain_http():
+    for host in ("localhost", "127.0.0.1", "::1"):
+        assert type(health_notify.receiver(host, 8787)) is http.client.HTTPConnection
+    assert type(health_notify.receiver("events.example", 443)) is http.client.HTTPSConnection
