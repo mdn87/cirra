@@ -12,6 +12,10 @@ class CirraError(Exception):
     """An actionable input or state error safe to display to the operator."""
 
 
+class DeliveryConflict(CirraError):
+    """An incoming webhook reuses a delivery identity with a different payload."""
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 

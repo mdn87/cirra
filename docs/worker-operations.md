@@ -26,8 +26,9 @@ or `refused`, including eligible submissions that encountered a lock or storage
 failure. Count HTTP 202 with an accepted or duplicate outcome in the numerator.
 The `admissions_today` and `acceptance_percent_today` metrics give the durable
 queue's counts for new submissions, duplicates and capacity refusals. Authentication
-failures, ignored events and reads are outside the objective. Inspect the proxy
-separately for connections lost before the receiver can classify a request.
+failures, conflicting delivery identities, ignored events and reads are outside
+the objective. Inspect the proxy separately for connections lost before the
+receiver can classify a request.
 Success on the second indicator means a usable result
 was saved, including an actionable failing check. Closed or draft changes that
 the worker skips, manual and reconciliation requests, and human audit sessions

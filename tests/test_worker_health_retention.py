@@ -2,12 +2,16 @@
 
 import json
 import os
+import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from types import SimpleNamespace
 
+import pytest
 from audit_fixtures import audit_policy
 
-from cirra import audits
+from cirra import audits, retention
 from cirra.domain import digest, utc_now
 from cirra.health import check
 from cirra.job_queue import Queue
@@ -54,7 +58,8 @@ def test_health_reports_legacy_census_until_new_admission_resumes(tmp_path):
     ]
 
 
-def test_cold_manifest_only_lists_old_closed_audit_agent_logs(tmp_path, policy_data):
+@pytest.fixture
+def audit_logs(tmp_path, policy_data):
     config = audit_policy(tmp_path, policy_data)
     state = tmp_path / "state"
     store = Store(state)
@@ -84,6 +89,11 @@ def test_cold_manifest_only_lists_old_closed_audit_agent_logs(tmp_path, policy_d
             os.utime(path, (stamp, stamp))
         return log.relative_to(state)
 
+    return state, store, now, sample
+
+
+def test_cold_manifest_only_lists_old_closed_audit_agent_logs(audit_logs):
+    state, _, now, sample = audit_logs
     selected = {
         sample(1, "complete"),
         sample(2, "cancelled", completed=None),
@@ -94,3 +104,41 @@ def test_cold_manifest_only_lists_old_closed_audit_agent_logs(tmp_path, policy_d
     sample(6, "failed", log_time=now)
     sample(7, "complete", dir_time=now)
     assert set(cold_evidence(state, now=now)) == selected
+
+
+def test_manifest_releases_database_while_paging_closed_logs(audit_logs, monkeypatch):
+    state, store, now, sample = audit_logs
+    selected = {sample(1, "complete"), sample(2, "cancelled", completed=None)}
+    sample(3, "prepared", completed=None)
+    sample(4, "prepared", completed=None)
+    selected.update((sample(5, "failed"), sample(6, "superseded", completed=None)))
+    monkeypatch.setattr(retention, "AUDIT_PAGE_SIZE", 2)
+    connect = sqlite3.connect
+    readers = []
+
+    def connect_reader(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        if kwargs.get("uri"):
+            readers.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect_reader)
+
+    def write_while_manifest_paused(identifier):
+        with closing(connect(store.path, timeout=0.3)) as writer, writer:
+            assert writer.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+            writer.execute(
+                "UPDATE audits SET validator_output='checked' WHERE attempt_id=?", (identifier,)
+            )
+
+    with closing(cold_evidence(state, now=now)) as manifest:
+        first = next(manifest)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(write_while_manifest_paused, first.parts[1]).result(timeout=5)
+        for reader in readers:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                reader.execute("SELECT 1")
+        paths = [first, *manifest]
+    assert len(readers) >= 3
+    assert len(paths) == len(selected) and set(paths) == selected
+    assert audits.get(store, first.parts[1])["validator_output"] == "checked"
