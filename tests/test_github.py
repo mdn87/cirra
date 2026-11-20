@@ -11,6 +11,7 @@ from urllib.response import addinfourl
 
 import pytest
 
+from cirra import provenance, release
 from cirra.cli import main
 from cirra.config import MergeGate
 from cirra.domain import CirraError, digest
@@ -491,6 +492,117 @@ def test_intermediate_compare_budget_covers_collection_retries(
         assert not captured["coverage_gaps"]
     else:
         assert any("intermediate comparison limit" in gap for gap in captured["coverage_gaps"])
+
+
+def test_merged_release_refresh_preserves_the_reviewed_diff_and_reads_current_checks(github_policy):
+    api = API()
+    initial = collect("example/repo", 9, github_policy, client=api)
+    expected = FixtureProvider.from_data(initial, github_policy).snapshot.record()
+    api.branch["commit"]["sha"] = "5" * 40
+    api.pr["merged"] = True
+    api.checks[0]["conclusion"] = "failure"
+    refreshed = collect("example/repo", 9, github_policy, client=api, reviewed_target=TARGET)
+    assert FixtureProvider.from_data(refreshed, github_policy).snapshot.record() == expected
+    check_run = next(check for check in refreshed["checks"] if check["kind"] == "check_run")
+    assert check_run["normalized_state"] == "failure"
+    api.pr["merged"] = False
+    with pytest.raises(CirraError, match="only a merged pull request"):
+        collect("example/repo", 9, github_policy, client=api, reviewed_target=TARGET)
+
+
+def test_dispatch_cli_rechecks_signed_ci_after_the_target_advances(
+    github_policy, inputs, policy_data, tmp_path, monkeypatch, capsys
+):
+    api = API()
+    definition = "d" * 64
+    policy_data["ci"]["expected"][0]["definition_digest"] = definition
+    _, policy = inputs(policy=policy_data)
+    raw = collect("example/repo", 9, policy, client=api)
+    witness_key = "test-witness-key-for-the-merged-release"
+    statement = {
+        "version": 1,
+        "witness": "test observer",
+        "observed_at": TIME,
+        "checks": [
+            {
+                "binding": provenance.binding(raw["change"], raw["checks"][0]),
+                "tested_sha": HEAD,
+                "parents": [],
+                "definition_digest": definition,
+                "evidence": "checkout recorded by test observer",
+            }
+        ],
+    }
+    receipt = tmp_path / "witness.json"
+    receipt.write_text(json.dumps(provenance.sign(statement, witness_key)))
+    provider = FixtureProvider.from_data(provenance.apply(raw, receipt, witness_key), policy)
+    state = tmp_path / "state"
+    store = Store(state)
+    packet, _, _ = prepare(provider, policy, store)
+    response = tmp_path / "response.json"
+    response.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": packet["run_id"],
+                "packet_digest": packet["packet_digest"],
+                "session": {"tool": "test", "id": "session", "model": "model"},
+                "review": {"findings": [], "notes": []},
+            }
+        )
+    )
+    report, _ = import_response(provider, policy, store, packet["run_id"], response)
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps(release.plan(report, 12, "main")))
+
+    api.pr["merged"] = True
+    tip = "5" * 40
+    api.branch.update(protected=True, commit={"sha": tip})
+    writes = []
+
+    class Transport:
+        def request(self, method, route, params=None, body=None):
+            if method == "POST" and route.endswith("/workflows/12/dispatches"):
+                writes.append(body)
+                return {}, False
+            if route.endswith("/pulls/9"):
+                return api.pr, False
+            if route.endswith("/branches/main"):
+                return api.branch, False
+            if route.endswith(f"/compare/{HEAD}...{tip}"):
+                return {"status": "ahead", "merge_base_commit": {"sha": HEAD}}, False
+            raise AssertionError(route)
+
+    monkeypatch.setattr("cirra.cli.GitHubClient", lambda *a, **kw: api)
+    monkeypatch.setattr("cirra.extensions.JSONClient", lambda *a, **kw: Transport())
+    monkeypatch.setattr("cirra.extensions.github_app_token", lambda *a, **kw: "test-token")
+    monkeypatch.setenv("TEST_RELEASE_KEY", "test-key")
+    monkeypatch.setenv("TEST_WITNESS_KEY", witness_key)
+    args = [
+        "dispatch-release",
+        "--request",
+        str(request),
+        "--config",
+        policy.path,
+        "--state-dir",
+        str(state),
+        "--app-id",
+        "1",
+        "--installation-id",
+        "2",
+        "--app-key-env",
+        "TEST_RELEASE_KEY",
+        "--provenance",
+        str(receipt),
+        "--witness-key-env",
+        "TEST_WITNESS_KEY",
+    ]
+    api.checks[0]["conclusion"] = "failure"
+    assert main(args) == 2 and "no longer verified" in capsys.readouterr().err
+    assert writes == []
+    api.checks[0]["conclusion"] = "success"
+    assert main(args) == 0
+    assert len(writes) == 1 and writes[0]["inputs"]["cirra_expected_sha"] == HEAD
 
 
 def test_redirect_does_not_forward_credentials():

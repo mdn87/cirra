@@ -160,3 +160,30 @@ Both board files passed the exported Dias chip-board parsers and the stricter
 180-character text limit. Local validation passed: 385 tests, Ruff lint and
 format checks, and source and wheel builds. Four tests were skipped: one
 POSIX-specific case and three requiring a configured immutable Docker image.
+
+## Remediation and release checks
+
+The protected main branch now requires the host's isolated tests and code review
+on the same pull request head. PR 38 exercised the deployed worker, produced a
+signed build receipt and received a completed Claude review. PR 40 also passed
+both host checks and the four GitHub test jobs using hash-locked dependencies.
+[PR 38](https://github.com/mdn87/cirra/pull/38) ·
+[PR 40](https://github.com/mdn87/cirra/pull/40)
+
+The release planner refused the PR 38 candidate twice. The first attempt lacked
+a release audit. A later 45-control release audit found three high-severity
+issues, and the planner again exited without writing a request.
+
+The deployment of the locked observer passed 422 host tests. The first rollout
+restored the previous release because the credential launcher starts the worker
+as a child process. A Linux regression reproduced the failure. The retry verified
+the child's ancestry and systemd invocation and the service passed its health
+check. An isolated restore from the encrypted off-host backup passed SQLite
+integrity and foreign-key checks and verified all 321 signed receipts.
+
+PR 42 passed both required host checks and its audit recorded two findings. A
+paused retention manifest held a SQLite read lock, and a conflicting webhook
+delivery counted against service availability. Regression tests reproduced
+both findings. The release candidate closes the database between manifest pages
+and excludes conflicting delivery IDs from the admission indicator.
+[PR 42](https://github.com/mdn87/cirra/pull/42)

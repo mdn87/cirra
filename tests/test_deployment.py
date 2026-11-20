@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 import venv
 from pathlib import Path
 
@@ -21,7 +22,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/deploy-release.sh"
 @pytest.fixture
 def deployment(tmp_path):
     service = tmp_path / "service"
-    releases, state = tmp_path / "releases", tmp_path / "state"
+    releases, state = tmp_path / "installed releases", tmp_path / "state"
     for path in (service / "config", service / "staging", releases, state):
         path.mkdir(parents=True)
     old, current = ["a" * 40, "b" * 40]
@@ -41,17 +42,18 @@ def deployment(tmp_path):
     stubs = tmp_path / "units.bash"
     stubs.write_text(
         'sudo() { shift; "$@"; }\n'
-        "curl() { echo -n 200; }\n"
+        'curl() { if [[ -n "$TEST_READER_PORT" && "${!#}" == *":$TEST_READER_PORT/healthz" ]]; '
+        'then command curl "$@"; else echo -n 200; fi; }\n'
         "systemctl() {\n"
         'echo "$*" >>"$FAKE_LOG"\n'
         'case "$1:${2-}:${3-}" in\n'
         ' restart:*) touch "$FAKE_LOG.restarted" ;;\n'
         " show:*:--property=FragmentPath) "
         'test "$FAIL_RESTORE" != yes || test ! -e "$FAKE_LOG.restarted" ;;\n'
-        " is-active:--quiet:cirra-audit-reads.service|"
-        "is-active:--quiet:cirra-health.timer) return 3 ;;\n"
+        ' is-active:--quiet:cirra-audit-reads.service) test -n "$TEST_READER_PORT" ;;\n'
+        " is-active:--quiet:cirra-health.timer) return 3 ;;\n"
         ' is-active:--quiet:cirra-worker.service) test "$WORKER_UP" = yes ;;\n'
-        " show:cirra-worker.service:--property=MainPID) echo 419 ;;\n"
+        ' show:cirra-worker.service:--property=MainPID) echo "$WORKER_MAIN_PID" ;;\n'
         " show:cirra-worker.service:--property=InvocationID) echo new-worker ;;\n"
         " *) return 0 ;;\nesac\n}\n"
     )
@@ -60,12 +62,17 @@ def deployment(tmp_path):
         "BASH_ENV": str(stubs),
         "FAKE_LOG": str(tmp_path / "calls"),
         "WORKER_UP": "yes",
+        "WORKER_MAIN_PID": str(os.getpid()),
         "CIRRA_READY_TIMEOUT": "2",
     }
 
-    def rollback(up=True, invocation="new-worker", fail_restore=False):
+    def rollback(
+        up=True, invocation="new-worker", fail_restore=False, worker_pid=None, reader_port=None
+    ):
         (state / "worker-status.json").write_text(
-            json.dumps({"state": "running", "pid": 419, "invocation_id": invocation})
+            json.dumps(
+                {"state": "running", "pid": worker_pid or os.getpid(), "invocation_id": invocation}
+            )
         )
         return subprocess.run(
             [
@@ -80,11 +87,14 @@ def deployment(tmp_path):
                 str(releases),
                 str(state),
                 "8796",
+                "",
+                str(reader_port or 8797),
             ],
             env={
                 **env,
                 "WORKER_UP": "yes" if up else "no",
                 "FAIL_RESTORE": "yes" if fail_restore else "no",
+                "TEST_READER_PORT": str(reader_port or ""),
             },
             text=True,
             capture_output=True,
@@ -200,3 +210,216 @@ def test_failed_unit_restore_still_restores_release_and_configuration(deployment
     assert result.returncode and "Could not restore every managed unit" in result.stderr
     assert (service / "current").resolve() == current
     assert (service / "config/setting").read_text() == "current"
+
+
+def test_rollback_checks_the_active_audit_readers_database(deployment, tmp_path):
+    from cirra.audit_reads import AuditReadServer
+    from cirra.store import Store
+
+    rollback, _, _, _ = deployment
+    reader_state = tmp_path / "reader-state"
+    with AuditReadServer(("127.0.0.1", 0), reader_state) as reader:
+        thread = threading.Thread(target=reader.serve_forever, daemon=True)
+        thread.start()
+        try:
+            unavailable = rollback(reader_port=reader.server_port)
+            assert unavailable.returncode and "readiness" in unavailable.stderr
+            Store(reader_state)
+            restored = rollback(reader_port=reader.server_port)
+            assert restored.returncode == 0, restored.stderr
+        finally:
+            reader.shutdown()
+            thread.join(timeout=5)
+
+
+def test_launcher_child_must_belong_to_the_current_worker_unit(deployment):
+    rollback, _, _, _ = deployment
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]) as child:
+        try:
+            result = rollback(worker_pid=child.pid)
+            assert result.returncode == 0, result.stderr
+        finally:
+            child.terminate()
+
+
+def test_unrelated_process_cannot_satisfy_worker_readiness(deployment):
+    rollback, _, _, _ = deployment
+    result = rollback(worker_pid=os.getppid())
+    assert result.returncode and "post-restart readiness check" in result.stderr
+
+
+@pytest.fixture
+def format_transition(deployment):
+    """Prepare three distinct binaries for a first rollout, with real package and pin checks."""
+    import yaml
+
+    from cirra.pins import check_pins
+
+    _, service, state, previous = deployment
+    releases = previous.parent
+    candidate = releases / ("a" * 40)
+    fallback = releases / ("c" * 40)
+    shutil.copytree(candidate, fallback, symlinks=True)
+    project = SCRIPT.parents[1]
+    for root in (candidate, fallback):
+        shutil.copytree(
+            project / "src/cirra", root / "src/cirra", ignore=shutil.ignore_patterns("__pycache__")
+        )
+        site = next((root / ".venv/lib").glob("python*/site-packages"))
+        (site / "cirra.pth").write_text(
+            f"{root / 'src'}\n{Path(yaml.__file__).parents[1]}\n", encoding="utf-8"
+        )
+        (root / "worker-state-version").write_text("1\n")
+        (root / ".installation-complete").touch()
+    launcher = candidate / "src/cirra/observer_runner.py"
+    launcher.write_bytes(launcher.read_bytes() + b"\n# Candidate observer implementation.\n")
+    config = service / "config"
+    for name in ("service.yaml", "github-worker-policy.yaml", "observer.yaml"):
+        shutil.copyfile(project / "examples" / name, config / name)
+    policy = config / "github-worker-policy.yaml"
+    check_pins(config / "service.yaml", repin=True)
+    original = policy.read_bytes()
+
+    # systemctl activates the real candidate queue writer before it reports a startup failure.
+    stubs = service.parent / "transition.bash"
+    stubs.write_text(
+        'sudo() { shift; "$@"; }\n'
+        "curl() { echo -n 200; }\n"
+        "systemctl() {\n"
+        '  case "$1:$2" in\n'
+        "    restart:*)\n"
+        '      local selected; selected=$(readlink -f "$TEST_SERVICE/current")\n'
+        '      basename "$selected" >> "$TEST_STAGING/restarts"\n'
+        '      if [ "$selected" = "$TEST_CANDIDATE" ]; then\n'
+        '        cp "$TEST_SERVICE/config/github-worker-policy.yaml" '
+        '"$TEST_STAGING/candidate-policy"\n'
+        '        if [ "$TEST_ACTIVATE" = yes ]; then\n'
+        '          "$selected/.venv/bin/python" -I -B -c '
+        "'from pathlib import Path; import sys; from cirra.queue_format import activate; "
+        'activate(Path(sys.argv[1]))\' "$TEST_STATE" || return 1\n'
+        "        fi\n"
+        '        if [ "$TEST_FAIL_CANDIDATE" = yes ]; then return 1; fi\n'
+        "      fi\n"
+        '      printf \'{"state":"running","pid":%s,"invocation_id":"restored",'
+        '"heartbeat_at":"%s"}\\n\' '
+        '"$TEST_PID" "$(date -u +%FT%TZ)" > "$TEST_STATE/worker-status.json" ;;\n'
+        "    show:*)\n"
+        '      case "$3" in --property=MainPID) echo "$TEST_PID";; '
+        "--property=InvocationID) echo restored;; esac ;;\n"
+        '    is-active:*) case "$3" in '
+        "cirra-audit-reads.service|cirra-health.timer) return 3;; esac ;;\n"
+        "  esac\n}\n",
+        encoding="utf-8",
+    )
+    staging = service / "staging"
+
+    def deploy(activate=True, *, succeeds=False, keep=3):
+        result = subprocess.run(
+            [
+                "bash",
+                str(service.parent / "deploy.sh"),
+                "deploy",
+                candidate.name,
+                "1",
+                "0",
+                str(keep),
+                str(service),
+                str(releases),
+                str(state),
+                "8796",
+                fallback.name,
+            ],
+            env={
+                **os.environ,
+                "BASH_ENV": str(stubs),
+                "TEST_SERVICE": str(service),
+                "TEST_STAGING": str(staging),
+                "TEST_STATE": str(state),
+                "TEST_CANDIDATE": str(candidate),
+                "TEST_ACTIVATE": "yes" if activate else "no",
+                "TEST_FAIL_CANDIDATE": "no" if succeeds else "yes",
+                "TEST_PID": str(os.getpid()),
+                "CIRRA_READY_TIMEOUT": "2",
+            },
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+        assert (result.returncode == 0) == succeeds, (result.stdout, result.stderr)
+        return result
+
+    return deploy, service, state, previous, candidate, fallback, policy, original
+
+
+def test_successful_deploy_keeps_fallback_when_pruning_every_other_release(format_transition):
+    deploy, service, _, previous, candidate, fallback, _, _ = format_transition
+    releases = fallback.parent
+    expired = releases / ("d" * 40)
+    expired.mkdir()
+    unrelated = releases / "operator files"
+    unrelated.mkdir()
+    alias = releases / ("e" * 40)
+    alias.symlink_to(unrelated, target_is_directory=True)
+    os.utime(fallback, (1, 1))
+    result = deploy(succeeds=True, keep=0)
+    assert (service / "current").resolve() == candidate
+    assert fallback.is_dir() and previous.is_dir() and alias.is_symlink() and unrelated.is_dir()
+    assert not expired.exists() and f"removed old release {expired.name}" in result.stdout
+
+
+@pytest.mark.parametrize("activate", [False, True])
+def test_failed_first_rollout_restores_the_newest_compatible_binary(format_transition, activate):
+    deploy, service, state, previous, candidate, fallback, policy, original = format_transition
+    result = deploy(activate)
+    expected = fallback if activate else previous
+    assert (service / "current").resolve() == expected, result.stderr
+    assert (service / "staging/restarts").read_text().splitlines() == [
+        candidate.name,
+        expected.name,
+    ]
+    assert (service / "staging/candidate-policy").read_bytes() != original
+    assert policy.read_bytes() == original
+    assert json.loads((state / "worker-status.json").read_text())["state"] == "running"
+    assert "Deployment recovery requires attention" not in result.stderr
+    if activate:
+        assert "live worker queue format 1 exceeds release format 0" in result.stderr
+        assert '"healthy": true' in result.stdout
+        assert json.loads((state / "worker-queue-format.json").read_text()) == {"format": 1}
+
+
+@pytest.mark.parametrize(
+    ("unusable", "message"),
+    [
+        ("unfinished", "no finished installation"),
+        ("format", "cannot read candidate format"),
+        ("sqlite", "cannot read the candidate SQLite schema"),
+        ("pins", "cannot verify the saved service configuration and observer pins"),
+        ("external", "cannot restore an externally stored policy changed by --repin"),
+    ],
+)
+def test_invalid_fallback_refuses_before_changing_active_release(
+    format_transition, unusable, message
+):
+    deploy, service, state, previous, candidate, fallback, policy, original = format_transition
+    if unusable == "unfinished":
+        (fallback / ".installation-complete").unlink()
+    elif unusable == "format":
+        (fallback / "worker-state-version").write_text("0\n")
+    elif unusable == "sqlite":
+        source = fallback / "src/cirra/store.py"
+        source.write_text(source.read_text().replace("SCHEMA_VERSION = 3", "SCHEMA_VERSION = 4"))
+    elif unusable == "external":
+        external = service.parent / "external-policy.yaml"
+        shutil.copyfile(policy, external)
+        definition = service / "config/service.yaml"
+        definition.write_text(definition.read_text().replace(policy.name, str(external)))
+    else:
+        launcher = fallback / "src/cirra/observer_runner.py"
+        launcher.write_bytes(launcher.read_bytes() + b"\n# Different fallback observer.\n")
+    result = deploy()
+    assert message in result.stderr, result.stderr
+    assert (service / "current").resolve() == previous
+    assert policy.read_bytes() == original
+    assert not (service / "staging/restarts").exists()
+    assert not list((service / "staging").glob(f"config-for-{candidate.name}-*"))
+    assert not (state / "worker-queue-format.json").exists()

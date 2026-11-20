@@ -13,14 +13,22 @@ On the host, `STATE=/srv/lugos/state/cirra`.
 | Webhook queue admission | Successful new submissions plus acknowledged duplicates divided by all eligible submissions in the UTC day. Use the webhook journal for the complete indicator. | At least 99%. |
 | Useful result within 30 minutes | Accepted webhook changes reaching `done` within 30 minutes divided by accepted changes at least 30 minutes old, accepted in the trailing 24 hours. See `eligible_webhooks_24h`, `completed_within_30m`, and `on_time_percent`. | At least 95%. |
 
+These objectives allow up to 1% of eligible submissions to be refused and up to
+5% of eligible changes to miss the 30-minute target. When a measured window
+exceeds either allowance, Matt defers feature releases affecting that path and
+prioritizes repairs. Recovery and security fixes can proceed. Resume routine
+releases when both affected indicators meet their targets over their stated
+windows with eligible traffic. Record the counts and recovery time in the incident.
+
 Admission counts authenticated requests for an enabled event from a trusted author
 that reached the queue. The journal records `admission` as `accepted`, `duplicate`
 or `refused`, including eligible submissions that encountered a lock or storage
 failure. Count HTTP 202 with an accepted or duplicate outcome in the numerator.
 The `admissions_today` and `acceptance_percent_today` metrics give the durable
 queue's counts for new submissions, duplicates and capacity refusals. Authentication
-failures, ignored events and reads are outside the objective. Inspect the proxy
-separately for connections lost before the receiver can classify a request.
+failures, conflicting delivery identities, ignored events and reads are outside
+the objective. Inspect the proxy separately for connections lost before the
+receiver can classify a request.
 Success on the second indicator means a usable result
 was saved, including an actionable failing check. Closed or draft changes that
 the worker skips, manual and reconciliation requests, and human audit sessions
