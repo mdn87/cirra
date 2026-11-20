@@ -242,6 +242,12 @@ def write_receipt(path, receipt, *, history=True):
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
+    if path.parent.name in ("audit-publication", "audit-waivers"):
+        # Give a read-only observer a collision-free invalidation signal even
+        # when successive atomic replacements share a filesystem timestamp.
+        with temporary.open("x", encoding="ascii") as stream:
+            stream.write(uuid.uuid4().hex)
+        temporary.replace(path.parent / ".revision")
 
 
 def checkpoint(store, claim, path, receipt):

@@ -1,9 +1,12 @@
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import tracemalloc
+from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPConnection
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,8 +15,8 @@ import pytest
 from audit_fixtures import build_report
 from test_audit_worker import AGENT, FakeGitHub, agent, request, store_baseline
 
-from cirra import audits
-from cirra.audit_reads import PROTOCOL, AuditReadServer
+from cirra import audit_read_snapshot, audits
+from cirra.audit_reads import AuditReadServer
 from cirra.audit_worker import AuditCheckPublisher, AuditPublication, audit_once
 from cirra.domain import CirraError, canonical, digest
 from cirra.job_queue import AuditQueue
@@ -87,7 +90,9 @@ def test_only_get_is_served(served):
     response, body = get(served.server, "/healthz")
     assert response.status == 200
     assert response.getheader("Cache-Control") == "no-store"
-    assert body["protocol"] == PROTOCOL and body["schema_version"] == 3
+    # The independent Taskmaster v1 consumer uses these literals.
+    assert set(body) == {"protocol", "schema_version", "generation", "record", "sha256"}
+    assert body["protocol"] == "cirra.audit-reads.v1" and body["schema_version"] == 3
     assert body["record"]["status"] == "ok" and body["record"]["audits"] == 1
 
 
@@ -198,11 +203,157 @@ def test_unknown_paths_missing_store_and_packets(served, tmp_path):
     try:
         response, body = get(empty, "/healthz")
         assert response.status == 503 and body == {"error": "audit store unavailable"}
+        for query in ("limit=%C2%B2", "after=%C2%B2", "limit=" + "0" * 5000, "after=" + "0" * 19):
+            assert get(empty, "/audits?" + query)[0].status == 400
         assert not (tmp_path / "empty").exists()
     finally:
         empty.shutdown()
         empty.server_close()
         thread.join(5)
+
+
+def persisted_v1_generation(site):
+    # The original wire digest is deliberately independent of the implementation.
+    with site.store.connection() as db:
+        rows = [
+            list(r)
+            for r in db.execute(
+                "SELECT attempt_id, number, state, report_digest, created_at, completed_at, scope, "
+                "comparison_json, validator_output FROM audits ORDER BY rowid"
+            )
+        ]
+    receipts = []
+    for name in ("audit-publication", "audit-waivers"):
+        for path in sorted((site.server.state_dir / name).glob("*.json")):
+            receipts.append([name, path.name, hashlib.sha256(path.read_bytes()).hexdigest()])
+    raw = json.dumps([rows, receipts], sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def test_generation_stays_v1_across_concurrent_replacement(served, monkeypatch):
+    audit_id = "1" * 64
+    path = served.server.state_dir / "audit-publication" / (audit_id + ".json")
+    write_receipt(path, {"audit_id": audit_id, "gate": "block"})
+    before = persisted_v1_generation(served)
+    assert get(served.server, "/healthz")[1]["generation"] == before
+    read = audit_read_snapshot.read_receipt
+
+    def replace_during_gate(target):
+        monkeypatch.setattr(audit_read_snapshot, "read_receipt", read)
+        write_receipt(path, {"audit_id": audit_id, "gate": "pass"})
+        return read(target)
+
+    monkeypatch.setattr(audit_read_snapshot, "read_receipt", replace_during_gate)
+    response, body = get(served.server, "/gates/" + audit_id)
+    assert response.status == 200
+    assert body["record"]["publication"]["gate"] == "pass"
+    assert body["generation"] == persisted_v1_generation(served) != before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permits replacing an open SQLite file")
+def test_database_replacement_during_a_page_reopens_the_store(served, tmp_path, monkeypatch):
+    assert get(served.server, "/healthz")[1]["record"]["audits"] == 1
+    replacement = Store(tmp_path / "replacement")
+    index = served.server.index
+
+    def replace_after_query(connection, parsed):
+        monkeypatch.setattr(served.server, "index", index)
+        answer = index(connection, parsed)
+        replacement.path.replace(served.store.path)
+        return answer
+
+    monkeypatch.setattr(served.server, "index", replace_after_query)
+    response, body = get(served.server, "/audits")
+    assert response.status == 200 and body["record"]["audits"] == []
+    assert body["generation"] == persisted_v1_generation(served)
+
+
+def test_receipt_scan_releases_source_database_and_warm_reads_reuse_it(served, monkeypatch):
+    folder = served.server.state_dir / "audit-waivers"
+    for i in range(200):
+        write_receipt(folder / f"waiver-{i}.json", {"audit_id": f"{i:064x}"})
+    entered, release = threading.Event(), threading.Event()
+    scan = served.server.snapshot.refresh_directory
+
+    def paused(name, revision):
+        if name == "audit-waivers":
+            entered.set()
+            assert release.wait(4)
+        return scan(name, revision)
+
+    monkeypatch.setattr(served.server.snapshot, "refresh_directory", paused)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        reading = workers.submit(get, served.server, "/healthz")
+        try:
+            assert entered.wait(3)
+            # A reader holding a rollback-journal read transaction across the
+            # filesystem walk would block the writer's commit here.
+            workers.submit(begin_pr, served).result(timeout=2)
+        finally:
+            release.set()
+        assert reading.result()[0].status == 200
+
+    def unexpected(*args):
+        pytest.fail("a warm request rescanned audit history")
+
+    monkeypatch.setattr(served.server.snapshot, "rows", unexpected)
+    monkeypatch.setattr(served.server.snapshot, "refresh_directory", unexpected)
+    monkeypatch.setattr(audit_read_snapshot, "read_receipt", unexpected)
+    for route in ("/healthz", "/audits?limit=1"):
+        assert get(served.server, route)[1]["generation"] == persisted_v1_generation(served)
+
+
+def test_cold_index_continues_after_a_bounded_request(served, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    scan = served.server.snapshot.rows
+
+    def paused(connection):
+        entered.set()
+        assert release.wait(4)
+        return scan(connection)
+
+    monkeypatch.setattr(served.server.snapshot, "rows", paused)
+    monkeypatch.setattr(audit_read_snapshot, "READ_SECONDS", 0.15)
+    try:
+        response, _ = get(served.server, "/healthz")
+        assert entered.is_set() and response.status == 503
+    finally:
+        release.set()
+    served.server.snapshot.build.result(timeout=3)
+    assert get(served.server, "/healthz")[0].status == 200
+
+
+def test_summary_page_memory_does_not_include_large_reports(served):
+    with served.store.transaction() as db:
+        db.executemany(
+            "INSERT INTO audits(attempt_id,audit_id,number,repository_key,tier,head,state,"
+            "identity_json,created_at,scope,report_json) VALUES(?,?,1,'r','pr','h','complete',"
+            "'{}',0,'repository',zeroblob(1048576))",
+            [(str(i), str(i)) for i in range(32)],
+        )
+    tracemalloc.start()
+    try:
+        response, body = get(served.server, "/audits?limit=50")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert response.status == 200 and len(body["record"]["audits"]) == 33
+    assert peak < 6 * 1024 * 1024
+
+
+def test_read_error_is_correlated_without_echoing_input(served, capsys):
+    (served.server.state_dir / "audit-waivers").mkdir()
+    (served.server.state_dir / "audit-waivers" / "waiver.json").write_text(
+        "secret-body", encoding="utf8"
+    )
+    response, _ = get(served.server, "/audits?tier=private")
+    assert response.status == 503
+    records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    error, access = records[-2:]
+    assert error["level"] == "error" and error["operation"] == "audit_read"
+    assert error["route"] == access["route"] == "audits"
+    assert error["request_id"] == response.getheader("X-Request-ID") == access["request_id"]
+    assert "secret-body" not in str(records) and "private" not in str(records)
 
 
 def test_cli_serves_reads_without_credentials(world):
