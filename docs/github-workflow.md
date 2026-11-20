@@ -26,10 +26,11 @@ status creator IDs/contexts. A matching display name alone cannot satisfy policy
 ## Credentials and limits
 
 Public repository reads need no authentication. For private reads or a larger
-rate allowance, explicitly select a reader token from the process environment:
+rate allowance, bind a reader token in an ignored GLAS/BWS manifest and select
+its injected child-process value:
 
 ```text
-cirra collect --provider github --repo OWNER/REPO --change 123 --config policy.yaml --token-env CIRRA_GITHUB_TOKEN
+GLAS_MANIFEST=config/glas.reader.local.json python scripts/with-glas.py collect --provider github --repo OWNER/REPO --change 123 --config policy.yaml --token-env CIRRA_GITHUB_TOKEN
 ```
 
 Provision a token limited to the selected repository with Metadata, Contents,
