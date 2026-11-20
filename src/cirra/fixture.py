@@ -132,11 +132,14 @@ class FixtureProvider:
             fields(
                 self.collection,
                 ["source", "repository", "observed_at", "check_errors"],
+                ["target_branch"],
                 label="collection",
             )
             if self.collection["source"] not in ("github_rest", "gitlab_rest", "forgejo_rest"):
                 raise CirraError("unsupported collection source")
             string(self.collection["repository"], "collection repository")
+            if "target_branch" in self.collection:
+                string(self.collection["target_branch"], "collection target branch", 1024)
             timestamp(self.collection["observed_at"])
             if not isinstance(self.collection["check_errors"], list):
                 raise CirraError("collection check_errors must be a list")

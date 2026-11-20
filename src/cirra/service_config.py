@@ -200,6 +200,8 @@ def load_service(path):
             raise CirraError("Docker observation requires a policy and a witness key reference")
         if not review_enabled and not observer:
             raise CirraError("CI-only routes require an observer")
+        if policy.merge_gate and (not observer or not review_enabled):
+            raise CirraError("a merge gate route requires both the observer and the reviewer")
         branches = item.get("branches", [])
         if not isinstance(branches, list) or len(branches) > 10:
             raise CirraError("branches must be a list of at most ten operator-selected branches")

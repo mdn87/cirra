@@ -23,6 +23,16 @@ findings. Return only the findings and notes JSON object specified by the schema
 Do not claim to have run tests. A correct change may have zero findings.
 """
 
+
+def instructions(config):
+    if config.merge_gate:
+        return INSTRUCTIONS + (
+            "For this required review, use notes only for limitations that prevented you from "
+            "reviewing the supplied patch. Leave notes empty if you were able to review it all."
+        )
+    return INSTRUCTIONS
+
+
 # Keep the installed CLI's subscription login; do not inherit provider/API keys,
 # endpoint overrides, plugins, proxy credentials, Python/Node injection variables.
 ENVIRONMENT = frozenset(
@@ -176,7 +186,7 @@ class ClaudeReviewer:
             "--max-budget-usd",
             str(self.config.review_budget_usd),
             "--system-prompt",
-            INSTRUCTIONS,
+            instructions(self.config),
         ]
         raw = bounded_process(
             argv,

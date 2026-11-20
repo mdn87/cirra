@@ -2,7 +2,7 @@
 
 from urllib.parse import quote
 
-from cirra.domain import CirraError, number, sha, utc_now
+from cirra.domain import CirraError, digest, number, sha, utc_now
 from cirra.events import trusted_change
 from cirra.github import GitHubClient, native_id, record, target_revision
 from cirra.gitlab import GitLabClient
@@ -50,7 +50,10 @@ def discover(route, token=None):
                 if record(target).get("name") != branch:
                     raise CirraError("reconciliation target branch changed identity")
                 targets[branch] = sha(record(target.get("commit")).get("id"))
-        changes.append((change, {"head": head, "target": targets[branch]}))
+        revision = {"head": head, "target": targets[branch]}
+        if getattr(getattr(route, "policy", None), "merge_gate", None):
+            revision["target_branch"] = branch
+        changes.append((change, revision))
     return changes
 
 
@@ -61,17 +64,25 @@ def sync(config, queue, credential, *, route_name=None, discover_changes=discove
             continue
         try:
             changes = discover_changes(route, credential(route.reader_env))
-            # Key polling jobs on the PR head only. Tests run on the head, so a
-            # target-only move would otherwise re-queue every open PR and spend
-            # daily admission. Heads another job (webhook, manual) already
-            # tested are skipped.
             queued, tested = [], []
+            gate = getattr(getattr(route, "policy", None), "merge_gate", None)
             for change, revision in changes:
-                if queue.tested_head(route, change, revision["head"]):
+                # CI tests the head. A required review also covers a specific target revision.
+                target = (
+                    revision["target"]
+                    if gate and revision.get("target_branch") == gate.branch
+                    else None
+                )
+                if queue.tested_head(route, change, revision["head"], review_target=target):
                     tested.append(change)
                     continue
                 queued.append(
-                    queue.request(route, change, source="reconcile", revision=revision["head"])
+                    queue.request(
+                        route,
+                        change,
+                        source="reconcile",
+                        revision=(digest(revision) if target else revision["head"]),
+                    )
                 )
             entry = {"route": name, "jobs": queued}
             if tested:

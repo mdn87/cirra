@@ -30,6 +30,7 @@ from cirra.publish import (
     write_receipt,
 )
 from cirra.report import export_report
+from cirra.review_gate import RequiredReviewCheck, merge_revision
 from cirra.store import Store
 
 # Full-audit schedule checks read the default branch head, so they run once an
@@ -262,9 +263,32 @@ class Processor:
         export_capture(data, self.directory)
         provider = FixtureProvider.from_data(data, route.policy)
         store = Store(self.directory)
+        gate = None
+        if (
+            route.policy.merge_gate
+            and data["collection"]["target_branch"] == route.policy.merge_gate.branch
+        ):
+
+            def gate_transport():
+                return GitHubPublisher(
+                    route.repository, route.publisher["app_id"], self.app_token(route)
+                ).http
+
+            def current_merge():
+                return merge_revision(
+                    GitHubClient(route.repository, token=reader),
+                    data["change"],
+                    route.policy.merge_gate.branch,
+                )
+
+            gate = RequiredReviewCheck(
+                self.directory, route, data["change"], gate_transport, current_merge
+            )
+            gate.start()
         report, reused = review(provider, route.policy, store)
         export_report(report, self.directory)
-        if report["review"]["outcome"] != "succeeded":
+        failed_review = report["review"]["outcome"] != "succeeded"
+        if failed_review and not gate:
             return {
                 "state": "attention",
                 "run_id": report["run_id"],
@@ -278,6 +302,31 @@ class Processor:
                 "run_id": report["run_id"],
                 "reason": "change closed during review",
             }
+
+        def refresh():
+            latest = self.capture(
+                route.provider, route.repository, change, route.policy, token=reader
+            )
+            if receipt_path:
+                latest = provenance.apply(latest, receipt_path, witness_key)
+            return FixtureProvider.from_data(latest, route.policy)
+
+        if gate:
+            receipt = gate.finish(store, report, refresh)
+            result = {
+                "state": "attention" if failed_review else "done",
+                "run_id": report["run_id"],
+                "reused": reused,
+                "publication": receipt["state"],
+                "native_id": receipt["native_id"],
+                "review_gate": receipt,
+                "ci": ci_result,
+            }
+            if failed_review:
+                result["reason"] = (
+                    "review did not succeed; inspect the report before an explicit rereview"
+                )
+            return result
         if route.provider == "github":
             publisher = GitHubPublisher(
                 route.repository, route.publisher["app_id"], self.app_token(route)
@@ -295,14 +344,6 @@ class Processor:
             publisher = GitLabPublisher(
                 gitlab.GitLabClient(route.repository, token=token), route.publisher["principal_id"]
             )
-
-        def refresh():
-            latest = self.capture(
-                route.provider, route.repository, change, route.policy, token=reader
-            )
-            if receipt_path:
-                latest = provenance.apply(latest, receipt_path, witness_key)
-            return FixtureProvider.from_data(latest, route.policy)
 
         receipt = publish(store, route.policy, report["run_id"], refresh, publisher)
         return {
