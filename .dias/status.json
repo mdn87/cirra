@@ -5,16 +5,16 @@
   "assessmentState": "watchlist",
   "assessmentScope": "current-milestone",
   "percentComplete": null,
-  "milestonePhase": "operational-proof",
+  "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T13:50:46Z",
-  "confidence": "reported",
-  "currentMilestone": "Verify that the GitHub evidence workflow runs for the release that passed the protected audit.",
-  "remainingSummary": "The GitHub App needs its owner to grant Actions write for the release workflow. The live storage encryption finding remains open by owner decision.",
-  "nextChipId": "cirra:verify-native-release-dispatch",
+  "assessedAt": "2026-11-20T22:52:29Z",
+  "confidence": "authoritative",
+  "currentMilestone": "The protected release workflow ran successfully and verified the reviewed commit.",
+  "remainingSummary": "Release verification is complete. The storage encryption finding remains open by owner decision. Five audit controls still need operating evidence or owner targets.",
+  "nextChipId": null,
   "source": {
-    "label": "Host audit reports, protected checks and the storage decision",
+    "label": "GitHub workflow log, Cirra release receipts and the full production audit",
     "updatedAt": "2026-11-20"
   }
 }

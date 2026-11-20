@@ -207,10 +207,11 @@ Review the resulting snapshot with the normal `review` command.
 ## Native release workflow requests
 
 ```text
-cirra plan-release --run <run-id> --workflow-id <native-workflow-id> --ref <protected-target-branch> --output <request.json>
+cirra plan-release --run <run-id> --config <policy> --workflow-id <native-workflow-id> --ref <protected-target-branch> --output <request.json>
 cirra dispatch-release --request <request.json> --config <policy> --app-id <app-id> --installation-id <installation-id> --app-key-env CIRRA_RELEASE_APP_KEY --provenance <receipt.json> --witness-key-env CIRRA_WITNESS_KEY
 ```
 
+Passing the same policy to both commands applies its configured release audit gate.
 Planning requires complete captured GitHub evidence, verified successful CI
 including trusted definition digests, and a successful review with no findings.
 Dispatch requires the PR to be merged into the selected protected target branch
@@ -231,13 +232,12 @@ The request identity excludes timestamps, so replanning the same evidence does
 not bypass duplicate protection. Accepted requests are not completed releases. Durable receipts and
 `--reconcile` identify the native run; a lost acknowledgement never causes an
 automatic second dispatch. `--retry-uncertain` permits one explicit retry of an unacknowledged request after
-inspection; it never retries an acknowledged dispatch. No live release has been dispatched by this implementation session.
+inspection; it never retries an acknowledged dispatch.
 
 ## Live acceptance results
 
-Recorded on 2026-10-15 America/New_York (2026-10-16 UTC). These are observed
-results from the live providers; the implementation plan retains acceptance
-requirements that still need external setup.
+The first provider checks were recorded on 2026-10-16 UTC. The release workflow
+verification below was recorded on 2026-11-20 UTC.
 
 ### GitHub
 
@@ -292,8 +292,17 @@ acceptance directory.
 Fault injection used the saved capture and a live revision check around the
 publisher; final ordinary CLI publication performed fresh collection. Local
 case receipts and response hashes are under `.cirra/github-acceptance/cases/`.
-No independent checkout witness is configured, so native CI success remains
-association evidence and the Cirra reports remain `incomplete`.
+Those earlier GitHub runs had no independent checkout witness. Their native CI
+results provided association evidence, and their Cirra reports were `incomplete`.
+
+### GitHub release evidence
+
+On 2026-11-20, the Cirra GitHub App dispatched the evidence workflow after
+PR #45 passed its 45-control release audit without a waiver. The workflow ran
+from protected main at `9953838` and checked out the reviewed commit
+`253ab19e78694629545fddb2934ee3648cbc2381`. The verification step logged
+that commit and the accepted request ID. Cirra reconciled the request to one
+successful run on its first attempt. [GitHub workflow run](https://github.com/mdn87/cirra/actions/runs/44832190518).
 
 ### GitLab
 
@@ -356,8 +365,8 @@ MR !2 is merged and its main pipeline passed. The
 [service acceptance record](service-workflow.md#gitlab-observer-rollout) explains
 the provider delivery, explicit recovery and operator-generated replay test.
 
-Human usefulness assessment of the frozen reviewer cases and separate native
-release setup remain open alongside the GitHub fork case above.
+Human usefulness assessment of the frozen reviewer cases and the GitHub fork
+case above remain open.
 
 ## References
 
