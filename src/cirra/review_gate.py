@@ -3,8 +3,8 @@
 import json
 
 from cirra.audit import SEVERITIES
-from cirra.domain import CirraError, digest, sha
-from cirra.github import native_id, record, revisions, target_revision
+from cirra.domain import CirraError, digest
+from cirra.github import native_id, pull_merge_ref, record, revisions, target_revision
 from cirra.policy import assess_checks
 from cirra.publish import write_receipt
 from cirra.report import make_report, plain
@@ -27,7 +27,7 @@ def merge_revision(client, change, branch):
         or pr.get("mergeable") is not True
     ):
         raise CirraError("GitHub has no current test merge for this open pull request")
-    merge = sha(pr.get("merge_commit_sha"))
+    merge = pull_merge_ref(client, number)
     commit, _ = client.get(f"git/commits/{merge}")
     if (
         record(commit).get("sha") != merge
@@ -83,7 +83,8 @@ class RequiredReviewCheck:
         self.route, self.change, self.transport = route, change, transport
         self.current_merge = current_merge
         self.merge = current_merge()
-        self.slot = digest([NAME, route.repository_id, route.policy.merge_gate.branch, self.merge])
+        self.head = change["head_sha"]
+        self.slot = digest([NAME, route.repository_id, route.policy.digest, self.head])
         self.path = directory / "review-gates" / (self.slot + ".json")
         self.prefix = "/repos/" + route.repository
 
@@ -91,7 +92,7 @@ class RequiredReviewCheck:
         if (
             record(item).get("name") != NAME
             or item.get("external_id") != self.slot
-            or item.get("head_sha") != self.merge
+            or item.get("head_sha") != self.head
             or str(record(item.get("app")).get("id")) != str(self.route.publisher["app_id"])
             or item.get("status") != status
             or item.get("conclusion") != conclusion
@@ -113,12 +114,12 @@ class RequiredReviewCheck:
             item
             for item in pages(
                 get,
-                f"{self.prefix}/commits/{self.merge}/check-runs",
+                f"{self.prefix}/commits/{self.head}/check-runs",
                 params={"filter": "all", "check_name": NAME},
             )
             if item.get("name") == NAME
             and item.get("external_id") == self.slot
-            and item.get("head_sha") == self.merge
+            and item.get("head_sha") == self.head
             and str(record(item.get("app")).get("id")) == str(self.route.publisher["app_id"])
         ]
         prior = json.loads(self.path.read_text()) if self.path.exists() else {}
@@ -127,6 +128,14 @@ class RequiredReviewCheck:
         identifier = native_id(matches[0]["id"]) if matches else None
         if prior.get("native_id") and prior["native_id"] != identifier:
             raise CirraError("required review check changed its native identity")
+        if matches and matches[0].get("status") == "completed":
+            # GitHub keeps completed check runs terminal. On redelivery, refresh
+            # the verdict in finish() without replacing the last report with a pending summary.
+            conclusion = matches[0].get("conclusion")
+            if conclusion not in ("success", "failure"):
+                raise CirraError("existing required review has an unexpected conclusion")
+            self.identifier = self.verify(matches[0], "completed", conclusion, identifier)
+            return
         body = {
             "name": NAME,
             "external_id": self.slot,
@@ -140,7 +149,7 @@ class RequiredReviewCheck:
         if identifier:
             path += "/" + identifier
         else:
-            body["head_sha"] = self.merge
+            body["head_sha"] = self.head
         write_receipt(self.path, {"state": "starting", "native_id": identifier}, history=False)
         try:
             item, _ = http.request("PATCH" if identifier else "POST", path, body=body)
@@ -166,6 +175,7 @@ class RequiredReviewCheck:
             branch = config.merge_gate.branch
             if (
                 provider.snapshot.record() != saved["snapshot"]
+                or provider.additional_comparisons is None
                 or provider.collection.get("target_branch") != branch
                 or saved["inputs"]["config_digest"] != config.digest
                 or any(self.change[k] != saved["snapshot"][k] for k in self.change)
@@ -195,6 +205,7 @@ class RequiredReviewCheck:
                 "",
                 f"PR #{self.change['change_id']} targeting {plain(branch)}.",
                 f"Head `{self.change['head_sha']}` · target `{self.change['target_sha']}`",
+                f"Verified test merge `{self.merge}`.",
                 f"Review `{saved['run_id']}` · report `{report['report_digest']}`",
             ]
             for finding in report["review"]["findings"][:10]:

@@ -27,6 +27,9 @@ Do not claim to have run tests. A correct change may have zero findings.
 def instructions(config):
     if config.merge_gate:
         return INSTRUCTIONS + (
+            "Review every additional comparison supplied for this same head. If a defect is "
+            "visible only in an alternate comparison and cannot be anchored in the primary patch, "
+            "describe the limitation in notes. "
             "For this required review, use notes only for limitations that prevented you from "
             "reviewing the supplied patch. Leave notes empty if you were able to review it all."
         )
