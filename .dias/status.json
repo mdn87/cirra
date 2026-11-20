@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "projectId": "cirra",
+  "projectLabel": "Cirra",
+  "assessmentState": "unassessed",
+  "assessmentScope": "current-milestone",
+  "percentComplete": null,
+  "milestonePhase": "operational-proof",
+  "portfolioGroup": "developer-tools",
+  "displayPriority": 500,
+  "assessedAt": "2026-11-20T05:44:41Z",
+  "confidence": "reported",
+  "currentMilestone": "Prove production audit operation beyond pull request reviews.",
+  "remainingSummary": "Refresh live readiness evidence before selecting full and release audit activation work.",
+  "nextChipId": "cirra:audit-readiness",
+  "source": {
+    "label": "Project plans and prior recovery handoff",
+    "updatedAt": "2026-11-20"
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "projectId": "cirra",
+  "projectLabel": "Cirra",
+  "chips": [
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:audit-tiers",
+      "projectId": "cirra",
+      "title": "Implement production audit tiers",
+      "summary": "Audit selection, queueing, imports, release gates and full audit scheduling are implemented.",
+      "stage": "done",
+      "sequence": 0,
+      "prereqs": [],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T05:44:41Z",
+        "updatedAt": "2026-11-20T05:44:41Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:audit-tiers:created",
+          "at": "2026-11-20T05:44:41Z",
+          "kind": "created",
+          "message": "Recorded from the implemented plan and its existing acceptance tests."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:audit-readiness",
+      "projectId": "cirra",
+      "title": "Verify production audit readiness",
+      "summary": "Check live audit configuration, waiting jobs and release prerequisites; record the next safe activation step.",
+      "stage": "active",
+      "sequence": 1,
+      "prereqs": [
+        "cirra:audit-tiers"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T05:44:41Z",
+        "updatedAt": "2026-11-20T05:44:51Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:audit-readiness:created",
+          "at": "2026-11-20T05:44:41Z",
+          "kind": "created",
+          "message": "Selected because the prior handoff reports inactive tiers and waiting imports."
+        },
+        {
+          "entryId": "cirra:audit-readiness:active",
+          "at": "2026-11-20T05:44:51Z",
+          "kind": "stage-change",
+          "message": "Board and status passed the Dias parsers; live readiness inspection started."
+        }
+      ]
+    }
+  ]
+}
