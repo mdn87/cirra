@@ -90,9 +90,11 @@ In the GitHub ruleset for that branch, require a pull request, an up-to-date
 head, and both `cirra/isolated-tests` and `cirra/code-review` from the worker's
 GitHub App. Leave the bypass list empty to enforce the same checks for admins.
 GitHub associates checks with a commit. The worker issues its required review
-only on GitHub's test-merge commit for the configured target branch. It checks that
-commit's ordered parents against the reviewed target and head before publication.
-The isolated build and test receipt stays on the actual PR head.
+on the PR head for the configured target branch. It verifies the ordered parents
+of GitHub's current test merge immediately before publication. The reviewer
+also receives any distinct patches that would appear if the target advanced to
+an intermediate commit already in the PR head. Together with strict status
+checks and blocked force pushes, this keeps the result valid when PRs are stacked.
 Native CI success without a trusted checkout witness remains unverified in
 Cirra's report; publishing does not upgrade that evidence.
 

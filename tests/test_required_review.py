@@ -105,6 +105,7 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
     from cirra.transport import RemoteUncertain
 
     current = fixture_data["change"]
+    fixture_data["additional_comparisons"] = []
     check = fixture_data["checks"][0]
     check["name"] = "cirra/isolated-tests"
     check["provenance"]["definition_digest"] = "a" * 64
@@ -163,12 +164,15 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
         gate.start()
     gate.start()
     assert http.posts == 1 and http.item["status"] == "in_progress"
-    assert http.item["head_sha"] == "f" * 40
+    assert http.item["head_sha"] == current["head_sha"]
     provider.collection["target_branch"] = "different"
     with pytest.raises(CirraError, match="target branch"):
         gate.finish(store, saved, lambda: provider)
     provider.collection["target_branch"] = "main"
     assert gate.finish(store, saved, lambda: provider)["conclusion"] == "success"
+    completed = http.item.copy()
+    gate.start()
+    assert http.item == completed
     provider.checks[0]["raw_state"] = "failure"
     assert gate.finish(store, saved, lambda: provider)["conclusion"] == "failure"
     http.item["conclusion"] = "neutral"
@@ -192,7 +196,7 @@ def test_reconciliation_requires_published_review_for_this_target_and_policy(tmp
     )
     queue = Queue(tmp_path)
     service = SimpleNamespace(routes={"github": route})
-    revision = {"target_branch": "main", "head": "a" * 40, "target": "b" * 40}
+    revision = {"target_branch": "main", "head": "a" * 40, "target": "b" * 40, "merge": "d" * 40}
 
     def poll():
         return sync(service, queue, lambda _: None, discover_changes=lambda *_: [(7, revision)])[0]
@@ -206,9 +210,13 @@ def test_reconciliation_requires_published_review_for_this_target_and_policy(tmp
         "state": "published",
         "head_sha": revision["head"],
         "target_sha": revision["target"],
+        "merge_sha": revision["merge"],
     }
     queue.save(job)
     assert poll()["already_tested"] == [7]
+    revision["merge"] = "e" * 40
+    assert not poll()["jobs"][0]["duplicate"]
+    revision["merge"] = "d" * 40
     revision["target"] = "c" * 40
     assert not poll()["jobs"][0]["duplicate"]
     revision["target"] = "b" * 40
@@ -217,7 +225,17 @@ def test_reconciliation_requires_published_review_for_this_target_and_policy(tmp
 
 
 @pytest.mark.parametrize(
-    "case", ["current", "retargeted", "new_base", "wrong_parents", "draft", "conflict"]
+    "case",
+    [
+        "current",
+        "retargeted",
+        "new_base",
+        "wrong_parents",
+        "wrong_ref",
+        "wrong_type",
+        "draft",
+        "conflict",
+    ],
 )
 def test_native_merge_binding_requires_the_open_pr_and_ordered_parents(case):
     from cirra.review_gate import merge_revision
@@ -232,12 +250,15 @@ def test_native_merge_binding_requires_the_open_pr_and_ordered_parents(case):
         "draft": case == "draft",
         "changed_files": 1,
         "mergeable": case != "conflict",
-        "merge_commit_sha": merge,
     }
     if case == "retargeted":
         pr["base"]["ref"] = "other"
     resources = {
         "pulls/7": pr,
+        "git/ref/pull/7/merge": {
+            "ref": "refs/pull/8/merge" if case == "wrong_ref" else "refs/pull/7/merge",
+            "object": {"sha": merge, "type": "tag" if case == "wrong_type" else "commit"},
+        },
         "branches/main": {"name": "main", "commit": {"sha": head if case == "new_base" else base}},
         "git/commits/" + merge: {
             "sha": merge,

@@ -8,13 +8,13 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T08:42:53Z",
+  "assessedAt": "2026-11-20T09:35:49Z",
   "confidence": "reported",
-  "currentMilestone": "Require the worker host to build, test and review an exact pull request commit before merge.",
-  "remainingSummary": "Enable package builds and a pass or fail review check. Prove GitHub blocks missing and failed checks and permits a passing pull request.",
-  "nextChipId": "cirra:restore-host-pr-review",
+  "currentMilestone": "Prove release planning on the protected repository with a valid release audit.",
+  "remainingSummary": "Pull request CI and code review are enforced. The remaining release proof covers refusal without an audit, acceptance with one, and separate live dispatch.",
+  "nextChipId": "cirra:prove-release-audit-gate",
   "source": {
-    "label": "Repository baseline, pull request comparison, host test receipt and reviewer login status",
+    "label": "Host execution and review receipts, live merge responses and the repository release roadmap",
     "updatedAt": "2026-11-20"
   }
 }

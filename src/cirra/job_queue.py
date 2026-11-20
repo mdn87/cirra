@@ -81,7 +81,7 @@ class Queue:
             key=lambda job: (job["accepted_at"], job["id"]),
         )
 
-    def tested_head(self, route, change, head, *, review_target=None):
+    def tested_head(self, route, change, head, *, review_target=None, review_merge=None):
         """Whether a finished job on this route already tested `head` for `change`."""
         for job in self.scan()[0]:
             result = job.get("result") or {}
@@ -99,6 +99,8 @@ class Queue:
                         and gate.get("state") == "published"
                         and gate.get("head_sha") == head
                         and gate.get("target_sha") == review_target
+                        and review_merge is not None
+                        and gate.get("merge_sha") == review_merge
                     )
                 )
             ):

@@ -40,7 +40,7 @@ class FixtureProvider:
         fields(
             data,
             ["schema_version", "change", "files", "coverage_gaps", "checks"],
-            ["reviewer_response", "collection"],
+            ["reviewer_response", "collection", "additional_comparisons"],
             label="fixture",
         )
         if config.reviewer_kind == "fake" and "reviewer_response" not in data:
@@ -114,9 +114,37 @@ class FixtureProvider:
                     gap=gap,
                 )
             )
+        self.additional_comparisons = None
+        review_input = data["files"]
+        if "additional_comparisons" in data:
+            extra = data["additional_comparisons"]
+            if not isinstance(extra, list):
+                raise CirraError("additional comparisons must be a list")
+            self.additional_comparisons = []
+            review_input = [data["files"], extra]
+            for variant in extra:
+                fields(variant, ["base_sha", "files"], label="additional comparison")
+                base = sha(variant["base_sha"])
+                fragment = {
+                    "schema_version": 1,
+                    "change": {**change, "target_sha": base, "diff_base_sha": base},
+                    "files": variant["files"],
+                    "checks": [],
+                    "coverage_gaps": [],
+                }
+                if "reviewer_response" in data:
+                    fragment["reviewer_response"] = data["reviewer_response"]
+                alternate = FixtureProvider.from_data(fragment, config)
+                gaps.extend(alternate.snapshot.coverage_gaps)
+                patches = alternate.packet()["patches"]
+                used_bytes += sum(len(p["patch"].encode()) for p in patches)
+                if used_bytes > config.max_diff_bytes:
+                    gaps.append("combined review comparisons exceed the diff byte limit")
+                    break
+                self.additional_comparisons.append({"base_sha": base, "patches": patches})
         self.snapshot = Snapshot(
             **change,
-            diff_digest=digest(data["files"]),
+            diff_digest=digest(review_input),
             files=tuple(files),
             coverage_gaps=tuple(gaps),
         )
@@ -150,6 +178,11 @@ class FixtureProvider:
     def packet(self):
         return {
             "snapshot": self.snapshot.record(),
+            **(
+                {"additional_comparisons": self.additional_comparisons}
+                if self.additional_comparisons is not None
+                else {}
+            ),
             "patches": [
                 {"path": file.path, "old_path": file.old_path, "patch": file.patch}
                 for file in self.snapshot.files
