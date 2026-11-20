@@ -78,8 +78,8 @@ leaves the review needing attention while retaining the separate CI result.
 `cirra serve-audit-reads --state-dir <state> --port 8797` serves the audit
 store to derived views such as Taskmaster. It is a separate process beside the
 receiver and worker: it takes no service configuration and no credential file,
-holds no webhook or publisher secret, opens `cirra.sqlite3` read-only and never
-writes. It binds 127.0.0.1 only and refuses any other address at startup, and
+holds no webhook or publisher secret, and opens Cirra's state read-only.
+It binds 127.0.0.1 only and refuses any other address at startup, and
 every method except GET is answered 405.
 
 Routes, all GET with JSON bodies:
@@ -100,13 +100,30 @@ Routes, all GET with JSON bodies:
 Every 200 response is `{"protocol": "cirra.audit-reads.v1", "schema_version":
 ..., "generation": ..., "record": ..., "sha256": ...}`. `sha256` is the SHA-256
 of the canonical JSON of `record` (sorted keys, no spaces, ASCII), and
-`generation` digests every served audit row and receipt, read in the same
-transaction as the record, so a reader can hash exactly what it saw and refuse
-a store that changed between two reads. A missing store, a store at another
-schema version or an unreadable receipt is 503. Audit packets under
+`generation` digests every served audit row and receipt. The reader checks
+SQLite's data version and the receipt directories before and after each read.
+It verifies the returned gate against the same receipt hashes. Its private,
+temporary lookup index contains filenames, hashes and audit IDs. Warm health
+and summary reads reuse the verified generation. A cold index keeps building
+if an HTTP request reaches its six-second budget. The client can retry a 503.
+A missing store, a store at another schema version or an unreadable receipt
+also returns 503. Audit packets under
 `audit-packets/` are not served; they carry repository content.
-`examples/systemd/cirra-audit-reads.service` runs the route on lugos-host with
-the worker's sandboxing on port 8797.
+These GET paths, the literal `cirra.audit-reads.v1` identifier, and the response
+fields form the v1 contract. A breaking change needs a separately selected version.
+Every response has a server-generated `X-Request-ID` for matching the request log.
+
+The optional systemd service uses the dedicated `cirra-audit-reader` account.
+Create that system account and group once, then run
+`bash scripts/grant-audit-read-access.sh /srv/lugos/state/cirra` as the state
+owner. The helper needs POSIX ACL support and an existing SQLite database.
+Reapply it when restoring state to new inodes. It grants traversal of the state
+root, read access to the database, and inherited read access to publication
+and waiver files. The unit mounts the state and installed virtual environment
+read-only under `/run`, hides the host service tree and receipt histories, and
+binds only port 8797 on loopback. The installed virtual environment must be
+readable and traversable by the reader. Restart the reader after a release
+switch so its runtime mount follows the selected release.
 
 ### Backup CI without GitHub Actions
 
@@ -556,6 +573,8 @@ and is not yet deployed; nothing on the host has changed. The host change, when
 the operator makes it, is:
 
 ```text
+sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin cirra-audit-reader
+bash scripts/grant-audit-read-access.sh /srv/lugos/state/cirra
 sudo install -m 0644 examples/systemd/cirra-audit-reads.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now cirra-audit-reads.service

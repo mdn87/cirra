@@ -226,6 +226,51 @@ def test_version_one_state_gains_the_audit_table(tmp_path, monkeypatch):
         assert connection.execute("SELECT COUNT(*) FROM audits").fetchone()[0] == 0
 
 
+def test_existing_state_gains_an_index_with_the_same_baseline_and_tie_order(tmp_path):
+    state = Store(tmp_path)
+    with state.transaction() as connection:
+        connection.execute("DROP INDEX audits_repository_baseline")
+        connection.executemany(
+            "INSERT INTO audits(attempt_id, audit_id, number, repository_key, tier, head, state,"
+            " identity_json, created_at, completed_at, scope) VALUES(?, ?, 1, ?, ?, '', ?, '{}',"
+            " 0, ?, ?)",
+            (
+                (
+                    str(i),
+                    str(i),
+                    str(i % 13),
+                    "pr" if i % 5 else "full",
+                    "prepared" if i % 11 == 0 else "complete",
+                    i // 1000,
+                    "change:2" if i % 7 == 0 else "repository",
+                )
+                for i in range(20000)
+            ),
+        )
+
+    def answers_and_plan():
+        with state.connection() as connection:
+            answers = [
+                connection.execute(audits.BASELINE, (str(repo),)).fetchone()["attempt_id"]
+                for repo in range(13)
+            ]
+            plan = [
+                r[3] for r in connection.execute("EXPLAIN QUERY PLAN " + audits.BASELINE, ("0",))
+            ]
+            return answers, plan
+
+    before, previous_plan = answers_and_plan()
+    assert any("TEMP B-TREE" in detail for detail in previous_plan)
+    Store(tmp_path)
+    after, plan = answers_and_plan()
+    assert after == before
+    assert any("USING INDEX audits_repository_baseline" in detail for detail in plan)
+    assert not any("TEMP B-TREE" in detail for detail in plan)
+    with state.connection() as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
 def test_cli_prepare_and_import(tmp_path, setup, capsys):
     repo, first, _, config, _, _ = setup
     state = tmp_path / "cli-state"
