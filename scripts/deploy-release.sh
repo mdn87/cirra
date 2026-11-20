@@ -151,7 +151,9 @@ try:
         updated = os.fstat(stream.fileno()).st_mtime_ns
         data = json.load(stream)
     # Older releases predate invocation IDs. Require a new post-restart heartbeat.
-    same = (data.get("pid"), data.get("invocation_id")) == (int(sys.argv[2]), sys.argv[3])
+    # GLAS is systemd's MainPID while the worker writes its child PID. The
+    # invocation ID identifies this restart for both processes.
+    same = data.get("invocation_id") == sys.argv[3] and isinstance(data.get("pid"), int) and data["pid"] > 0
     legacy = "pid" not in data and updated > int(sys.argv[4])
     sys.exit(0 if data.get("state") == "running" and (same or legacy) else 1)
 except (OSError, ValueError):

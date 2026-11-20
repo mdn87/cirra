@@ -63,9 +63,9 @@ def deployment(tmp_path):
         "CIRRA_READY_TIMEOUT": "2",
     }
 
-    def rollback(up=True, invocation="new-worker", fail_restore=False):
+    def rollback(up=True, invocation="new-worker", fail_restore=False, worker_pid=419):
         (state / "worker-status.json").write_text(
-            json.dumps({"state": "running", "pid": 419, "invocation_id": invocation})
+            json.dumps({"state": "running", "pid": worker_pid, "invocation_id": invocation})
         )
         return subprocess.run(
             [
@@ -188,6 +188,12 @@ def test_readiness_requires_both_units_and_current_heartbeat(deployment, up, inv
     assert (result.returncode == 0) == success, (result.stdout, result.stderr)
     if not success:
         assert "post-restart readiness check" in result.stderr
+
+
+def test_readiness_accepts_glas_worker_child_pid(deployment):
+    rollback, _, _, _ = deployment
+    result = rollback(worker_pid=420)
+    assert result.returncode == 0, (result.stdout, result.stderr)
 
 
 def test_failed_unit_restore_still_restores_release_and_configuration(deployment):
