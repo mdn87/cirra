@@ -8,13 +8,13 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T11:59:48Z",
+  "assessedAt": "2026-11-20T13:45:26Z",
   "confidence": "reported",
   "currentMilestone": "Resolve the production audit findings, retry CI and code review, and prove release planning on a protected branch.",
-  "remainingSummary": "Verify the remaining fixes against the full audit and demonstrate protected release planning. Native release dispatch needs a restricted Actions credential.",
-  "nextChipId": "cirra:resolve-production-audit",
+  "remainingSummary": "The GitHub App needs its owner to grant Actions write for the release workflow. The live storage encryption finding remains open by owner decision.",
+  "nextChipId": "cirra:verify-native-release-dispatch",
   "source": {
-    "label": "Host review findings, Windows recovery logs and the project board",
+    "label": "Host audit reports, protected checks and the storage decision",
     "updatedAt": "2026-11-20"
   }
 }
