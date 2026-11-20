@@ -1,6 +1,7 @@
 """Single-operator worker: fresh provider reads, isolated observation, review, publication."""
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -361,7 +362,14 @@ def heartbeat(queue, **extra):
     # an fsync'd file every pass.
     write_receipt(
         queue.directory.parent / "worker-status.json",
-        {"state": "running", "heartbeat_at": utc_now(), "daily_usage": queue.usage(), **extra},
+        {
+            "state": "running",
+            "pid": os.getpid(),
+            "invocation_id": os.environ.get("INVOCATION_ID"),
+            "heartbeat_at": utc_now(),
+            "daily_usage": queue.usage(),
+            **extra,
+        },
         history=False,
     )
 
