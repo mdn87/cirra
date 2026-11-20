@@ -638,6 +638,7 @@ on the operator machine:
 ```text
 scripts/deploy-release.sh --host lugos-host --ref <commit>
 scripts/deploy-release.sh --host lugos-host --ref <commit> --repin
+scripts/deploy-release.sh --host lugos-host --ref <commit> --fallback <installed-full-sha>
 scripts/deploy-release.sh --host lugos-host --rollback <previous-sha>
 ```
 
@@ -662,10 +663,25 @@ and checks compatibility with the selected binary. If it differs, keep the
 database and use a compatible binary. For a planned schema transition, first
 rehearse the change and recovery on an isolated, consistent copy. Preserve
 work accepted after the backup. A failed restart restores the saved
-configuration and previous release only if the database is compatible. Old
-releases beyond `--keep` (3 by default) are removed; the current and previous
-releases are always kept. A rollback restores the configuration saved before
-the current release and switches back.
+configuration and previous release when it can read both the database and the
+live worker queue.
+
+For a first rollout of a newer queue format, stage and independently test a
+protected, reviewed fallback release under its full commit SHA. Supply that SHA
+with `--fallback`. Before switching, the deployment checks its completed
+installation, SQLite schema, support for the queue format the candidate can
+write, and observer pins against a private copy of the current configuration.
+Any observer policy changed by `--repin` must be recoverable from that copy.
+If startup fails after the candidate advances the queue format, the script
+restores that configuration, selects the compatible fallback and checks its
+readiness and application health. If the previous release still reads the live
+state, it takes precedence.
+The failed deployment exits nonzero even when recovery succeeds.
+
+After a successful deployment, the script prints a compatible rollback command
+and keeps the current, previous and explicitly selected fallback directories
+when pruning other releases beyond `--keep` (3 by default). A manual rollback
+to the selected fallback reuses the configuration verified for this deployment.
 
 To inspect the deployment without printing credentials:
 
