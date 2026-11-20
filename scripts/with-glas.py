@@ -12,7 +12,7 @@ DEFAULT = ["{python}", "-m", "cirra"]
 def main():
     manifest = Path(os.environ.get("GLAS_MANIFEST", ROOT / "config/glas.local.json")).resolve()
     candidates = (
-        [Path(os.environ["GLAS_ROOT"])]
+        [Path(os.environ["GLAS_ROOT"]).expanduser().absolute()]
         if os.environ.get("GLAS_ROOT")
         else [p / n for p in ROOT.parents for n in ("lugos/glas", "glas")]
     )
@@ -38,7 +38,9 @@ def main():
             ("_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_PEM")
         ):
             env.pop(name, None)
-    if "GLAS_HOME" not in env and glas is not None:
+    if env.get("GLAS_HOME"):
+        env["GLAS_HOME"] = str(Path(env["GLAS_HOME"]).expanduser().absolute())
+    elif "GLAS_HOME" not in env and glas is not None:
         env["GLAS_HOME"] = str(glas / ".glas")
     sources = [str(ROOT / "src")]
     if glas is not None:
@@ -48,7 +50,10 @@ def main():
     env["PYTHONPATH"] = os.pathsep.join(sources)
     command = [c[:-4] if os.name != "nt" and c in ("npm.cmd", "pnpm.cmd") else c for c in command]
     glas_python = os.environ.get("GLAS_PYTHON")
-    if not glas_python:
+    if glas_python and os.path.dirname(glas_python):
+        # Keep virtual environment interpreter symlinks intact.
+        glas_python = str(Path(glas_python).expanduser().absolute())
+    elif not glas_python:
         glas_python = (
             str(glas / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
             if glas is not None

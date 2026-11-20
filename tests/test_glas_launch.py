@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def load_launcher():
     script = Path(__file__).resolve().parents[1] / "scripts" / "with-glas.py"
@@ -65,4 +67,37 @@ def test_manifest_is_selected_relative_to_the_callers_directory(tmp_path, monkey
         return 0
 
     monkeypatch.setattr(module.subprocess, "call", check_manifest)
+    assert module.main() == 0
+
+
+@pytest.mark.parametrize("interpreter", ["tools/python", "python"])
+def test_relative_glas_settings_use_the_callers_directory(tmp_path, monkeypatch, interpreter):
+    module = load_launcher()
+    caller = tmp_path / "caller"
+    repo = tmp_path / "repo"
+    checkout = caller / "glas"
+    (checkout / "src/glas").mkdir(parents=True)
+    (checkout / "src/glas/cli.py").touch()
+    repo.mkdir()
+    manifest = caller / "manifest.json"
+    manifest.write_text("{}")
+    monkeypatch.chdir(caller)
+    monkeypatch.setattr(module, "ROOT", repo)
+    monkeypatch.setattr(sys, "argv", [module.__file__, "--exec", "unused"])
+    monkeypatch.setenv("GLAS_MANIFEST", str(manifest))
+    monkeypatch.setenv("GLAS_ROOT", "glas")
+    monkeypatch.setenv("GLAS_HOME", "state")
+    monkeypatch.setenv("GLAS_PYTHON", interpreter)
+
+    def check_paths(command, *, cwd, env):
+        assert cwd == repo
+        expected_interpreter = (
+            caller / interpreter if interpreter == "tools/python" else Path("python")
+        )
+        assert Path(command[0]) == expected_interpreter
+        assert Path(env["GLAS_HOME"]) == caller / "state"
+        assert str(checkout / "src") in env["PYTHONPATH"].split(module.os.pathsep)
+        return 0
+
+    monkeypatch.setattr(module.subprocess, "call", check_paths)
     assert module.main() == 0

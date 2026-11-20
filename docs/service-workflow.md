@@ -56,10 +56,11 @@ Relative paths resolve against the service configuration file.
    publisher tokens.
 
 Each service process has a separate GLAS manifest. For an interactive launch,
-`GLAS_MANIFEST` selects the manifest for `scripts/with-glas.py`; `GLAS_HOME`
-selects its native credential profile. The `examples/systemd/` units show the
-lugos-host deployment: systemd decrypts the host machine token into its private
-credential directory, and `host-runtime.py` launches GLAS with one receiver,
+`GLAS_MANIFEST` selects the manifest for `scripts/with-glas.py`. `GLAS_HOME`
+selects the GLAS state directory. The launcher uses the default native credential
+profile. The units in `examples/systemd/` show how lugos-host runs each service.
+Systemd decrypts the host machine token into its private credential directory,
+and `host-runtime.py` launches GLAS with one receiver,
 worker, or health manifest. The machine account must be allowed to read every
 referenced BWS entry before the service is restarted. The model and sandbox do
 not inherit these credentials.
