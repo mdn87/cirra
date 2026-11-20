@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import venv
 from pathlib import Path
 
 import pytest
@@ -18,18 +19,16 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/deploy-release.sh"
 @pytest.fixture
 def deployment(tmp_path):
     service = tmp_path / "service"
-    releases, state, tools = [tmp_path / n for n in ("releases", "state", "bin")]
-    for path in (service / "config", service / "staging", releases, state, tools):
+    releases, state = tmp_path / "releases", tmp_path / "state"
+    for path in (service / "config", service / "staging", releases, state):
         path.mkdir(parents=True)
     old, current = ["a" * 40, "b" * 40]
     for revision in (old, current):
         root = releases / revision
-        (root / ".venv/bin").mkdir(parents=True)
-        python = root / ".venv/bin/python"
-        # The real release contains an installed package. This disposable release
-        # loads the checkout with the test interpreter and uses the real SQLite driver.
-        python.write_text('#!/bin/sh\n[ "$1" = -I ] && shift\nexec "$TEST_PYTHON" "$@"\n')
-        python.chmod(0o755)
+        runtime = root / ".venv"
+        venv.EnvBuilder(symlinks=True, with_pip=False, system_site_packages=True).create(runtime)
+        site = next((runtime / "lib").glob("python*/site-packages"))
+        (site / "cirra.pth").write_text(str(SCRIPT.parents[1] / "src") + "\n")
         (root / "examples/systemd").mkdir(parents=True)
         (root / "examples/systemd/cirra-worker.service").write_text("[Service]\n")
     (service / "current").symlink_to(releases / current)
@@ -37,29 +36,24 @@ def deployment(tmp_path):
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     remote = tmp_path / "deploy.sh"
     remote.write_bytes(subprocess.check_output(["bash", str(SCRIPT), "--print-remote"]))
-    for name, body in {
-        "sudo": 'shift; exec "$@"',
-        "curl": "echo -n 200",
-        "systemctl": (
-            'echo "$*" >>"$FAKE_LOG"\n'
-            'case "$1:$2:$3" in\n'
-            " is-active:--quiet:cirra-audit-reads.service|"
-            "is-active:--quiet:cirra-health.timer) exit 3 ;;\n"
-            ' is-active:--quiet:cirra-worker.service) test "$WORKER_UP" = yes ;;\n'
-            " show:cirra-worker.service:--property=MainPID) echo 419 ;;\n"
-            " show:cirra-worker.service:--property=InvocationID) echo new-worker ;;\n"
-            " *) exit 0 ;;\nesac"
-        ),
-    }.items():
-        path = tools / name
-        path.write_text("#!/bin/sh\n" + body + "\n")
-        path.chmod(0o755)
+    stubs = tmp_path / "units.bash"
+    stubs.write_text(
+        'sudo() { shift; "$@"; }\n'
+        "curl() { echo -n 200; }\n"
+        "systemctl() {\n"
+        'echo "$*" >>"$FAKE_LOG"\n'
+        'case "$1:${2-}:${3-}" in\n'
+        " is-active:--quiet:cirra-audit-reads.service|"
+        "is-active:--quiet:cirra-health.timer) return 3 ;;\n"
+        ' is-active:--quiet:cirra-worker.service) test "$WORKER_UP" = yes ;;\n'
+        " show:cirra-worker.service:--property=MainPID) echo 419 ;;\n"
+        " show:cirra-worker.service:--property=InvocationID) echo new-worker ;;\n"
+        " *) return 0 ;;\nesac\n}\n"
+    )
     env = {
         **os.environ,
-        "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+        "BASH_ENV": str(stubs),
         "FAKE_LOG": str(tmp_path / "calls"),
-        "TEST_PYTHON": sys.executable,
-        "PYTHONPATH": str(SCRIPT.parents[1] / "src"),
         "WORKER_UP": "yes",
         "CIRRA_READY_TIMEOUT": "2",
     }
@@ -108,3 +102,5 @@ def test_readiness_requires_both_units_and_current_heartbeat(deployment, up, inv
     rollback, _, _, _ = deployment
     result = rollback(up, invocation)
     assert (result.returncode == 0) == success, (result.stdout, result.stderr)
+    if not success:
+        assert "post-restart readiness check" in result.stderr
