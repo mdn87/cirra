@@ -29,18 +29,13 @@ values were printed, and no credentials, jobs, service configuration or
 database schema were changed. Sanitized inspection evidence is retained
 locally under `.lugos-audit/audit-readiness/live-readiness.json`.
 
-## Next step: recover GitLab reader access
+## GitLab reader recovery
 
-Trace the configured reader reference through the Glas launch into a bounded
-provider read. Determine whether the 401 comes from expired or revoked
-credentials, incorrect injection, or repository access. The observed 401 does
-not distinguish those causes; this assessment did not inspect secret values
-or test a replacement credential.
-
-Success requires a successful GitLab reconciliation, healthy application
-status, and resolution of the pending health alert. Keep the route enabled;
-disabling it would hide lost coverage. Credential replacement or rotation
-requires the operator's authorization. No such action was attempted here.
+The initial health check reported a 401. To distinguish an expired token from
+a launch or repository-access problem, the recovery check followed the worker's
+configured Glas reference through to a GitLab read. Recovery required the
+enabled GitLab route to reconcile, the application health check to pass, and
+the alert service to resolve the outstanding alert.
 
 ### Recovery check at 06:49 UTC
 
@@ -57,9 +52,18 @@ the October reference, the worker restarted and wrote a fresh heartbeat.
 GitHub reconciliation succeeded. GitLab reconciliation still returned 401
 and the health alert remained open.
 
-The operator needs to update the value of the original entry with a sandbox
-reader that also grants **Job → Read**. Verify a nonempty job log from the
-worker host, then confirm fresh reconciliation and normal alert resolution.
+### Recovery verified at 07:01 UTC
+
+After the operator updated the original Bitwarden entry, the worker's machine
+account read the log for the same GitLab job, `17222748463`. GitLab returned
+HTTP 200 and the check read 512 bytes of plain text. The job appeared in
+pipeline `2953821104`, and a shallow fetch of `main` matched the revision
+reported by the branch API.
+
+The worker restarted at 07:00:02 UTC and reconciled GitLab and GitHub at
+07:00:07 UTC. The health check exited zero with no problems. At 07:01:05 UTC
+the alert service accepted the resolution with HTTP 202 and the pending alert
+marker cleared. GitHub PR audits 24, 25 and 28 still awaited import.
 
 ## Audit activation after recovery
 

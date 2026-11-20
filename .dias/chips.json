@@ -71,7 +71,7 @@
       "projectId": "cirra",
       "title": "Recover GitLab reader access",
       "summary": "Diagnose the provider authentication failure and restore reconciliation without hiding route coverage.",
-      "stage": "blocked",
+      "stage": "done",
       "sequence": 2,
       "prereqs": [
         "cirra:audit-readiness"
@@ -80,7 +80,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T05:47:35Z",
-        "updatedAt": "2026-11-20T06:50:15Z"
+        "updatedAt": "2026-11-20T07:02:22Z"
       },
       "evidence": [
         {
@@ -106,6 +106,51 @@
           "at": "2026-11-20T06:50:15Z",
           "kind": "stage-change",
           "message": "The worker can read the original vault entry only. It restarted on that entry. The operator must save a reader with job log access there."
+        },
+        {
+          "entryId": "cirra:gitlab-reader-recovery:verify-original",
+          "kind": "stage-change",
+          "at": "2026-11-20T06:59:04Z",
+          "message": "The operator reported updating the original vault entry. Verification resumed from the worker host."
+        },
+        {
+          "entryId": "cirra:gitlab-reader-recovery:trace-read",
+          "at": "2026-11-20T07:02:22Z",
+          "kind": "note",
+          "message": "The worker host read the previously rejected job log and fetched the main branch at the revision reported by GitLab."
+        },
+        {
+          "entryId": "cirra:gitlab-reader-recovery:done",
+          "at": "2026-11-20T07:02:22Z",
+          "kind": "stage-change",
+          "message": "Both providers reconciled after the worker restarted. Health reported zero problems and the alert service accepted the resolution."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:settle-pending-pr-audits",
+      "projectId": "cirra",
+      "title": "Settle three waiting pull request audits",
+      "summary": "Review the saved audit packets for three merged pull requests. Import valid reports or record why an obsolete audit was cancelled.",
+      "stage": "planned",
+      "sequence": 3,
+      "prereqs": [
+        "cirra:audit-readiness",
+        "cirra:gitlab-reader-recovery"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T07:02:22Z",
+        "updatedAt": "2026-11-20T07:02:22Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:settle-pending-pr-audits:created",
+          "at": "2026-11-20T07:02:22Z",
+          "kind": "created",
+          "message": "The live queue still has three pull request audits awaiting import after the worker recovered."
         }
       ]
     }
