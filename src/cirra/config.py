@@ -11,12 +11,14 @@ from cirra.audit import SEVERITIES, AuditPolicy, load_audit_policy
 from cirra.domain import CirraError, fields, number, string
 
 REVIEW_OUTPUTS = ("cirra/review", "cirra/code-review")
+DEFAULT_INTERMEDIATE_COMPARISONS = 32
 
 
 @dataclass(frozen=True)
 class MergeGate:
     branch: str
     block_at: str
+    max_intermediate_comparisons: int = DEFAULT_INTERMEDIATE_COMPARISONS
 
 
 class UniqueLoader(yaml.SafeLoader):
@@ -134,7 +136,12 @@ def load_config(path):
         number(limits["review_budget_usd"], "review_budget_usd", 0.01, 20)
     gate = None
     if "merge_gate" in reviewer:
-        settings = fields(reviewer["merge_gate"], ["branch", "block_at"], label="merge gate")
+        settings = fields(
+            reviewer["merge_gate"],
+            ["branch", "block_at"],
+            ["max_intermediate_comparisons"],
+            label="merge gate",
+        )
         branch = string(settings["branch"], "merge gate target branch", 255)
         if (
             settings["block_at"] not in SEVERITIES
@@ -151,7 +158,14 @@ def load_config(path):
             raise CirraError(
                 "merge gate needs GitHub, Claude findings, a severity and a pinned isolated check"
             )
-        gate = MergeGate(branch, settings["block_at"])
+        comparison_limit = number(
+            settings.get("max_intermediate_comparisons", DEFAULT_INTERMEDIATE_COMPARISONS),
+            "intermediate comparison limit",
+            0,
+            100,
+            integral=True,
+        )
+        gate = MergeGate(branch, settings["block_at"], comparison_limit)
     return Config(
         path=str(path),
         digest=hashlib.sha256(raw).hexdigest(),

@@ -8,6 +8,7 @@ from cirra.domain import CirraError, digest
 from cirra.policy import assess_checks
 from cirra.report import make_report
 from cirra.reviewer import PROTOCOL, FakeReviewer, validate_response
+from cirra.store import LostClaim
 
 
 def failed_review(outcome, message):
@@ -117,5 +118,15 @@ def review(provider, config, store, *, rereview=False, reviewer=None):
         report = make_report(
             snapshot, ci, result, identity, run_id, config, collection=provider.collection
         )
-        store.save_report(claim, report)
+        try:
+            store.save_report(claim, report)
+        except LostClaim:
+            # The attempt is durable. Retry only its final write after releasing this lease.
+            pass
+        else:
+            return report, reused
+    with store.lease(snapshot.change_key, config.claim_ttl_seconds, config.wait_seconds) as fresh:
+        if fresh.generation != claim.generation + 1:
+            raise LostClaim("another invocation acquired the change before report recovery")
+        store.save_report(fresh, report)
     return report, reused

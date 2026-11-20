@@ -38,6 +38,15 @@ def test_gate_policy_requires_real_review_and_a_pinned_observer(policy_data, tmp
         return load_config(path)
 
     assert read().merge_gate.branch == "main"
+    assert read().merge_gate.max_intermediate_comparisons == 32
+    for valid in (0, 2, 100):
+        data["reviewer"]["merge_gate"]["max_intermediate_comparisons"] = valid
+        assert read().merge_gate.max_intermediate_comparisons == valid
+    for invalid in (-1, 101, True, 1.5):
+        data["reviewer"]["merge_gate"]["max_intermediate_comparisons"] = invalid
+        with pytest.raises(CirraError, match="intermediate comparison limit"):
+            read()
+    del data["reviewer"]["merge_gate"]["max_intermediate_comparisons"]
     data["limits"]["max_findings"] = 0
     with pytest.raises(CirraError, match="gate"):
         read()
