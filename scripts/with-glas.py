@@ -10,7 +10,7 @@ DEFAULT = ["{python}", "-m", "cirra"]
 
 
 def main():
-    manifest = Path(os.environ.get("GLAS_MANIFEST", ROOT / "config/glas.local.json"))
+    manifest = Path(os.environ.get("GLAS_MANIFEST", ROOT / "config/glas.local.json")).resolve()
     candidates = (
         [Path(os.environ["GLAS_ROOT"])]
         if os.environ.get("GLAS_ROOT")
