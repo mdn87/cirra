@@ -278,6 +278,39 @@ def test_non_ascii_signature_is_an_authentication_failure_not_a_crash(route, tmp
         accept(route, raw, headers, SECRET, Queue(tmp_path))
 
 
+def test_unexpected_receiver_failure_has_safe_request_correlation(
+    route, tmp_path, monkeypatch, capsys
+):
+    raw, headers = delivery(identity="test-request")
+    server, thread = serve(route, tmp_path)
+    try:
+        client = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        client.request("POST", "/hooks/test", raw, headers)
+        accepted = json.loads(client.getresponse().read())
+        client.close()
+
+        def failed(*args):
+            raise RuntimeError("private-fixture-value")
+
+        monkeypatch.setattr(server.queue, "enqueue", failed)
+        client = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        client.request("POST", "/hooks/test", raw, headers)
+        response = client.getresponse()
+        assert response.status == 500
+        failure = json.loads(response.read())
+        client.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    log = capsys.readouterr().err
+    assert "private-fixture-value" not in log and SECRET not in log
+    success, error, response_log = (json.loads(line) for line in log.splitlines())
+    assert success["job_id"] == accepted["job_id"] and success["observed_at"]
+    assert success["admission"] == "accepted" and response_log["admission"] == "refused"
+    assert error["request_id"] == failure["request_id"] == response_log["request_id"]
+    assert error["duration_ms"] >= 0 and error["type"] == "RuntimeError"
+
+
 def serve(route, tmp_path, **attributes):
     server = WebhookServer(("127.0.0.1", 0), settings(route), tmp_path, lambda _: SECRET)
     for name, value in attributes.items():
@@ -332,6 +365,8 @@ def test_receiver_logs_one_line_per_request_without_headers_or_body(route, tmp_p
         server.shutdown()
         thread.join(timeout=5)
     lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    [line] = lines
+    assert line["duration_ms"] >= 0 and len(line["request_id"]) == 32
     assert {
         "event": "webhook_request",
         "method": "POST",
@@ -339,7 +374,7 @@ def test_receiver_logs_one_line_per_request_without_headers_or_body(route, tmp_p
         "status": 401,
         "delivery": "delivery-logged",
         "bytes": len(raw),
-    } in lines
+    }.items() <= line.items()
     assert SECRET not in json.dumps(lines) and "sha256" not in json.dumps(lines)
 
 
@@ -512,6 +547,28 @@ def test_processor_reuses_review_and_reconciles_lost_publication(
     assert first["state"] == "attention" and second["state"] == "done"
     assert first["run_id"] == second["run_id"] and len(calls) == publisher.writes == 1
     assert "token-not-sent-to-reviewer" not in canonical(calls)
+    from cirra.domain import ProviderAccessDenied
+
+    reads = iter([True, False])
+
+    def denied_after_review(*_):
+        if next(reads):
+            return True
+        raise ProviderAccessDenied("reader denied")
+
+    monkeypatch.setattr("cirra.worker.is_open", denied_after_review)
+    with pytest.raises(ProviderAccessDenied) as denied:
+        processor(route, {"change": 1})
+    assert denied.value.reader_refusal and not denied.value.before_execution
+    monkeypatch.setattr("cirra.worker.is_open", lambda *_: True)
+
+    def denied_for_publisher(_):
+        raise ProviderAccessDenied("publisher denied")
+
+    monkeypatch.setattr(processor, "app_token", denied_for_publisher)
+    with pytest.raises(ProviderAccessDenied) as denied:
+        processor(route, {"change": 1})
+    assert not getattr(denied.value, "reader_refusal", False)
 
 
 def test_daily_admission_limit_survives_restart_without_losing_queued_work(route, tmp_path):

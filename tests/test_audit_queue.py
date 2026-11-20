@@ -49,6 +49,16 @@ def states(queue):
     return [(job["identity"]["head"], job["state"]) for job in queue.jobs()]
 
 
+def test_polling_unchanged_job_preserves_its_timestamp_and_history(env):
+    queue, _, _, pr = env
+    identifier = pr(1, head(1), T0)["job_id"]
+    record = queue.read(identifier)
+    history = queue.directory / "history" / identifier
+    original = set(history.iterdir())
+    assert queue.update(identifier, state=record["state"]) == record
+    assert set(history.iterdir()) == original
+
+
 def test_burst_of_pushes_runs_one_audit_of_the_last_head(env):
     queue, store, _, pr = env
     for offset, revision in enumerate((1, 2, 3)):

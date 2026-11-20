@@ -28,14 +28,14 @@ class LimitedOpener:
     "status, headers, delay",
     [
         (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "+1800"}, 1800),
-        (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "+999999"}, 3600),
+        (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "+999999"}, 999999),
         (429, {"Retry-After": "120"}, 120),
         (429, {}, 60),
     ],
 )
 def test_github_rate_limit_carries_the_provider_reset_time(status, headers, delay):
     # C001/C012: a rate limit is not an ordinary failure; it says when to retry.
-    # Resets are capped at one hour, GitHub's quota window.
+    # A provider-directed reset remains the minimum even for a long outage.
     now = time.time()
     headers = {
         key: str(int(now) + int(value[1:])) if value.startswith("+") else value
@@ -47,7 +47,7 @@ def test_github_rate_limit_carries_the_provider_reset_time(status, headers, dela
     assert now + delay - 2 <= raised.value.retry_at <= time.time() + delay + 1
 
 
-def test_rate_limited_job_waits_for_reset_without_spending_an_attempt(tmp_path):
+def test_rate_limited_job_waits_for_reset_without_spending_an_attempt(tmp_path, monkeypatch):
     route = SimpleNamespace(
         name="repo",
         digest="v1",
@@ -61,18 +61,48 @@ def test_rate_limited_job_waits_for_reset_without_spending_an_attempt(tmp_path):
     config = SimpleNamespace(
         routes={"repo": route}, max_attempts=3, max_jobs_per_day=30, retry_seconds=30
     )
-    reset = time.time() + 1800
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
 
     def limited(*_):
-        raise GitHubRateLimited("GitHub rate limit reached (HTTP 403); retry later", reset)
+        refusal = GitHubRateLimited("GitHub rate limit reached (HTTP 403); retry later", now + 1800)
+        refusal.before_execution = True
+        raise refusal
 
     for _ in range(5):
         job = work_once(config, queue, limited)
         assert job["state"] == "retry"
         assert job["attempts"] == 0
-        assert job["not_before"] >= reset
-        job["not_before"] = 0  # simulate the reset passing
-        queue.save(job)
+        assert job["not_before"] >= now + 1800
+        assert work_once(config, queue, limited) is None
+        assert queue.usage()["attempts"] == 0
+        now = job["not_before"] + 1
+
+
+def test_gitlab_reader_preserves_reset_and_distinguishes_credential_refusal():
+    from cirra.domain import ProviderAccessDenied, ProviderRateLimited
+    from cirra.transport import JSONClient
+
+    until = int(time.time()) + 86400
+    client = JSONClient(
+        "https://gitlab.com", {}, opener=LimitedOpener(429, {"RateLimit-Reset": str(until)})
+    )
+    with pytest.raises(ProviderRateLimited) as refusal:
+        client.request("GET", "/api/v4/projects/42")
+    assert refusal.value.retry_at == until
+    from email.utils import formatdate
+
+    client = JSONClient(
+        "https://gitlab.com",
+        {},
+        opener=LimitedOpener(429, {"Retry-After": formatdate(until, usegmt=True)}),
+    )
+    with pytest.raises(ProviderRateLimited) as refusal:
+        client.request("GET", "/api/v4/projects/42")
+    assert refusal.value.retry_at == until
+    client = JSONClient("https://gitlab.com", {}, opener=LimitedOpener(403, {}))
+    with pytest.raises(ProviderAccessDenied):
+        client.request("GET", "/api/v4/projects/42")
 
 
 def health_state(tmp_path, *, heartbeat_age=10, attention_age=None, reconcile=None, used=1):

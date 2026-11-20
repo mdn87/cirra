@@ -1,19 +1,28 @@
 """Bounded JSON transport. Callers construct routes; redirects never carry credentials."""
 
 import json
+import random
 import re
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, build_opener
 
-from cirra.domain import CirraError, canonical, number
-from cirra.github import NoRedirect
+from cirra.domain import CirraError, ProviderAccessDenied, ProviderRateLimited, canonical, number
+from cirra.github import NoRedirect, rate_limit_reset
 from cirra.reviewer import unique_object
 
 
 class RemoteUncertain(CirraError):
     """A write may have succeeded. Reconcile before another write."""
+
+
+class ReadUnavailable(CirraError):
+    """A read exhausted its transport retries and may be retried later."""
+
+
+class RequestNotSent(ReadUnavailable):
+    """The local deadline expired before sending the request."""
 
 
 class JSONClient:
@@ -50,7 +59,7 @@ class JSONClient:
         for attempt in range(3 if method == "GET" else 1):
             remaining = self.deadline - time.monotonic()
             if remaining <= 0:
-                raise CirraError("provider request deadline exceeded")
+                raise RequestNotSent("provider request deadline exceeded before sending")
             try:
                 with self.opener.open(request, timeout=min(10, remaining)) as response:
                     chunks, count = [], 0
@@ -79,11 +88,31 @@ class JSONClient:
                     return data, more
             except HTTPError as exc:
                 status = exc.code
+                limited = (
+                    status == 429
+                    or status == 403
+                    and (
+                        exc.headers.get("X-RateLimit-Remaining") == "0"
+                        or exc.headers.get("RateLimit-Remaining") == "0"
+                        or "Retry-After" in exc.headers
+                    )
+                )
+                retry_at = rate_limit_reset(exc.headers) if limited else None
                 exc.close()
+                if limited:
+                    raise ProviderRateLimited(
+                        f"provider rate limit (HTTP {status})", retry_at
+                    ) from None
+                if status in (401, 403):
+                    raise ProviderAccessDenied(
+                        f"provider refused request (HTTP {status}); check permissions or target"
+                    ) from None
                 if method != "GET" and status >= 500:
                     raise RemoteUncertain(
                         "provider write outcome is uncertain; reconcile"
                     ) from None
+                if method == "GET" and status in (500, 502, 503, 504) and attempt == 2:
+                    raise ReadUnavailable(f"provider read unavailable (HTTP {status})") from None
                 if status not in (500, 502, 503, 504) or attempt == 2:
                     raise CirraError(
                         f"provider refused request (HTTP {status}); check permissions or target"
@@ -94,8 +123,13 @@ class JSONClient:
                         "provider write outcome is uncertain; reconcile"
                     ) from None
                 if attempt == 2:
-                    raise CirraError("provider read failed after bounded retries") from None
-            time.sleep(0.25 * (attempt + 1))
+                    raise ReadUnavailable("provider read failed after bounded retries") from None
+            time.sleep(
+                min(
+                    random.uniform(0.15, 0.35) * 2**attempt,
+                    max(0, self.deadline - time.monotonic()),
+                )
+            )
         raise CirraError("provider read did not complete")
 
 
