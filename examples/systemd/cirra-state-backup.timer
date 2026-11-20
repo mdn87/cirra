@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify a daily off-host Cirra recovery point
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 UTC
+Persistent=true
+AccuracySec=1min
+Unit=cirra-state-backup.service
+
+[Install]
+WantedBy=timers.target
