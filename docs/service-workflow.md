@@ -584,12 +584,10 @@ sudo systemctl enable --now cirra-audit-reads.service
 curl -s http://127.0.0.1:8797/healthz
 ```
 
-The unit binds 127.0.0.1:8797 beside the receiver on 8796; nothing is forwarded
-through Tailscale Funnel. `scripts/deploy-release.sh` restarts only the receiver
-and the worker, so after a deployment the route keeps serving the previous
-release until it is restarted too; adding it to the script's restart list is a
-separate decision, to be made once the unit is installed. Taskmaster reads the
-route on the same host (`taskmaster/docs/work-view-concept.md`, section 11).
+The unit listens on loopback port 8797 beside the receiver on port 8796.
+Taskmaster reads the route on the same host. The deployment script restarts
+the audit reader when it is active and checks its systemd status during
+readiness verification. See `taskmaster/docs/work-view-concept.md`, section 11.
 
 ### Host recovery facts
 
