@@ -48,20 +48,14 @@ anonymous reads; an authenticated reader uses a separate credential selected
 with `--token-env` for review and `--reader-token-env` for publication. Existing
 `.env` files are not loaded automatically.
 
-Load the PEM only around the publishing command and restore any previous
-process environment value afterward:
+Store the PEM as a BWS secret. Map it to `CIRRA_GITHUB_APP_PRIVATE_KEY_PEM` in a separate
+ignored GLAS publication manifest, then publish through GLAS:
 
 ```powershell
-$previousAppKey = [Environment]::GetEnvironmentVariable('CIRRA_GITHUB_APP_KEY', 'Process')
-try {
-    $env:CIRRA_GITHUB_APP_KEY = Get-Content -LiteralPath $keyPath -Raw
-    & ./.venv/Scripts/cirra.exe publish --run '<run-id>' --config $policyPath `
-        --state-dir $statePath --publisher-id $appId `
-        --installation-id $installationId --app-key-env CIRRA_GITHUB_APP_KEY
-    if ($LASTEXITCODE -ne 0) { throw 'Inspect the publication receipt before retrying.' }
-} finally {
-    [Environment]::SetEnvironmentVariable('CIRRA_GITHUB_APP_KEY', $previousAppKey, 'Process')
-}
+$env:GLAS_MANIFEST = 'config/glas.publisher.local.json'
+& ./.venv/Scripts/python.exe scripts/with-glas.py publish --run '<run-id>' `
+    --config $policyPath --state-dir $statePath --publisher-id $appId `
+    --installation-id $installationId --app-key-env CIRRA_GITHUB_APP_PRIVATE_KEY_PEM
 ```
 
 GitHub receives a neutral check with the exact examined revisions, findings,

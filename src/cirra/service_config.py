@@ -172,19 +172,14 @@ def load_service(path):
             fields(
                 publisher,
                 ["app_id", "installation_id"],
-                ["private_key_file", "private_key_env"],
+                ["private_key_env"],
                 label="publisher",
             )
-            if ("private_key_file" in publisher) == ("private_key_env" in publisher):
-                raise CirraError("GitHub publisher requires exactly one private-key source")
+            if "private_key_env" not in publisher:
+                raise CirraError("GitHub publisher requires private_key_env from GLAS")
             for key in ("app_id", "installation_id"):
                 number(publisher[key], key, 1, 2**63 - 1, integral=True)
-            if "private_key_env" in publisher:
-                env_name(publisher["private_key_env"])
-            else:
-                publisher["private_key_file"] = str(
-                    local_path(path.parent, publisher["private_key_file"])
-                )
+            env_name(publisher["private_key_env"])
         else:
             fields(
                 publisher, ["principal_id", "token_env", "permission_receipt"], label="publisher"

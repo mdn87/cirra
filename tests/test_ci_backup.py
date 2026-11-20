@@ -57,7 +57,7 @@ def test_ci_only_route_requires_observer_but_not_automatic_reviewer(tmp_path, po
         "repository_id": "42",
         "policy": "policy.yaml",
         "webhook_secret_env": "HOOK",
-        "publisher": {"app_id": 1, "installation_id": 2, "private_key_file": "app.pem"},
+        "publisher": {"app_id": 1, "installation_id": 2, "private_key_env": "APP_PEM"},
         "review_enabled": False,
         "observer": "observer.yaml",
         "witness_key_env": "KEY",

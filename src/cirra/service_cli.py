@@ -1,7 +1,6 @@
-"""Service CLI entry points; no implicit environment-file loading or public bind."""
+"""Service CLI entry points; credentials come from the launched process."""
 
 import json
-import os
 import signal
 import threading
 from pathlib import Path
@@ -26,9 +25,6 @@ def register(commands):
         parser = commands.add_parser(name, help=help_text)
         parser.add_argument("--service-config", type=Path, required=True)
         parser.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
-        parser.add_argument(
-            "--env-file", type=Path, help="explicit file of selected credential values"
-        )
         if name == "serve-webhooks":
             parser.add_argument("--port", type=int, default=8787)
         elif name == "worker":
@@ -136,23 +132,6 @@ def run(args, credential, capture):
         )
         print(json.dumps(result))
         return 0
-    if args.env_file:
-        names = set()
-        for route in config.routes.values():
-            if args.command == "serve-webhooks":
-                names.add(route.secret_env)
-            elif args.command == "sync":
-                names.add(route.reader_env)
-            else:
-                names.update(
-                    [
-                        route.reader_env,
-                        route.witness_env,
-                        route.publisher.get("token_env"),
-                        route.publisher.get("private_key_env"),
-                    ]
-                )
-        credential = credential_file(args.env_file, names - {None})
     if args.command == "sync":
         from cirra.reconcile import sync
 
@@ -201,37 +180,3 @@ def run(args, credential, capture):
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-
-
-def credential_file(path, names):
-    """Read only explicitly selected values; never execute shell syntax or expand variables."""
-    raw = Path(path).read_bytes()
-    if len(raw) > 65536:
-        raise CirraError("credential file exceeds 64 KiB")
-    values = {}
-    for line in raw.decode("utf-8-sig").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, separator, value = line.partition("=")
-        key = key.strip()
-        if key not in names:
-            continue
-        if not separator or key in values:
-            raise CirraError("selected credential file entries must be unique NAME=value lines")
-        value = value.strip()
-        if len(value) >= 2 and value[0] in ("'", '"') and value[-1] == value[0]:
-            value = value[1:-1]
-        values[key] = value
-
-    def credential(name):
-        if name is None:
-            return None
-        if name not in names:
-            raise CirraError("credential is not selected for this service process")
-        value = os.environ.get(name) or values.get(name)
-        if not value:
-            raise CirraError("selected service credential is empty or unset")
-        return value
-
-    return credential

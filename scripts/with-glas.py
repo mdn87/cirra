@@ -10,15 +10,15 @@ DEFAULT = ["{python}", "-m", "cirra"]
 
 
 def main():
-    manifest = ROOT / "config/glas.local.json"
+    manifest = Path(os.environ.get("GLAS_MANIFEST", ROOT / "config/glas.local.json"))
     candidates = (
         [Path(os.environ["GLAS_ROOT"])]
         if os.environ.get("GLAS_ROOT")
         else [p / n for p in ROOT.parents for n in ("lugos/glas", "glas")]
     )
     glas = next((p for p in candidates if (p / "src/glas/cli.py").is_file()), None)
-    if glas is None or not manifest.is_file():
-        print("Glas checkout or local reference manifest is missing.", file=sys.stderr)
+    if not manifest.is_file():
+        print("Glas reference manifest is missing.", file=sys.stderr)
         return 1
     python = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     app_python = str(python) if python.is_file() else sys.executable
@@ -32,15 +32,25 @@ def main():
         print("Supply a trusted command after --exec.", file=sys.stderr)
         return 2
     env = os.environ.copy()
-    env["GLAS_HOME"] = str(glas / ".glas")
-    if (ROOT / "src").is_dir():
-        env["PYTHONPATH"] = str(ROOT / "src") + (
-            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
-        )
+    env.pop("BWS_ACCESS_TOKEN", None)
+    if "GLAS_HOME" not in env and glas is not None:
+        env["GLAS_HOME"] = str(glas / ".glas")
+    sources = [str(ROOT / "src")]
+    if glas is not None:
+        sources.append(str(glas / "src"))
+    if env.get("PYTHONPATH"):
+        sources.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(sources)
     command = [c[:-4] if os.name != "nt" and c in ("npm.cmd", "pnpm.cmd") else c for c in command]
+    glas_python = os.environ.get("GLAS_PYTHON")
+    if not glas_python:
+        glas_python = (
+            str(glas / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+            if glas is not None else sys.executable
+        )
     return subprocess.call(
         [
-            str(glas / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
+            glas_python,
             "-m",
             "glas",
             "run",

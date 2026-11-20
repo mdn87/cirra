@@ -249,7 +249,7 @@ def test_observer_pins_detects_and_repins_a_stale_definition_digest(tmp_path, po
                 "repository_id": "42",
                 "policy": "policy.yaml",
                 "webhook_secret_env": "HOOK_SECRET",
-                "publisher": {"app_id": 5, "installation_id": 6, "private_key_file": "app.pem"},
+                "publisher": {"app_id": 5, "installation_id": 6, "private_key_env": "APP_PEM"},
                 "observer": "observer.yaml",
                 "witness_key_env": "WITNESS_KEY",
             }
