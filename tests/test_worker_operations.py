@@ -164,6 +164,53 @@ def test_capacity_refusal_oldest_age_and_delivery_objectives(tmp_path):
     assert queue_metrics(queue)["oldest_eligible_seconds"] == 0
 
 
+def test_large_legacy_census_is_bounded_and_ingress_reclaims_at_most_one(tmp_path, monkeypatch):
+    queue, target = Queue(tmp_path, 521), route()
+    for index in range(520):
+        (queue.directory / f"{index:064x}.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(queue, "scan", lambda: pytest.fail("ingress loaded the full queue"))
+    with pytest.raises(CirraError, match="capacity"):
+        queue.enqueue(target, hint("first"))
+    assert queue.maintain() is False
+    assert queue.maintain() is True
+    added = queue.enqueue(target, hint("first"))
+    path = queue.directory / (added["job_id"] + ".json")
+    job = queue.review_record(path)
+    job["state"] = "done"
+    queue.save(job)
+    reads = []
+    read = queue.review_record
+    monkeypatch.setattr(queue, "review_record", lambda p: (reads.append(p), read(p))[1])
+    assert not queue.enqueue(target, hint("next"))["duplicate"]
+    assert reads == [path] and queue.slots.count() == 521
+
+
+@pytest.mark.parametrize("is_reader", [True, False])
+def test_refusal_after_execution_charges_once_and_pauses_only_its_credential(tmp_path, is_reader):
+    from contextlib import nullcontext
+
+    from cirra.worker import using_reader
+
+    queue = Queue(tmp_path)
+    first, second = route(), route("second")
+    config = SimpleNamespace(
+        routes={r.name: r for r in (first, second)},
+        max_attempts=2,
+        retry_seconds=1,
+        max_jobs_per_day=3,
+    )
+    queue.enqueue(first, hint("first"))
+    queue.enqueue(second, hint("second"))
+
+    def reject(*_):
+        with using_reader() if is_reader else nullcontext():
+            raise ProviderAccessDenied("provider denied")
+
+    assert work_once(config, queue, reject)["state"] == "attention"
+    assert queue.usage()["attempts"] == 1
+    assert [j["route"] for j in queue.pending(config.routes)] == ([] if is_reader else ["second"])
+
+
 def test_cold_evidence_lists_only_completed_old_source_and_immutable_records(tmp_path):
     queue, target = Queue(tmp_path), route()
     queue.enqueue(target, hint("one"))

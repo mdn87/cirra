@@ -62,6 +62,18 @@ exec 9>"$STAGING/deploy.lock"
 flock -n 9 || { echo "another deploy or rollback is running on this host" >&2; exit 1; }
 current() { readlink -f "$SERVICE/current"; }
 switch_to() { ln -sfn "$1" "$SERVICE/current.next" && mv -T "$SERVICE/current.next" "$SERVICE/current"; }
+check_release_state() {
+  local guard="$SERVICE/worker-state-guard.py"
+  if [ ! -f "$guard" ]; then guard="$(current)/src/cirra/queue_format.py"; fi
+  if [ ! -f "$guard" ]; then guard="$1/src/cirra/queue_format.py"; fi
+  if [ -f "$guard" ]; then
+    python3 -I -B "$guard" "$STATE" "$1" || return 1
+  elif [ -e "$STATE/worker-queue-format.json" ]; then
+    echo "Live worker queue has a format marker but its compatibility guard is missing." >&2
+    return 1
+  fi
+  check_schema "$1"
+}
 check_schema() {
   "$1/.venv/bin/python" -I -B - "$STATE/cirra.sqlite3" <<'PY'
 import sqlite3, sys
@@ -75,6 +87,29 @@ if path.exists():
         sys.exit(f"Live schema {live} differs from release schema {SCHEMA_VERSION}. "
                  "Preserve the database and select a compatible release or planned migration.")
 PY
+}
+install_queue_guard() {
+  local from=$1 to=$2 guard="$SERVICE/worker-state-guard.py" source unit fragment dropin changed=0
+  source="$to/src/cirra/queue_format.py"
+  if [ ! -f "$source" ]; then source="$from/src/cirra/queue_format.py"; fi
+  [ -f "$source" ] || return 0
+  # This guard and its drop-ins survive switching back to historical units.
+  if ! cmp -s "$source" "$guard"; then
+    install -m 0644 "$source" "$guard.next" && mv -T "$guard.next" "$guard" || return 1
+  fi
+  printf '[Service]\nExecStartPre=/usr/bin/python3 -I -B "%s" "%s" "%s/current"\n' \
+    "$guard" "$STATE" "$SERVICE" > "$STAGING/worker-state-guard.conf" || return 1
+  for unit in cirra-worker.service cirra-webhook.service; do
+    fragment=$(systemctl show "$unit" --property=FragmentPath --value) || return 1
+    [ -n "$fragment" ] || continue
+    dropin="${CIRRA_SYSTEMD_UNIT_DIR:-/etc/systemd/system}/$unit.d"
+    if ! cmp -s "$STAGING/worker-state-guard.conf" "$dropin/40-worker-state.conf"; then
+      sudo -n install -d -m 0755 "$dropin" || return 1
+      sudo -n install -m 0644 "$STAGING/worker-state-guard.conf" "$dropin/40-worker-state.conf" || return 1
+      changed=1
+    fi
+  done
+  if [ "$changed" = 1 ]; then sudo -n systemctl daemon-reload || return 1; fi
 }
 sync_units() {
   local from=$1 to=$2 unit installed old desired
@@ -153,7 +188,7 @@ PY
 
 restore_release() {
   local failed=$1 prior=$2 config_backup=$3 result=0
-  check_schema "$prior" || { echo "Rollback refused to preserve current state." >&2; return 1; }
+  check_release_state "$prior" || { echo "Rollback refused to preserve current state." >&2; return 1; }
   sync_units "$failed" "$prior" || {
     echo "Could not restore every managed unit. Continuing with release recovery." >&2
     result=1
@@ -169,7 +204,8 @@ if [ "$MODE" = rollback ]; then
   CUR=$(current)
   CURSHA=$(basename "$CUR")
   [ "$CUR" != "$R" ] || { echo "release $SHA is already current" >&2; exit 1; }
-  check_schema "$R"
+  check_release_state "$R"
+  install_queue_guard "$CUR" "$R"
   saved=$(mktemp -d "$STAGING/config-at-rollback-XXXXXXXX")
   cp -a "$CONFIG/." "$saved/"
   if ! sync_units "$CUR" "$R"; then
@@ -206,7 +242,7 @@ if [ ! -f "$R/.installation-complete" ] && [ "$R" != "$PREV" ]; then
   touch "$R/.installation-complete"
 fi
 PY=$R/.venv/bin/python
-check_schema "$R"
+check_release_state "$R"
 check_schema "$PREV"
 
 if [ "$TESTS" = 1 ]; then
@@ -224,7 +260,7 @@ else
   }
 fi
 
-if ! sync_units "$PREV" "$R"; then
+if ! install_queue_guard "$PREV" "$R" || ! sync_units "$PREV" "$R"; then
   sync_units "$R" "$PREV" || true
   cp -a "$STAGING/config-before-$SHA/." "$CONFIG/"
   exit 1

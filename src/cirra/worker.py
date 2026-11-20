@@ -5,6 +5,7 @@ import os
 import random
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from cirra import gitlab, provenance
@@ -31,6 +32,7 @@ from cirra.publish import (
     verify_gitlab_permission_receipt,
     write_receipt,
 )
+from cirra.queue_format import activate
 from cirra.report import export_report
 from cirra.review_gate import RequiredReviewCheck, merge_revision
 from cirra.store import Store
@@ -38,6 +40,16 @@ from cirra.store import Store
 # Full-audit schedule checks read the default branch head, so they run once an
 # hour; `schedule_days` and `max_age_days` decide whether a check queues work.
 AUDIT_SCHEDULE_SECONDS = 3600
+
+
+@contextmanager
+def using_reader(*, preflight=False):
+    try:
+        yield
+    except (ProviderAccessDenied, ProviderRateLimited) as exc:
+        exc.reader_refusal = True
+        exc.before_execution = preflight
+        raise
 
 
 def is_open(route, change, reader):
@@ -204,7 +216,7 @@ class Processor:
         branch = hint.get("branch")
         if not branch and (type(change) is not int or change < 1):
             raise CirraError("queued work is missing a valid change number")
-        try:
+        with using_reader(preflight=True):
             if branch:
                 from cirra.reconcile import capture_branch
 
@@ -215,9 +227,6 @@ class Processor:
                 data = self.capture(
                     route.provider, route.repository, change, route.policy, token=reader
                 )
-        except (ProviderAccessDenied, ProviderRateLimited) as exc:
-            exc.before_execution = True
-            raise
         if not branch:
             self.audit_requests = self.request_audits(route, change, data, reader)
         if data["change"]["repository_id"] != route.repository_id:
@@ -280,15 +289,16 @@ class Processor:
                 return {"state": "done", "ci": ci_result, "review": "disabled"}
             # Re-read native CI and the snapshot. GitHub receipts attest a native
             # check; GitLab receipts add explicitly separate observer evidence.
-            refreshed = self.capture(
-                route.provider,
-                route.repository,
-                change,
-                route.policy,
-                token=reader,
-                witness=receipt_path,
-                witness_key=witness_key,
-            )
+            with using_reader():
+                refreshed = self.capture(
+                    route.provider,
+                    route.repository,
+                    change,
+                    route.policy,
+                    token=reader,
+                    witness=receipt_path,
+                    witness_key=witness_key,
+                )
             if refreshed["change"] != data["change"]:
                 raise CirraError("change moved during observation; refresh and retry")
             data = refreshed
@@ -307,11 +317,12 @@ class Processor:
                 ).http
 
             def current_merge():
-                return merge_revision(
-                    GitHubClient(route.repository, token=reader),
-                    data["change"],
-                    route.policy.merge_gate.branch,
-                )
+                with using_reader():
+                    return merge_revision(
+                        GitHubClient(route.repository, token=reader),
+                        data["change"],
+                        route.policy.merge_gate.branch,
+                    )
 
             gate = RequiredReviewCheck(
                 self.directory, route, data["change"], gate_transport, current_merge
@@ -328,7 +339,9 @@ class Processor:
                 "ci": ci_result,
             }
         # A PR can close while tests/review run. It must still be open before a write.
-        if not is_open(route, change, reader):
+        with using_reader():
+            still_open = is_open(route, change, reader)
+        if not still_open:
             return {
                 "state": "skipped",
                 "run_id": report["run_id"],
@@ -336,9 +349,10 @@ class Processor:
             }
 
         def refresh():
-            latest = self.capture(
-                route.provider, route.repository, change, route.policy, token=reader
-            )
+            with using_reader():
+                latest = self.capture(
+                    route.provider, route.repository, change, route.policy, token=reader
+                )
             if receipt_path:
                 latest = provenance.apply(latest, receipt_path, witness_key)
             return FixtureProvider.from_data(latest, route.policy)
@@ -440,7 +454,9 @@ def work_once(config, queue, process):
                 else time.time() + 900
             )
             preflight = getattr(exc, "before_execution", False)
-            queue.defer_route(route, until, reader=preflight)
+            queue.defer_route(
+                route, until, reader=preflight or getattr(exc, "reader_refusal", False)
+            )
             if preflight:
                 queue.return_unused_attempt(reservation)
             if limited:
@@ -479,8 +495,28 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
     # The OS releases this lock after process death. An abandoned running job
     # resumes through the existing review/publisher recovery mechanisms.
     with change_lock(queue.directory / "locks", "worker", 0):
+        activate(queue.directory.parent)
         next_reconcile = 0
         while not stopped.is_set():
+            try:
+                ready = queue.maintain()
+            except (CirraError, OSError, ValueError) as exc:
+                print(
+                    json.dumps(
+                        {
+                            "level": "error",
+                            "operation": "maintain_queue",
+                            "observed_at": utc_now(),
+                            "type": type(exc).__name__,
+                        }
+                    ),
+                    flush=True,
+                )
+                ready = True  # Keep serving already accepted work while maintenance retries.
+            if not ready:
+                heartbeat(queue)
+                stopped.wait(0.05)
+                continue
             interval = getattr(config, "reconcile_seconds", 0)
             if interval and time.monotonic() >= next_reconcile:
                 from cirra.reconcile import sync
@@ -511,6 +547,12 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                                 "error",
                             )
                         }
+                        | {
+                            "operation": "process_review",
+                            "level": {"attention": "error", "retry": "warning"}.get(
+                                job["state"], "info"
+                            ),
+                        }
                     ),
                     flush=True,
                 )
@@ -526,6 +568,8 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                         json.dumps(
                             {
                                 "audit_error": message,
+                                "level": "error",
+                                "operation": "audit_pass",
                                 "pass_id": pass_id,
                                 "observed_at": utc_now(),
                                 "duration_ms": round(1000 * (time.monotonic() - start)),
@@ -551,6 +595,10 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                                     )
                                 },
                                 "route": audit_job["context"].get("route"),
+                                "operation": "process_audit",
+                                "level": "error"
+                                if audit_job["state"] in ("failed", "attention")
+                                else "info",
                                 "pass_id": pass_id,
                                 "duration_ms": round(1000 * (time.monotonic() - start)),
                             }

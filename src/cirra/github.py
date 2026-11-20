@@ -56,10 +56,10 @@ def rate_limit_reset(headers, now=None):
                 delay = int(retry_after)
             except ValueError:
                 delay = parsedate_to_datetime(retry_after).timestamp() - now
-            return now + min(max(delay, 1), 3600)
+            return now + max(delay, 1)
         reset = headers.get("X-RateLimit-Reset") or headers.get("RateLimit-Reset")
         if reset is not None:
-            return min(max(int(reset), now + 1), now + 3600)
+            return max(int(reset), now + 1)
     except (TypeError, ValueError, OverflowError, OSError):
         pass
     return now + 60
