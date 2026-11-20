@@ -43,6 +43,9 @@ def deployment(tmp_path):
         "systemctl() {\n"
         'echo "$*" >>"$FAKE_LOG"\n'
         'case "$1:${2-}:${3-}" in\n'
+        ' restart:*) touch "$FAKE_LOG.restarted" ;;\n'
+        " show:*:--property=FragmentPath) "
+        'test "$FAIL_RESTORE" != yes || test ! -e "$FAKE_LOG.restarted" ;;\n'
         " is-active:--quiet:cirra-audit-reads.service|"
         "is-active:--quiet:cirra-health.timer) return 3 ;;\n"
         ' is-active:--quiet:cirra-worker.service) test "$WORKER_UP" = yes ;;\n'
@@ -58,7 +61,7 @@ def deployment(tmp_path):
         "CIRRA_READY_TIMEOUT": "2",
     }
 
-    def rollback(up=True, invocation="new-worker"):
+    def rollback(up=True, invocation="new-worker", fail_restore=False):
         (state / "worker-status.json").write_text(
             json.dumps({"state": "running", "pid": 419, "invocation_id": invocation})
         )
@@ -76,7 +79,11 @@ def deployment(tmp_path):
                 str(state),
                 "8796",
             ],
-            env={**env, "WORKER_UP": "yes" if up else "no"},
+            env={
+                **env,
+                "WORKER_UP": "yes" if up else "no",
+                "FAIL_RESTORE": "yes" if fail_restore else "no",
+            },
             text=True,
             capture_output=True,
             timeout=20,
@@ -104,3 +111,15 @@ def test_readiness_requires_both_units_and_current_heartbeat(deployment, up, inv
     assert (result.returncode == 0) == success, (result.stdout, result.stderr)
     if not success:
         assert "post-restart readiness check" in result.stderr
+
+
+def test_failed_unit_restore_still_restores_release_and_configuration(deployment):
+    rollback, service, _, current = deployment
+    (service / "config/setting").write_text("current")
+    previous = service / "staging" / ("config-before-" + current.name)
+    previous.mkdir()
+    (previous / "setting").write_text("previous")
+    result = rollback(up=False, fail_restore=True)
+    assert result.returncode and "Could not restore every managed unit" in result.stderr
+    assert (service / "current").resolve() == current
+    assert (service / "config/setting").read_text() == "current"

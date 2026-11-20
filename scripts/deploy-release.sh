@@ -131,6 +131,19 @@ PY
   return 1
 }
 
+restore_release() {
+  local failed=$1 prior=$2 config_backup=$3 result=0
+  check_schema "$prior" || { echo "Rollback refused to preserve current state." >&2; return 1; }
+  sync_units "$failed" "$prior" || {
+    echo "Could not restore every managed unit. Continuing with release recovery." >&2
+    result=1
+  }
+  cp -a "$config_backup/." "$CONFIG/" || { echo "Could not restore configuration." >&2; result=1; }
+  switch_to "$prior" || { echo "Could not restore the release link." >&2; return 1; }
+  restart_and_check || { echo "The restored release also failed readiness." >&2; result=1; }
+  return "$result"
+}
+
 if [ "$MODE" = rollback ]; then
   [ -d "$R/.venv" ] || { echo "release $SHA is not installed" >&2; exit 1; }
   CUR=$(current)
@@ -149,11 +162,7 @@ if [ "$MODE" = rollback ]; then
   fi
   switch_to "$R"
   if ! restart_and_check; then
-    check_schema "$CUR"
-    sync_units "$R" "$CUR"
-    cp -a "$saved/." "$CONFIG/"
-    switch_to "$CUR"
-    restart_and_check || echo "restored release also failed readiness" >&2
+    restore_release "$R" "$CUR" "$saved" || echo "Rollback recovery requires attention." >&2
     exit 1
   fi
   echo "rolled back from $CURSHA to $SHA"
@@ -202,12 +211,8 @@ if ! sync_units "$PREV" "$R"; then
 fi
 switch_to "$R"
 if ! restart_and_check; then
-  check_schema "$PREV" || { echo "Rollback refused to preserve current state." >&2; exit 1; }
   echo "release $SHA failed to start; restoring configuration and $PREV" >&2
-  sync_units "$R" "$PREV"
-  cp -a "$STAGING/config-before-$SHA/." "$CONFIG/"
-  switch_to "$PREV"
-  restart_and_check || true
+  restore_release "$R" "$PREV" "$STAGING/config-before-$SHA" || echo "Deployment recovery requires attention." >&2
   exit 1
 fi
 echo "deployed $SHA (previous: $(basename "$PREV"))"
