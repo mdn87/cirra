@@ -172,7 +172,7 @@
       "projectId": "cirra",
       "title": "Prove the full audit baseline",
       "summary": "Run one full repository audit and verify that a later pull request audit uses it as its comparison baseline.",
-      "stage": "active",
+      "stage": "done",
       "sequence": 4,
       "prereqs": [
         "cirra:settle-pending-pr-audits"
@@ -181,7 +181,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T07:42:44Z",
-        "updatedAt": "2026-11-20T08:10:53Z"
+        "updatedAt": "2026-11-20T08:23:08Z"
       },
       "evidence": [
         {
@@ -201,6 +201,38 @@
           "kind": "note",
           "at": "2026-11-20T08:10:53Z",
           "message": "The worker completed the scheduled full audit and selects it as the repository baseline. It covers all 117 concepts and records 32 findings."
+        },
+        {
+          "entryId": "cirra:prove-full-audit-baseline:done",
+          "kind": "stage-change",
+          "at": "2026-11-20T08:23:08Z",
+          "message": "Pull request 33 used the repository baseline, passed isolated tests and merged. Its change-scoped full audit confirmed the alert fix and preserved the baseline."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:restore-host-pr-review",
+      "projectId": "cirra",
+      "title": "Restore code review on the worker host",
+      "summary": "Restore the subscription login, then prove the worker publishes a completed advisory review alongside its isolated tests on the same pull request commit.",
+      "stage": "planned",
+      "sequence": 5,
+      "prereqs": [
+        "cirra:prove-full-audit-baseline"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T08:23:08Z",
+        "updatedAt": "2026-11-20T08:23:08Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:restore-host-pr-review:created",
+          "kind": "created",
+          "at": "2026-11-20T08:23:08Z",
+          "message": "The host passed isolated tests on pull request 33. Claude reported that it was signed out and the worker saved the failed advisory review for operator attention."
         }
       ]
     }

@@ -96,22 +96,57 @@ zero problems. Each stored comparison had an empty baseline reference. The
 store contained no full or release audit. The operator copies of both report
 formats are under `/srv/lugos/state/cirra/operator-audit-reports/<attempt_id>/`.
 
-## Audit activation after recovery
+## Full baseline and PR 33
 
-1. Prove one repository-scoped full audit with the session runner. Preserve
-   the previous policy for rollback, enable `full`, observe baseline queueing,
-   produce and import a report matching its packet, and verify baseline use
-   by a subsequent PR audit. Full audits must remain non-blocking.
+The GitHub route now enables `pr` and `full` with the session runner. The PR
+gate remains `critical`, and the full gate is `none`. The previous policy is
+saved on the host for rollback. Both services reloaded the policy, and the
+worker automatically requested the first repository baseline on `883d840`.
+
+| Audit | Attempt | Result |
+| --- | --- | --- |
+| Repository full, `883d840` | `15ebe3768a174989a832895ac6d4dd40` | All 117 concepts assessed, 32 findings. |
+| PR 33, `de96adf` | `98fe8e93ce61466db649bc9558c6be07` | Same repository baseline, zero new findings, two existing findings below the gate. |
+| Change-scoped full, `de96adf` | `7e656ff4ca0e406c910bc4ba4049b5cb` | Same repository baseline, 31 open findings and one resolved. |
+
+The resolved finding concerned a health alert that returned success when its
+credential was missing. The regression tests failed on the old command and
+passed on the fix. The two open PR findings concern the journal read deadline
+and the transport used for a configurable notification recipient. Three
+findings had high priority. Promotion can accept a failed worker, rollback
+across a schema change can strand the older binary, and recovery of signed
+state from independent storage remains unverified.
+
+Both validators accepted all three reports against their pinned revisions.
+The worker finished all three jobs, and the selected repository baseline still
+points to the full audit of `883d840`. The PR merged at `ca66dbb` after the
+host's isolated tests, the baseline-backed audit and all five GitHub Actions
+jobs passed. [PR 33](https://github.com/mdn87/cirra/pull/33) ·
+[Isolated tests](https://github.com/mdn87/cirra/runs/136168360421) ·
+[PR audit](https://github.com/mdn87/cirra/runs/136169212102) ·
+[CI matrix](https://github.com/mdn87/cirra/actions/runs/44700579454)
+
+The separate advisory review returned an uncertain result. Claude Code on
+`lugos-host` reported that the subscription was signed out. The worker retained
+the job for operator attention and GitHub received no `cirra/review` on this
+commit. Both services were active. The health check reported that one job,
+and zero audits were waiting for import. The merged alert template requires
+a separate unit rollout on the host.
+
+## Remaining operational proof
+
+1. Restore the worker's Claude subscription login. Use a real PR to verify
+   that the host publishes both its isolated test result and a completed
+   advisory review on the same commit.
 2. Prepare the separate release demonstration with a protected target, a merged
    candidate with witness-verified CI definition evidence, a trusted native
    workflow and the restricted Actions credential. Enable `release`, prove
    refusal without a valid audit, then prove a valid audit permits planning.
    Native dispatch needs its own live acceptance evidence.
 
-The current GitHub branch protection and release credential grants were not
-queried. Their absence in the October plan is a historical limitation, not a
-fresh claim about provider settings. The audit-read service is useful for
-derived views but is not a prerequisite for CLI audit execution.
+GitHub reported `main` unprotected with no active branch rules at merge time.
+Release credential grants still need verification. The audit-read service
+provides derived views. CLI audits operate directly against the store.
 
 The original acceptance contracts remain in the
 [coordination plan](2026-10-15-coordination-layer-plan.md),
