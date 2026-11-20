@@ -1,14 +1,104 @@
 """Operator health check over the service state directory, for a timer or monitor."""
 
 import json
+import math
+import shutil
 from datetime import UTC, datetime, timedelta
 
+from cirra.domain import CirraError
 from cirra.job_queue import AuditQueue, Queue
 
 # A bounded test run plus review can hold the loop for several minutes, during
 # which the heartbeat legitimately does not move.
 DEFAULT_HEARTBEAT_AGE = 1200
 DEFAULT_ATTENTION_WINDOW = 86400
+DELIVERY_TARGET_SECONDS = 1800
+
+
+def queue_metrics(queue, *, now=None, scanned=None, history=True):
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(days=1)
+    jobs, unreadable = scanned if scanned is not None else queue.scan()
+    status_path = queue.directory.parent / "worker-status.json"
+    maximum = queue.maximum
+    if status_path.exists():
+        try:
+            maximum = queue.read(status_path).get("max_jobs", maximum)
+            if type(maximum) is not int or maximum < 1:
+                maximum = queue.maximum
+        except (AttributeError, CirraError, OSError, ValueError):
+            pass
+    pending = [j for j in jobs if j["state"] in ("queued", "retry", "running")]
+    cooldowns = {}
+    oldest = max(
+        (
+            now - _parse(j["accepted_at"])
+            for j in pending
+            if queue.eligible_at(j, cooldowns) <= now.timestamp()
+        ),
+        default=timedelta(),
+    )
+    occupied = (
+        len(unreadable)
+        + len(pending)
+        + sum(
+            j["state"] == "attention" and now - _parse(j["updated_at"]) < timedelta(days=7)
+            for j in jobs
+        )
+    )
+    refusal = queue.directory.parent / "queue-refusal.json"
+    last_refusal = _record(queue, refusal).get("observed_at")
+    counts = _record(queue, queue.directory.parent / "webhook-admissions" / f"{now.date()}.json")
+    counts = {kind: counts.get(kind, 0) for kind in ("accepted", "duplicate", "refused")}
+    attempts = sum(counts.values())
+    metrics = {
+        "observed_at": now.isoformat(),
+        "capacity": maximum,
+        "remaining": max(0, maximum - occupied),
+        "admissions_today": counts,
+        "acceptance_percent_today": round(100 * (attempts - counts["refused"]) / attempts, 2)
+        if attempts
+        else None,
+        "oldest_eligible_seconds": max(0, int(oldest.total_seconds())),
+        "unreadable_cooldowns": sum(not math.isfinite(value) for value in cooldowns.values()),
+        "last_refusal": last_refusal,
+    }
+    if not history:
+        return metrics
+    archived_jobs = []
+    for path in (queue.directory / "archive").glob("*.json"):
+        try:
+            if path.stat().st_mtime >= cutoff.timestamp():
+                archived_jobs.append(queue.review_record(path))
+        except (OSError, ValueError, OverflowError, RecursionError, CirraError):
+            continue
+    # A requeued archived job retains its original evidence. Count its active record once.
+    unique = {j["id"]: j for j in (*archived_jobs, *jobs)}.values()
+    arrivals = completed = eligible = on_time = 0
+    for job in unique:
+        accepted, updated = _parse(job["accepted_at"]), _parse(job["updated_at"])
+        if job["hint"].get("source") or type(job["hint"].get("change")) is not int:
+            continue
+        if updated >= cutoff and job["state"] == "done":
+            completed += 1
+        if accepted < cutoff:
+            continue
+        arrivals += 1
+        if job["state"] == "skipped" or (now - accepted).total_seconds() < DELIVERY_TARGET_SECONDS:
+            continue
+        eligible += 1
+        on_time += (
+            job["state"] == "done"
+            and (updated - accepted).total_seconds() <= DELIVERY_TARGET_SECONDS
+        )
+    return {
+        **metrics,
+        "webhook_arrivals_24h": arrivals,
+        "webhook_completions_24h": completed,
+        "eligible_webhooks_24h": eligible,
+        "completed_within_30m": on_time,
+        "on_time_percent": round(100 * on_time / eligible, 2) if eligible else None,
+    }
 
 
 def _parse(value):
@@ -19,12 +109,22 @@ def _parse(value):
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
+def _record(queue, path):
+    if not path.exists():
+        return {}
+    record = queue.read(path)
+    if not isinstance(record, dict):
+        raise CirraError(f"invalid operations record: {path.name}")
+    return record
+
+
 def check(
     state_dir,
     *,
     max_heartbeat_age=DEFAULT_HEARTBEAT_AGE,
     attention_window=DEFAULT_ATTENTION_WINDOW,
     now=None,
+    include_metrics=False,
 ):
     now = now or datetime.now(UTC)
     queue = Queue(state_dir)
@@ -35,11 +135,13 @@ def check(
     heartbeat = None
     if status_path.exists():
         try:
-            heartbeat = _parse(queue.read(status_path).get("heartbeat_at"))
-        except (OSError, ValueError):
+            heartbeat = _parse(_record(queue, status_path).get("heartbeat_at"))
+        except (CirraError, OSError, ValueError):
             heartbeat = None
     if heartbeat is None:
         problems.append({"kind": "heartbeat", "detail": "no readable worker heartbeat"})
+    elif heartbeat > now + timedelta(minutes=1):
+        problems.append({"kind": "heartbeat", "detail": "worker heartbeat is in the future"})
     elif now - heartbeat > timedelta(seconds=max_heartbeat_age):
         age = int((now - heartbeat).total_seconds())
         problems.append({"kind": "heartbeat", "detail": f"worker heartbeat is {age} s old"})
@@ -47,6 +149,39 @@ def check(
     jobs, unreadable = queue.scan()
     if unreadable:
         problems.append({"kind": "queue", "detail": f"unreadable queue records: {unreadable}"})
+    metrics = None
+    try:
+        metrics = queue_metrics(queue, now=now, scanned=(jobs, unreadable), history=False)
+        if metrics["unreadable_cooldowns"]:
+            problems.append(
+                {"kind": "provider", "detail": "unreadable provider cooldown is holding work"}
+            )
+        if metrics["remaining"] <= metrics["capacity"] * 0.1:
+            problems.append(
+                {
+                    "kind": "capacity",
+                    "detail": f"queue has {metrics['remaining']} admission slots left",
+                }
+            )
+        if metrics["oldest_eligible_seconds"] > DELIVERY_TARGET_SECONDS:
+            problems.append(
+                {"kind": "backlog", "detail": "eligible work has been queued for over 30 minutes"}
+            )
+        refusal = _parse(metrics["last_refusal"])
+        if refusal and now - refusal < timedelta(minutes=15):
+            problems.append(
+                {
+                    "kind": "admission",
+                    "detail": "webhook queue refused admission in the last 15 minutes",
+                }
+            )
+    except (CirraError, OSError, TypeError, ValueError, KeyError):
+        problems.append({"kind": "metrics", "detail": "unreadable queue operations records"})
+    disk = shutil.disk_usage(root)
+    if disk.free < min(disk.total // 20, 1024**3):
+        problems.append(
+            {"kind": "disk", "detail": "state storage has less than its free-space reserve"}
+        )
     since = now - timedelta(seconds=attention_window)
     for job in jobs:
         updated = _parse(job.get("updated_at"))
@@ -85,12 +220,18 @@ def check(
         problems.append(
             {"kind": "daily", "detail": f"daily admission exhausted ({usage['attempts']})"}
         )
-    return {"healthy": not problems, "problems": problems}
+    result = {"healthy": not problems, "problems": problems}
+    if include_metrics:
+        result["queue_metrics"] = metrics
+    return result
 
 
 def main(state_dir, max_heartbeat_age, attention_window):
     result = check(
-        state_dir, max_heartbeat_age=max_heartbeat_age, attention_window=attention_window
+        state_dir,
+        max_heartbeat_age=max_heartbeat_age,
+        attention_window=attention_window,
+        include_metrics=True,
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if result["healthy"] else 1

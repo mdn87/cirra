@@ -1,12 +1,21 @@
 """Find missed PR/MR revisions using provider reads, independent of Actions."""
 
+import math
+import time
 from urllib.parse import quote
 
-from cirra.domain import CirraError, digest, number, sha, utc_now
+from cirra.domain import (
+    CirraError,
+    ProviderAccessDenied,
+    ProviderRateLimited,
+    digest,
+    number,
+    sha,
+    utc_now,
+)
 from cirra.events import trusted_change
 from cirra.github import (
     GitHubClient,
-    GitHubRateLimited,
     native_id,
     pull_merge_ref,
     record,
@@ -65,7 +74,7 @@ def discover(route, token=None):
             # A PR without a usable merge ref still needs its independent head CI.
             try:
                 revision["merge"] = pull_merge_ref(client, change)
-            except GitHubRateLimited:
+            except (ProviderAccessDenied, ProviderRateLimited):
                 raise
             except CirraError:
                 revision["merge"] = None
@@ -77,6 +86,13 @@ def sync(config, queue, credential, *, route_name=None, discover_changes=discove
     results = []
     for name, route in config.routes.items():
         if route_name is not None and name != route_name:
+            continue
+        until = queue.cooldown(queue.reader_key(route))
+        if not math.isfinite(until):
+            results.append({"route": name, "error": "unreadable provider cooldown"})
+            continue
+        if until > time.time():
+            results.append({"route": name, "deferred_until": until})
             continue
         try:
             changes = discover_changes(route, credential(route.reader_env))
@@ -116,6 +132,8 @@ def sync(config, queue, credential, *, route_name=None, discover_changes=discove
                     queued.append(
                         queue.request_branch(route, branch, revision=data["change"]["head_sha"])
                     )
+                except (ProviderAccessDenied, ProviderRateLimited):
+                    raise
                 except (CirraError, OSError, ValueError) as exc:
                     branch_errors[branch] = (
                         str(exc) if isinstance(exc, CirraError) else "branch capture failed"
@@ -123,6 +141,10 @@ def sync(config, queue, credential, *, route_name=None, discover_changes=discove
             if branch_errors:
                 entry["branch_errors"] = branch_errors
             results.append(entry)
+        except (ProviderAccessDenied, ProviderRateLimited) as exc:
+            results.append(
+                {"route": name, "error": str(exc), "deferred_until": queue.defer_reader(route, exc)}
+            )
         except (CirraError, OSError, ValueError) as exc:
             results.append(
                 {

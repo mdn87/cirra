@@ -3,7 +3,16 @@
 import re
 from urllib.parse import quote
 
-from cirra.domain import CirraError, number, path_name, sha, string, utc_now
+from cirra.domain import (
+    CirraError,
+    ProviderAccessDenied,
+    ProviderRateLimited,
+    number,
+    path_name,
+    sha,
+    string,
+    utc_now,
+)
 from cirra.fixture import FixtureProvider, validate_check
 from cirra.github import native_id, record
 from cirra.transport import JSONClient, pages
@@ -102,7 +111,7 @@ def job_check(job, pipeline, repository_id):
     )
 
 
-def collect(repository, change, config, *, client=None, max_pages=10):
+def collect(repository, change, config, *, client=None, max_pages=10, strict_ci_reads=False):
     project_name(repository)
     number(change, "MR number", 1, 2**31 - 1, integral=True)
     number(max_pages, "page limit", 1, 100, integral=True)
@@ -193,6 +202,8 @@ def collect(repository, change, config, *, client=None, max_pages=10):
                 )
                 checks.extend(job_check(job, pipeline, identifier) for job in jobs)
         except CirraError as exc:
+            if strict_ci_reads and isinstance(exc, (ProviderAccessDenied, ProviderRateLimited)):
+                raise
             errors.append(str(exc))
         if revisions(client, change, identifier) != before:
             continue

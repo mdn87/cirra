@@ -1,15 +1,27 @@
 """Read GitHub snapshots and native CI associations without executing changed code."""
 
 import json
+import random
 import re
 import time
 import uuid
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from cirra.domain import CirraError, digest, number, path_name, sha, string, utc_now
+from cirra.domain import (
+    CirraError,
+    ProviderAccessDenied,
+    ProviderRateLimited,
+    digest,
+    number,
+    path_name,
+    sha,
+    string,
+    utc_now,
+)
 from cirra.fixture import FixtureProvider, validate_check
 from cirra.reviewer import unique_object
 
@@ -26,12 +38,12 @@ class GitHubError(CirraError):
     """A safe transport error containing neither server payloads nor credentials."""
 
 
-class GitHubRateLimited(GitHubError):
+class GitHubRateLimited(ProviderRateLimited, GitHubError):
     """GitHub refused the read for quota reasons; `retry_at` is when it resets (epoch seconds)."""
 
-    def __init__(self, message, retry_at):
-        super().__init__(message)
-        self.retry_at = retry_at
+
+class GitHubAccessDenied(ProviderAccessDenied, GitHubError):
+    """A GitHub permission failure that needs a configuration change."""
 
 
 def rate_limit_reset(headers, now=None):
@@ -40,11 +52,15 @@ def rate_limit_reset(headers, now=None):
     try:
         retry_after = headers.get("Retry-After")
         if retry_after is not None:
-            return now + min(max(int(retry_after), 1), 3600)
-        reset = headers.get("X-RateLimit-Reset")
+            try:
+                delay = int(retry_after)
+            except ValueError:
+                delay = parsedate_to_datetime(retry_after).timestamp() - now
+            return now + min(max(delay, 1), 3600)
+        reset = headers.get("X-RateLimit-Reset") or headers.get("RateLimit-Reset")
         if reset is not None:
             return min(max(int(reset), now + 1), now + 3600)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError, OSError):
         pass
     return now + 60
 
@@ -119,7 +135,13 @@ class GitHubClient:
                     return data, more
             except HTTPError as exc:
                 status = exc.code
-                limited = status == 429 or exc.headers.get("X-RateLimit-Remaining") == "0"
+                limited = status == 429 or (
+                    status == 403
+                    and (
+                        exc.headers.get("X-RateLimit-Remaining") == "0"
+                        or "Retry-After" in exc.headers
+                    )
+                )
                 retry_at = rate_limit_reset(exc.headers) if limited else None
                 exc.close()
                 if 300 <= status < 400:
@@ -131,7 +153,7 @@ class GitHubClient:
                         f"GitHub rate limit reached (HTTP {status}); retry later", retry_at
                     ) from None
                 if status in (401, 403):
-                    raise GitHubError(
+                    raise GitHubAccessDenied(
                         f"GitHub access denied (HTTP {status}); check reader permissions"
                     ) from None
                 if status not in (500, 502, 503, 504) or attempt == 2:
@@ -141,7 +163,7 @@ class GitHubClient:
                     raise GitHubError(
                         "GitHub network request failed after bounded retries"
                     ) from None
-            time.sleep(min(0.25 * (attempt + 1), self.remaining()))
+            time.sleep(min(random.uniform(0.15, 0.35) * 2**attempt, self.remaining()))
         raise GitHubError("GitHub request did not complete")
 
 
@@ -285,7 +307,7 @@ def check_from(item, kind, head, observed):
     return validate_check(check)
 
 
-def checks_from(client, head, max_pages):
+def checks_from(client, head, max_pages, *, strict_ci_reads=False):
     checks, errors = [], []
     for kind, endpoint in (("check_run", "check-runs"), ("commit_status", "statuses")):
         seen, received, expected = set(), 0, 0
@@ -328,6 +350,8 @@ def checks_from(client, head, max_pages):
                 if page == max_pages:
                     errors.append(f"{endpoint}: check page limit reached")
             except CirraError as exc:
+                if strict_ci_reads and isinstance(exc, (ProviderAccessDenied, ProviderRateLimited)):
+                    raise
                 errors.append(f"{endpoint}: {exc}")
                 break
     return checks, sorted(set(errors))
@@ -405,7 +429,7 @@ def review_comparisons(client, bases, head, primary, max_bytes):
     return variants, gaps
 
 
-def collect(repository, change, config, *, client=None, max_pages=10):
+def collect(repository, change, config, *, client=None, max_pages=10, strict_ci_reads=False):
     repository_name(repository)
     number(change, "pull request number", 1, 2**31 - 1, integral=True)
     number(max_pages, "check page limit", 1, 100, integral=True)
@@ -456,7 +480,7 @@ def collect(repository, change, config, *, client=None, max_pages=10):
                 )
             variants["additional_comparisons"] = extra
             gaps.extend(missing)
-        checks, errors = checks_from(client, head, max_pages)
+        checks, errors = checks_from(client, head, max_pages, strict_ci_reads=strict_ci_reads)
         after, _ = client.get(f"pulls/{change}")
         after_head, _, after_count = revisions(after, repository_id, change)
         if (after_head, after["base"].get("ref"), after_count) != before:

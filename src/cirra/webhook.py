@@ -5,17 +5,19 @@ import re
 import socket
 import sys
 import threading
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from cirra import events
-from cirra.domain import CirraError, canonical
+from cirra.domain import CirraError, canonical, utc_now
 from cirra.job_queue import Queue
 from cirra.reviewer import unique_object
 
 MAX_BODY = 1024 * 1024
 
 
-def accept(route, raw, headers, secret, queue):
+def accept(route, raw, headers, secret, queue, on_eligible=None):
     _, kind = events.authenticate(route.provider, raw, headers, secret)
     if kind == "ping" and route.provider == "github":
         return {"state": "ignored", "reason": "ping"}
@@ -37,6 +39,8 @@ def accept(route, raw, headers, secret, queue):
         return {"state": "ignored", "reason": "untrusted author"}
     if metadata_only(route.provider, action, payload):
         return {"state": "ignored", "reason": "metadata-only edit"}
+    if on_eligible:
+        on_eligible()
     return {"state": "accepted", **queue.enqueue(route, hint)}
 
 
@@ -60,7 +64,11 @@ DELIVERY_HEADERS = ("X-GitHub-Delivery", "X-Gitlab-Event-UUID", "X-Forgejo-Deliv
 
 
 def log_line(record):
-    print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+    print(
+        json.dumps({"observed_at": utc_now(), **record}, sort_keys=True),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 class WebhookServer(ThreadingHTTPServer):
@@ -99,7 +107,14 @@ class WebhookServer(ThreadingHTTPServer):
     def handle_error(self, request, client_address):
         # Never echo payloads or credential-bearing headers in a traceback; the
         # exception type alone shows that something failed and what kind.
-        log_line({"event": "webhook_error", "type": type(sys.exc_info()[1]).__name__})
+        log_line(
+            {
+                "event": "webhook_error",
+                "phase": "connection",
+                "request_id": uuid.uuid4().hex,
+                "type": type(sys.exc_info()[1]).__name__,
+            }
+        )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -107,6 +122,11 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def setup(self):
+        self.request_id = uuid.uuid4().hex
+        self.started = time.monotonic()
+        self.job_id = None
+        self.admission = None
+        self.response_status = None
         self.request.settimeout(5)
         self.deadline = threading.Timer(self.server.request_deadline, self.expire)
         self.deadline.daemon = True
@@ -125,33 +145,58 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except OSError:
             pass
+        if self.response_status is not None or self.admission is not None:
+            log_line(
+                {
+                    "event": "webhook_request",
+                    **self.request_context(),
+                    "status": self.response_status,
+                }
+            )
 
     def log_message(self, format, *args):
         pass  # Free-form messages can contain the raw request line.
 
-    def log_request(self, code="-", size="-"):
-        # One structured line per response: route path, status, delivery id and
-        # declared size. Never headers, bodies, query strings, or credentials.
-        known = any(self.path == "/hooks/" + name for name in self.server.config.routes)
-        delivery = next(
-            (self.headers.get(name) for name in DELIVERY_HEADERS if self.headers.get(name)), None
-        )
+    def request_context(self):
+        path = getattr(self, "path", "")
+        headers = getattr(self, "headers", {})
+        known = any(path == "/hooks/" + name for name in self.server.config.routes)
+        delivery = next((headers.get(name) for name in DELIVERY_HEADERS if headers.get(name)), None)
         try:
-            size = int(self.headers.get("Content-Length", "0"))
+            size = int(headers.get("Content-Length", "0"))
         except ValueError:
             size = None
-        log_line(
-            {
-                "event": "webhook_request",
-                "method": self.command,
-                "path": self.path if known or self.path == "/healthz" else "(other)",
-                "status": int(code) if str(code).isdigit() else None,
-                "delivery": delivery
-                if delivery and re.fullmatch(r"[A-Za-z0-9-]{1,64}", delivery)
-                else None,
-                "bytes": size,
-            }
-        )
+        return {
+            "request_id": self.request_id,
+            "job_id": self.job_id,
+            "admission": self.admission,
+            "method": self.command
+            if getattr(self, "command", None) in ("GET", "POST")
+            else "(other)",
+            "path": path if known or path == "/healthz" else "(other)",
+            "duration_ms": round((time.monotonic() - self.started) * 1000, 2),
+            "delivery": delivery
+            if delivery and re.fullmatch(r"[A-Za-z0-9-]{1,64}", delivery)
+            else None,
+            "bytes": size,
+        }
+
+    def log_request(self, code="-", size="-"):
+        self.response_status = int(code) if str(code).isdigit() else None
+
+    def record_eligible(self):
+        # The journal can still account for an eligible request when storage is down.
+        self.admission = "refused"
+
+    def handle(self):
+        try:
+            super().handle()
+        except Exception as exc:
+            log_line(
+                {"event": "webhook_error", **self.request_context(), "type": type(exc).__name__}
+            )
+            if self.response_status is None and hasattr(self, "request_version"):
+                self.respond(500, {"error": "receiver failed", "request_id": self.request_id})
 
     def respond(self, status, result):
         body = canonical(result).encode()
@@ -196,8 +241,16 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length:
                 return self.respond(400, {"error": "incomplete body"})
             result = accept(
-                route, raw, dict(self.headers), self.server.secrets[route.name], self.server.queue
+                route,
+                raw,
+                dict(self.headers),
+                self.server.secrets[route.name],
+                self.server.queue,
+                self.record_eligible,
             )
+            self.job_id = result.get("job_id")
+            if self.job_id:
+                self.admission = "duplicate" if result["duplicate"] else "accepted"
             self.respond(202, result)
         except CirraError as exc:
             code = 503 if "capacity" in str(exc) or "another invocation" in str(exc) else 400
@@ -206,5 +259,17 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(
                 code, {"error": "delivery refused; check authentication, route, or capacity"}
             )
-        except (TimeoutError, ValueError, OSError, RecursionError):
+        except (TimeoutError, ConnectionError, ValueError, RecursionError):
             self.respond(400, {"error": "invalid or interrupted delivery"})
+        except OSError as exc:
+            log_line(
+                {
+                    "event": "webhook_error",
+                    **self.request_context(),
+                    "type": type(exc).__name__,
+                    "phase": "persist_delivery",
+                }
+            )
+            self.respond(
+                503, {"error": "delivery storage unavailable", "request_id": self.request_id}
+            )

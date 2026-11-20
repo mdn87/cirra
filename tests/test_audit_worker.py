@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from audit_fixtures import build_report, write_report
 
 from cirra import audits
@@ -19,6 +20,7 @@ from cirra.audit_worker import (
 from cirra.domain import CirraError
 from cirra.job_queue import AuditQueue
 from cirra.store import Store
+from cirra.transport import ReadUnavailable, RemoteUncertain
 
 TESTS = Path(__file__).resolve().parent
 
@@ -270,6 +272,9 @@ def test_publisher_reuses_an_existing_owned_check_run(world):
         "head_sha": world.head,
         "external_id": "a" * 64,
         "app": {"id": 5},
+        "status": "completed",
+        "conclusion": "success",
+        "output": {"summary": "summary"},
     }
     github = FakeGitHub(existing=[existing, {**existing, "id": 10, "app": {"id": 6}}])
     result = AuditCheckPublisher("example/repo", 5, "t", http=github).publish(
@@ -285,7 +290,7 @@ def test_failed_publication_puts_the_job_in_attention(world, tmp_path):
     store = Store(world.state)
 
     class Broken:
-        def publish(self, *args):
+        def publish(self, *args, **kwargs):
             raise CirraError("GitHub refused the check run")
 
     publication = AuditPublication(world.state, {"main": route}, lambda r: Broken())
@@ -296,6 +301,14 @@ def test_failed_publication_puts_the_job_in_attention(world, tmp_path):
     from cirra.health import check
 
     assert any(problem["kind"] == "audit" for problem in check(world.state)["problems"])
+
+    queue = AuditQueue(world.state, store)
+    newer = queue.request({**job["identity"], "head": "e" * 40}, job["scope"], reason="new head")
+    queue.cancel(newer["job_id"], "closed")
+    queue.archive(queue.jobs(), time.time() + 8 * 86400)
+    (queue.directory / "archive" / (newer["job_id"] + ".json")).replace(tmp_path / "cold.json")
+    with pytest.raises(CirraError, match="newer"):
+        queue.retry_publication(job["id"], "inspect previous publication")
 
 
 def test_worker_loop_runs_audit_passes_and_survives_their_errors(tmp_path, capsys):
@@ -340,3 +353,87 @@ def test_publication_is_recorded_once_per_identity(world, tmp_path):
     second = publication(job, attempt)
     assert first["state"] == "published" and second["duplicate"] is True
     assert len(github.posts) == 1
+
+
+@pytest.mark.parametrize("lost_create", [False, True])
+def test_transient_audit_publication_reuses_attempt_and_remote_check(
+    world, tmp_path, lost_create, monkeypatch
+):
+    route, runner = world.make(agent(tmp_path))
+    store_baseline(world, route)
+    request(world, route, "app.py")
+    store = Store(world.state)
+    queue = AuditQueue(world.state, store)
+
+    class TransientGitHub(FakeGitHub):
+        failed = False
+
+        def request(self, method, route, params=None, body=None):
+            if method == ("POST" if lost_create else "GET") and not self.failed:
+                self.failed = True
+                if lost_create:
+                    super().request(method, route, params, body)
+                    raise RemoteUncertain("create reply was lost")
+                raise ReadUnavailable("provider read unavailable")
+            return super().request(method, route, params, body)
+
+    github = TransientGitHub()
+    publish = AuditPublication(
+        world.state,
+        {"main": route},
+        lambda r: AuditCheckPublisher(r.repository, 5, "t", http=github),
+    )
+    job = audit_once(queue, store, 1, runner, on_complete=publish)
+    assert job["state"] == "awaiting_publication" and job["publication_tries"] == 1
+    assert job["result"]["publication"]["uncertain"] is lost_create
+    if lost_create:
+        monkeypatch.setattr(audits, "latest_full", lambda *_: None)
+    queue.update(job["id"], not_before=0)
+    assert (
+        audit_once(queue, store, 1, lambda *_: pytest.fail("reran audit"), on_complete=publish)
+        is None
+    )
+    recovered = queue.read(job["id"])
+    assert recovered["state"] == "done" and recovered["attempt_id"] == job["attempt_id"]
+    assert recovered["result"]["publication"]["existing"] is lost_create
+    assert len(github.posts) == 1
+    assert json.loads(queue.usage_path(time.time()).read_text())["attempts"] == 1
+
+
+def test_uncertain_create_stays_read_only_until_manual_publication_recovery(world, tmp_path):
+    route, runner = world.make(agent(tmp_path))
+    store_baseline(world, route)
+    request(world, route, "app.py")
+    store = Store(world.state)
+    queue = AuditQueue(world.state, store)
+
+    class DelayedGitHub(FakeGitHub):
+        visible = False
+
+        def request(self, method, route, params=None, body=None):
+            if method == "GET" and not self.visible:
+                return {"check_runs": []}, False
+            result = super().request(method, route, params, body)
+            if method == "POST":
+                raise RemoteUncertain("lost response")
+            return result
+
+    github = DelayedGitHub()
+    publish = AuditPublication(
+        world.state,
+        {"main": route},
+        lambda r: AuditCheckPublisher(r.repository, 5, "t", http=github),
+    )
+    job = audit_once(queue, store, 1, runner, on_complete=publish)
+    for _ in range(4):
+        queue.update(job["id"], not_before=0)
+        audit_once(queue, store, 1, lambda *_: pytest.fail("reran audit"), on_complete=publish)
+    terminal = queue.read(job["id"])
+    assert terminal["state"] == "attention" and terminal["publication_tries"] == 5
+    assert len(github.posts) == 1
+    queue.retry_publication(job["id"], "provider check is now visible")
+    github.visible = True
+    audit_once(queue, store, 1, lambda *_: pytest.fail("reran audit"), on_complete=publish)
+    assert queue.read(job["id"])["state"] == "done"
+    assert len(github.posts) == 1
+    assert json.loads(queue.usage_path(time.time()).read_text())["attempts"] == 1
