@@ -373,8 +373,8 @@ def review_comparisons(client, comparison, target, head, primary, max_bytes, max
     if head not in reachable:
         return [], ["GitHub commit history does not connect the target to the PR head"]
     # A future protected tip that still passes the strict up-to-date rule must be
-    # one of these ancestors. Identical file patches only need one review.
-    seen = {digest(f) for f in primary}
+    # one of these ancestors. Preserve each distinct combination of changed files.
+    seen = {digest(primary)}
     remaining = max_bytes - sum(len((f["patch"] or "").encode()) for f in primary)
     variants, gaps = [], []
     for base in sorted(reachable - {target, head}):
@@ -391,18 +391,14 @@ def review_comparisons(client, comparison, target, head, primary, max_bytes, max
             ]
         files, missing = files_from(alternate, len(alternate["files"]))
         gaps.extend(missing)
-        new = []
-        for file in files:
-            signature = digest(file)
-            if signature in seen:
-                continue
-            remaining -= len((file["patch"] or "").encode())
-            if remaining < 0:
-                return variants, [*gaps, "combined review comparisons exceed the diff byte limit"]
-            seen.add(signature)
-            new.append(file)
-        if new:
-            variants.append({"base_sha": base, "files": new})
+        signature = digest(files)
+        if signature in seen:
+            continue
+        remaining -= sum(len((file["patch"] or "").encode()) for file in files)
+        if remaining < 0:
+            return variants, [*gaps, "combined review comparisons exceed the diff byte limit"]
+        seen.add(signature)
+        variants.append({"base_sha": base, "files": files})
     return variants, gaps
 
 

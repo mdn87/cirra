@@ -434,6 +434,14 @@ def test_gate_reviews_changes_that_only_appear_against_an_intermediate_main(gith
     packet = FixtureProvider.from_data(result, config).packet()
     assert packet["additional_comparisons"][0]["base_sha"] == mid
     assert packet["additional_comparisons"][0]["patches"][0]["patch"] == shifted["patch"]
+    primary = copy.deepcopy(api.comparison["files"][0])
+    api.comparison["files"].append({**primary, "filename": "src/second.py"})
+    api.pr["changed_files"] = 2
+    api.overrides[(f"compare/{mid}...{HEAD}", 1)][0]["files"] = [primary]
+    subset = FixtureProvider.from_data(collect("example/repo", 9, config, client=api), config)
+    assert [p["path"] for p in subset.packet()["additional_comparisons"][0]["patches"]] == [
+        "src/add.py"
+    ]
     api.comparison["commits"].pop(0)
     incomplete = FixtureProvider.from_data(collect("example/repo", 9, config, client=api), config)
     assert "GitHub returned incomplete PR commit history" in incomplete.snapshot.coverage_gaps
