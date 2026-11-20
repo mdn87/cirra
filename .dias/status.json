@@ -5,16 +5,16 @@
   "assessmentState": "watchlist",
   "assessmentScope": "current-milestone",
   "percentComplete": null,
-  "milestonePhase": "closeout",
+  "milestonePhase": "integration-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T22:52:29Z",
-  "confidence": "authoritative",
-  "currentMilestone": "The protected release workflow ran successfully and verified the reviewed commit.",
-  "remainingSummary": "Release verification is complete. The storage encryption finding remains open by owner decision. Five audit controls still need operating evidence or owner targets.",
-  "nextChipId": null,
+  "assessedAt": "2026-11-20T23:19:46Z",
+  "confidence": "reported",
+  "currentMilestone": "Migrate service credentials for pull request 43 and restore the two affected review jobs.",
+  "remainingSummary": "Resolve the conflict and manifest path issue, verify host access to three credentials, and obtain protected checks for the updated pull request.",
+  "nextChipId": "cirra:resolve-pr43-credential-migration",
   "source": {
-    "label": "GitHub workflow log, Cirra release receipts and the full production audit",
+    "label": "Pull request review and host job records",
     "updatedAt": "2026-11-20"
   }
 }
