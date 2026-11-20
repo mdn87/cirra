@@ -32,7 +32,12 @@ def main():
         print("Supply a trusted command after --exec.", file=sys.stderr)
         return 2
     env = os.environ.copy()
-    env.pop("BWS_ACCESS_TOKEN", None)
+    for name in tuple(env):
+        upper = name.upper()
+        if upper == "BWS_ACCESS_TOKEN" or upper.endswith(
+            ("_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_PEM")
+        ):
+            env.pop(name, None)
     if "GLAS_HOME" not in env and glas is not None:
         env["GLAS_HOME"] = str(glas / ".glas")
     sources = [str(ROOT / "src")]
