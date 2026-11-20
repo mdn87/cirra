@@ -400,7 +400,7 @@ def test_failed_first_rollout_restores_the_newest_compatible_binary(format_trans
 def test_invalid_fallback_refuses_before_changing_active_release(
     format_transition, unusable, message
 ):
-    deploy, service, state, previous, _, fallback, policy, original = format_transition
+    deploy, service, state, previous, candidate, fallback, policy, original = format_transition
     if unusable == "unfinished":
         (fallback / ".installation-complete").unlink()
     elif unusable == "format":
@@ -421,4 +421,5 @@ def test_invalid_fallback_refuses_before_changing_active_release(
     assert (service / "current").resolve() == previous
     assert policy.read_bytes() == original
     assert not (service / "staging/restarts").exists()
+    assert not list((service / "staging").glob(f"config-for-{candidate.name}-*"))
     assert not (state / "worker-queue-format.json").exists()

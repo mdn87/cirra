@@ -187,6 +187,7 @@ sync_units() {
   local from=$1 to=$2 unit installed old desired
   local -a changed=()
   for desired in "$to"/examples/systemd/cirra-*; do
+    [ -f "$desired" ] || continue
     unit=${desired##*/}
     installed=$(systemctl show "$unit" --property=FragmentPath --value) || return 1
     [ -n "$installed" ] || continue
@@ -349,15 +350,21 @@ if [ "$TESTS" = 1 ]; then
   (cd "$R" && umask 077 && CIRRA_DOCKER_TEST_IMAGE="$IMG" "$PY" -m pytest -q -p no:cacheprovider </dev/null)
 fi
 
-[ -e "$STAGING/config-before-$SHA" ] || cp -a "$CONFIG" "$STAGING/config-before-$SHA"
-saved="$STAGING/config-before-$SHA"
 if [ -n "$FALLBACK" ]; then
   # Keep the exact configuration from this attempt, including on a same-SHA retry.
   saved=$(mktemp -d "$STAGING/config-for-$SHA-$FALLBACK_SHA.XXXXXXXX")
-  cp -a "$CONFIG/." "$saved/"
-  verify_fallback "$saved"
-  ln -sfn "$saved" "$STAGING/config-for-$SHA-$FALLBACK_SHA.next"
-  mv -Tf "$STAGING/config-for-$SHA-$FALLBACK_SHA.next" "$STAGING/config-for-$SHA-$FALLBACK_SHA"
+  if ! cp -a "$CONFIG/." "$saved/" || ! verify_fallback "$saved"; then
+    rm -rf -- "$saved"
+    exit 1
+  fi
+  for revision in "$FALLBACK_SHA" "${PREV##*/}"; do
+    link="$STAGING/config-for-$SHA-$revision"
+    ln -sfn "$saved" "$link.next"
+    mv -Tf "$link.next" "$link"
+  done
+else
+  saved="$STAGING/config-before-$SHA"
+  [ -e "$saved" ] || cp -a "$CONFIG" "$saved"
 fi
 if [ "$REPIN" = 1 ]; then
   if ! "$PY" -I -B -m cirra observer-pins --service-config "$CONFIG/service.yaml" --repin; then
