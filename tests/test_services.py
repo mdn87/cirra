@@ -547,6 +547,28 @@ def test_processor_reuses_review_and_reconciles_lost_publication(
     assert first["state"] == "attention" and second["state"] == "done"
     assert first["run_id"] == second["run_id"] and len(calls) == publisher.writes == 1
     assert "token-not-sent-to-reviewer" not in canonical(calls)
+    from cirra.domain import ProviderAccessDenied
+
+    reads = iter([True, False])
+
+    def denied_after_review(*_):
+        if next(reads):
+            return True
+        raise ProviderAccessDenied("reader denied")
+
+    monkeypatch.setattr("cirra.worker.is_open", denied_after_review)
+    with pytest.raises(ProviderAccessDenied) as denied:
+        processor(route, {"change": 1})
+    assert denied.value.reader_refusal and not denied.value.before_execution
+    monkeypatch.setattr("cirra.worker.is_open", lambda *_: True)
+
+    def denied_for_publisher(_):
+        raise ProviderAccessDenied("publisher denied")
+
+    monkeypatch.setattr(processor, "app_token", denied_for_publisher)
+    with pytest.raises(ProviderAccessDenied) as denied:
+        processor(route, {"change": 1})
+    assert not getattr(denied.value, "reader_refusal", False)
 
 
 def test_daily_admission_limit_survives_restart_without_losing_queued_work(route, tmp_path):

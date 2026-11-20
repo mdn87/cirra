@@ -12,6 +12,7 @@ audit that is where runnable pr or release work preempts it.
 
 import json
 import os
+import random
 import subprocess
 import time
 from datetime import UTC, datetime
@@ -51,28 +52,32 @@ def settle(queue, store, job, on_complete=None):
     stopped = queue.stop_reason(job["id"])
     if attempt["state"] == "complete" and stopped:
         # Cancelled, or replaced by a newer head, before its result was published.
-        return queue.update(job["id"], state=stopped, result=result)
+        return queue.update(job["id"], settling=True, state=stopped, result=result)
     if attempt["state"] == "complete" and on_complete:
         result["publication"] = on_complete(job, attempt)
         if result["publication"]["state"] == "waiting":
-            return queue.update(job["id"], state="awaiting_baseline", result=result)
+            return queue.update(job["id"], settling=True, state="awaiting_baseline", result=result)
         if result["publication"]["state"] == "retry":
             tries = job.get("publication_tries", 0) + 1
             due = max(
-                time.time() + 30 * 2 ** min(tries - 1, 4), result["publication"].get("retry_at", 0)
+                time.time() + 30 * 2 ** min(tries - 1, 4) * random.uniform(1, 1.25),
+                result["publication"].get("retry_at", 0),
             )
             return queue.update(
                 job["id"],
+                settling=True,
                 state="awaiting_publication" if tries < 5 else "attention",
                 not_before=due,
                 publication_tries=tries,
                 result=result,
             )
         if result["publication"]["state"] == "stopped":
-            return queue.update(job["id"], state=result["publication"]["reason"], result=result)
+            return queue.update(
+                job["id"], settling=True, state=result["publication"]["reason"], result=result
+            )
         if result["publication"]["state"] == "failed":
             state = "attention"
-    return queue.update(job["id"], state=state, result=result)
+    return queue.update(job["id"], settling=True, state=state, result=result)
 
 
 def recover(queue, store, on_complete=None, on_job=None):
@@ -686,8 +691,8 @@ class AuditCheckPublisher:
             return {"native_id": native_id(found[0].get("id")), "existing": True}
         if reconcile_only:
             raise RemoteUncertain("the audit check has no confirmed acknowledgement")
-        if before_create:
-            before_create()
+        if before_create and (reason := before_create()):
+            return {"stopped": reason}
         item, _ = self.http.request(
             "POST",
             self.prefix + "/check-runs",
@@ -803,8 +808,13 @@ class AuditPublication:
 
             def starting():
                 nonlocal uncertain
-                uncertain = True
-                write_receipt(path, {**receipt, "state": "creating", "uncertain": True})
+                queue = AuditQueue(self.directory)
+                with queue._lock():
+                    if reason := queue.stop_reason(job["id"]):
+                        return reason
+                    uncertain = True
+                    write_receipt(path, {**receipt, "state": "creating", "uncertain": True})
+                return None
 
             try:
                 publisher = self.publisher_for(route)
@@ -817,6 +827,8 @@ class AuditPublication:
                     expected_summary_digest=receipt["summary_digest"],
                     before_create=starting,
                 )
+                if native.get("stopped"):
+                    return {"state": "stopped", "reason": native["stopped"]}
                 receipt.update(native)
             except (ReadUnavailable, ProviderRateLimited, RemoteUncertain) as exc:
                 if isinstance(exc, (ProviderRateLimited, RequestNotSent)) and not recovering:

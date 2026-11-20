@@ -378,13 +378,16 @@ def test_transient_audit_publication_reuses_attempt_and_remote_check(
             return super().request(method, route, params, body)
 
     github = TransientGitHub()
+    monkeypatch.setattr("cirra.audit_worker.random.uniform", lambda low, high: 1.2)
     publish = AuditPublication(
         world.state,
         {"main": route},
         lambda r: AuditCheckPublisher(r.repository, 5, "t", http=github),
     )
+    earliest = time.time()
     job = audit_once(queue, store, 1, runner, on_complete=publish)
     assert job["state"] == "awaiting_publication" and job["publication_tries"] == 1
+    assert earliest + 36 <= job["not_before"] <= time.time() + 36
     assert job["result"]["publication"]["uncertain"] is lost_create
     if lost_create:
         monkeypatch.setattr(audits, "latest_full", lambda *_: None)
@@ -437,3 +440,36 @@ def test_uncertain_create_stays_read_only_until_manual_publication_recovery(worl
     assert queue.read(job["id"])["state"] == "done"
     assert len(github.posts) == 1
     assert json.loads(queue.usage_path(time.time()).read_text())["attempts"] == 1
+
+
+@pytest.mark.parametrize("phase", ["lookup", "lookup_error", "create"])
+def test_cancellation_and_publication_reservation_have_one_winner(world, tmp_path, phase):
+    route, runner = world.make(agent(tmp_path))
+    store_baseline(world, route)
+    request(world, route, "app.py")
+    store = Store(world.state)
+    queue = AuditQueue(world.state, store)
+    completed = audit_once(queue, store, 2, runner)
+    job_id = completed["id"]
+    queue.update(job_id, state="awaiting_publication", not_before=0)
+
+    class Interleaved(FakeGitHub):
+        def request(self, method, route, params=None, body=None):
+            if method == "POST" and phase == "create":
+                with pytest.raises(CirraError, match="already started"):
+                    queue.cancel(job_id, "operator cancellation")
+            if method == "GET" and phase != "create":
+                queue.cancel(job_id, "operator cancellation")
+                if phase == "lookup_error":
+                    raise ReadUnavailable("fixture lookup unavailable")
+            return super().request(method, route, params, body)
+
+    github = Interleaved()
+    publish = AuditPublication(
+        world.state,
+        {"main": route},
+        lambda r: AuditCheckPublisher(r.repository, 5, "t", http=github),
+    )
+    audit_once(queue, store, 2, lambda *_: pytest.fail("reran audit"), on_complete=publish)
+    assert queue.read(job_id)["state"] == ("done" if phase == "create" else "cancelled")
+    assert len(github.posts) == int(phase == "create")

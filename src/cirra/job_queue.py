@@ -2,15 +2,19 @@
 
 import json
 import math
+import os
 import re
 import time
 import uuid
 from datetime import UTC, datetime
+from itertools import islice
 from pathlib import Path
 
 from cirra.domain import CirraError, digest, number, string, utc_now
 from cirra.locking import change_lock
 from cirra.publish import receipt_directory, sync_directory, write_receipt
+from cirra.queue_format import activate
+from cirra.queue_slots import Slots, hot_paths
 
 TERMINAL_REVIEW = ("done", "attention", "skipped")
 
@@ -20,6 +24,10 @@ class Queue:
         self.directory = Path(directory).resolve() / "queue"
         receipt_directory(self.directory)
         self.maximum = maximum
+        self.slots = Slots(self.directory)
+        self._sweep = None
+        self._census = None
+        self._next_sweep = 0
 
     def read(self, path):
         with path.open("rb") as stream:
@@ -29,10 +37,18 @@ class Queue:
         return json.loads(raw)
 
     def save(self, job):
+        activate(self.directory.parent)
         job["schema_version"] = 1
         write_receipt(self.directory / (job["id"] + ".json"), job)
         if job["state"] in TERMINAL_REVIEW:
             self.remember_completion(job)
+            if job["state"] != "attention":
+                self.remember_reclaimable(job)
+
+    def remember_reclaimable(self, job):
+        path = self.directory / "reclaimable" / (job["id"] + ".json")
+        if not path.exists():
+            write_receipt(path, {"id": job["id"]}, history=False)
 
     def remember_completion(self, job):
         path = self.directory / "completed" / (job["id"] + ".json")
@@ -43,22 +59,91 @@ class Queue:
 
     def archive_finished(self, jobs, *, pressure=False):
         """Preserve terminal records outside the polling set; keep payload replay evidence."""
-        cutoff = time.time() - ARCHIVE_AFTER_SECONDS
         for job in jobs:
-            if job["state"] not in TERMINAL_REVIEW:
+            with change_lock(self.directory / "locks", "enqueue", 2):
+                self._archive_locked(job["id"], pressure=pressure)
+
+    def _archive_locked(self, identifier, *, pressure):
+        path = self.directory / (identifier + ".json")
+        candidate = self.directory / "reclaimable" / path.name
+        if not path.exists():
+            candidate.unlink(missing_ok=True)
+            return False
+        try:
+            job = self.review_record(path)
+        except (CirraError, ValueError, OverflowError, RecursionError):
+            # The malformed job keeps its slot and remains visible to health.
+            candidate.unlink(missing_ok=True)
+            return False
+        if job["state"] not in TERMINAL_REVIEW:
+            candidate.unlink(missing_ok=True)
+            return False
+        if (not pressure or job["state"] == "attention") and (
+            datetime.fromisoformat(job["updated_at"]).timestamp()
+            >= time.time() - ARCHIVE_AFTER_SECONDS
+        ):
+            return False
+        archive = self.directory / "archive" / path.name
+        activate(self.directory.parent)
+        self.remember_completion(job)
+        receipt_directory(archive.parent)
+        self.slots.record(self.slots.count(), operation="remove", identifier=identifier)
+        path.replace(archive)
+        sync_directory(archive.parent)
+        sync_directory(self.directory)
+        candidate.unlink(missing_ok=True)
+        return True
+
+    def reclaim_one(self):
+        index = self.directory / "reclaimable"
+        if index.is_dir():
+            with os.scandir(index) as entries:
+                for entry in islice(entries, 4):
+                    if re.fullmatch(r"[a-f0-9]{64}\.json", entry.name):
+                        if self._archive_locked(entry.name[:-5], pressure=True):
+                            return True
+        return False
+
+    def maintain(self):
+        """Bound each pass to 512 filenames and 32 job reads; return False during initial census."""
+        if self._sweep is None:
+            if time.monotonic() < self._next_sweep:
+                return True
+            if self._census is None:
+                with change_lock(self.directory / "locks", "enqueue", 2):
+                    self._before_census = self.slots.version()
+                self._census = hot_paths(self.directory)
+                self._census_count = 0
+            batch = sum(1 for _ in islice(self._census, 512))
+            self._census_count += batch
+            if batch == 512:
+                return self.slots.path.exists()
+            with change_lock(self.directory / "locks", "enqueue", 2):
+                if self.slots.version() == self._before_census:
+                    self.slots.record(self._census_count)
+            self._census = None
+            self._sweep = hot_paths(self.directory)
+        for _ in range(32):
+            path = next(self._sweep, None)
+            if path is None:
+                self._sweep = None
+                self._next_sweep = time.monotonic() + 86400
+                break
+            try:
+                job = self.review_record(path)
+            except (OSError, ValueError, OverflowError, RecursionError, CirraError):
                 continue
-            if (not pressure or job["state"] == "attention") and (
-                datetime.fromisoformat(job["updated_at"]).timestamp() >= cutoff
-            ):
-                continue
-            path = self.directory / (job["id"] + ".json")
-            archive = self.directory / "archive" / path.name
-            # This marker survives moving bulky archives to separate storage.
-            self.remember_completion(job)
-            receipt_directory(archive.parent)
-            path.replace(archive)
-            sync_directory(archive.parent)
-            sync_directory(self.directory)
+            if job["state"] in TERMINAL_REVIEW:
+                if (
+                    datetime.fromisoformat(job["updated_at"]).timestamp()
+                    < time.time() - ARCHIVE_AFTER_SECONDS
+                ):
+                    self.archive_finished([job])
+                elif job["state"] != "attention":
+                    self.remember_reclaimable(job)
+                    if (self.slots.count() or 0) >= self.maximum:
+                        self.archive_finished([job], pressure=True)
+        return True
 
     def record_admission(self, hint, outcome):
         if hint.get("source"):
@@ -92,16 +177,10 @@ class Queue:
                     )
                 self.record_admission(hint, "duplicate")
                 return {"job_id": identifier, "duplicate": True}
-            pressure = sum(1 for _ in self.directory.glob("*.json")) >= self.maximum
-            maintenance = self.directory.parent / "queue-maintenance.json"
-            if (
-                pressure
-                or not maintenance.exists()
-                or time.time() - maintenance.stat().st_mtime > 86400
-            ):
-                self.archive_finished(self.scan()[0], pressure=pressure)
-                write_receipt(maintenance, {"last_archive": utc_now()}, history=False)
-            if pressure and sum(1 for _ in self.directory.glob("*.json")) >= self.maximum:
+            count = self.slots.count()
+            if count == self.maximum and self.reclaim_one():
+                count -= 1
+            if count is None or count >= self.maximum:
                 self.record_admission(hint, "refused")
                 write_receipt(
                     self.directory.parent / "queue-refusal.json",
@@ -126,6 +205,7 @@ class Queue:
             write_receipt(
                 delivery_path, {"job_id": identifier, "recorded_at": utc_now()}, history=False
             )
+            self.slots.record(count, operation="add", identifier=identifier)
             self.save(job)
             self.record_admission(hint, "accepted")
             return {"job_id": identifier, "duplicate": False}
@@ -308,6 +388,8 @@ class Queue:
             }
             job.pop("error", None)
             job.pop("result", None)
+            if not path.exists():
+                self.slots.record(self.slots.count(), operation="add", identifier=identifier)
             self.save(job)
             return job
 
@@ -425,6 +507,7 @@ class AuditQueue:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def save(self, job):
+        activate(self.directory.parent)
         job["schema_version"] = 1
         job["updated_at"] = utc_now()
         write_receipt(self.directory / (job["id"] + ".json"), job)
@@ -694,9 +777,11 @@ class AuditQueue:
                 return job
         return None
 
-    def update(self, identifier, **changes):
+    def update(self, identifier, *, settling=False, **changes):
         with self._lock():
             job = self.read(identifier)
+            if settling and (job["cancel_requested"] or job["superseded_by"]):
+                changes = {"state": "cancelled" if job["cancel_requested"] else "superseded"}
             if job.get("schema_version") == 1 and all(
                 key in job and job[key] == value for key, value in changes.items()
             ):
@@ -776,6 +861,21 @@ class AuditQueue:
         string(reason, "cancellation reason", 1000)
         with self._lock():
             job = self.read(identifier)
+            if job["tier"] == "pr" and job["state"] in ACTIVE_AUDIT:
+                receipt_path = (
+                    self.directory.parent / "audit-publication" / (job["audit_id"] + ".json")
+                )
+                if receipt_path.exists():
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    if receipt.get("uncertain", receipt.get("state") == "failed") or receipt.get(
+                        "state"
+                    ) in (
+                        "creating",
+                        "published",
+                    ):
+                        raise CirraError(
+                            "audit publication already started; reconcile it before cancellation"
+                        )
             if job["state"] in ("queued", "deferred"):
                 self._mark_attempt(job, "cancelled")  # A preempted job keeps its attempt.
                 job.update(state="cancelled", cancel_reason=reason)

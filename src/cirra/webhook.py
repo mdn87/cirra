@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from cirra import events
 from cirra.domain import CirraError, canonical, utc_now
 from cirra.job_queue import Queue
+from cirra.queue_format import activate
 from cirra.reviewer import unique_object
 
 MAX_BODY = 1024 * 1024
@@ -86,6 +87,7 @@ class WebhookServer(ThreadingHTTPServer):
         if any(not isinstance(secret, str) or len(secret) < 32 for secret in self.secrets.values()):
             raise CirraError("service webhook secrets must contain at least 32 characters")
         self.slots = threading.BoundedSemaphore(16)
+        activate(self.queue.directory.parent)
         super().__init__(address, Handler)
 
     def process_request(self, request, client_address):
@@ -110,6 +112,8 @@ class WebhookServer(ThreadingHTTPServer):
         log_line(
             {
                 "event": "webhook_error",
+                "level": "error",
+                "operation": "accept_connection",
                 "phase": "connection",
                 "request_id": uuid.uuid4().hex,
                 "type": type(sys.exc_info()[1]).__name__,
@@ -193,7 +197,13 @@ class Handler(BaseHTTPRequestHandler):
             super().handle()
         except Exception as exc:
             log_line(
-                {"event": "webhook_error", **self.request_context(), "type": type(exc).__name__}
+                {
+                    "event": "webhook_error",
+                    "level": "error",
+                    "operation": "handle_request",
+                    **self.request_context(),
+                    "type": type(exc).__name__,
+                }
             )
             if self.response_status is None and hasattr(self, "request_version"):
                 self.respond(500, {"error": "receiver failed", "request_id": self.request_id})
@@ -265,6 +275,8 @@ class Handler(BaseHTTPRequestHandler):
             log_line(
                 {
                     "event": "webhook_error",
+                    "level": "error",
+                    "operation": "enqueue_delivery",
                     **self.request_context(),
                     "type": type(exc).__name__,
                     "phase": "persist_delivery",

@@ -78,6 +78,21 @@ delivery reaches its expected result, and the affected repositories have been up
 
 ## Storage retention
 
+The worker counts large pre-upgrade queues in batches and archives old jobs in
+the background. Admission under pressure reads at most four indexed candidates
+and archives at most one terminal job. A large pre-upgrade queue can briefly
+return 503 for new admissions while its initial count finishes. Previously
+acknowledged deliveries continue to deduplicate.
+
+The first new writer records the required file-backed queue format. The release
+driver checks it before deployment, explicit rollback and automatic recovery.
+Managed worker and webhook systemd drop-ins also run this check before startup,
+including when an older operator script switches the release symlink. A rollback
+refusal preserves the queue, its archived replay keys and outstanding publication
+intents. Select a release that reads the recorded format or roll forward with a
+fix. Restoring an older full-state backup requires reconciling provider writes and
+deliveries since that backup. SQLite remains at schema version 3.
+
 The review queue moves terminal records to `queue/archive/` after seven days
 and reclaims successful or skipped records earlier under pressure. Audit queue
 maintenance moves terminal records after seven days. Current receipts and

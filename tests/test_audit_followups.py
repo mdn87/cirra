@@ -28,14 +28,14 @@ class LimitedOpener:
     "status, headers, delay",
     [
         (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "+1800"}, 1800),
-        (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "+999999"}, 3600),
+        (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "+999999"}, 999999),
         (429, {"Retry-After": "120"}, 120),
         (429, {}, 60),
     ],
 )
 def test_github_rate_limit_carries_the_provider_reset_time(status, headers, delay):
     # C001/C012: a rate limit is not an ordinary failure; it says when to retry.
-    # Resets are capped at one hour, GitHub's quota window.
+    # A provider-directed reset remains the minimum even for a long outage.
     now = time.time()
     headers = {
         key: str(int(now) + int(value[1:])) if value.startswith("+") else value
@@ -83,9 +83,19 @@ def test_gitlab_reader_preserves_reset_and_distinguishes_credential_refusal():
     from cirra.domain import ProviderAccessDenied, ProviderRateLimited
     from cirra.transport import JSONClient
 
-    until = int(time.time()) + 150
+    until = int(time.time()) + 86400
     client = JSONClient(
         "https://gitlab.com", {}, opener=LimitedOpener(429, {"RateLimit-Reset": str(until)})
+    )
+    with pytest.raises(ProviderRateLimited) as refusal:
+        client.request("GET", "/api/v4/projects/42")
+    assert refusal.value.retry_at == until
+    from email.utils import formatdate
+
+    client = JSONClient(
+        "https://gitlab.com",
+        {},
+        opener=LimitedOpener(429, {"Retry-After": formatdate(until, usegmt=True)}),
     )
     with pytest.raises(ProviderRateLimited) as refusal:
         client.request("GET", "/api/v4/projects/42")
