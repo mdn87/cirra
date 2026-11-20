@@ -46,7 +46,8 @@ def main():
     if not glas_python:
         glas_python = (
             str(glas / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
-            if glas is not None else sys.executable
+            if glas is not None
+            else sys.executable
         )
     return subprocess.call(
         [

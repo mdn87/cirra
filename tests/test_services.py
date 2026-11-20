@@ -46,6 +46,7 @@ def test_worker_selects_injected_publisher_key_without_credential_file(tmp_path,
         state_dir=tmp_path,
         once=True,
     )
+
     def credential(name):
         if name == "APP_PEM":
             return os.environ[name]

@@ -305,6 +305,8 @@ def test_deploy_script_and_its_remote_half_are_valid_lf_bash():
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash is not available")
+    if Path(bash).name.lower() == "bash.exe" and "system32" in str(Path(bash).parent).lower():
+        pytest.skip("Windows WSL launcher cannot read native Python test paths")
     script = Path(__file__).resolve().parents[1] / "scripts" / "deploy-release.sh"
     assert b"\r" not in script.read_bytes()
     subprocess.run([bash, "-n", str(script)], check=True)
