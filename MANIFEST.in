@@ -1,5 +1,6 @@
 recursive-include examples *.json *.yaml *.yml
 include examples/observer.Dockerfile
+include worker-state-version
 recursive-include examples/systemd *.service
 recursive-include eval *.json *.md
 recursive-include docs *.md

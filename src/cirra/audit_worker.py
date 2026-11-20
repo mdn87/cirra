@@ -12,6 +12,7 @@ audit that is where runnable pr or release work preempts it.
 
 import json
 import os
+import random
 import subprocess
 import time
 from datetime import UTC, datetime
@@ -22,15 +23,15 @@ from cirra import audits
 from cirra.audit import select_tiers
 from cirra.audit_checkout import change_ref, prepare_checkout, remove_checkout
 from cirra.dispatch import stop_process, tool_environment
-from cirra.domain import CirraError, sha
+from cirra.domain import CirraError, ProviderRateLimited, digest, sha, utc_now
 from cirra.github import API_VERSION, native_id, record, repository_name
 from cirra.job_queue import AUDIT_PRIORITY, AuditQueue
 from cirra.publish import write_receipt
 from cirra.store import Store
-from cirra.transport import JSONClient, pages
+from cirra.transport import JSONClient, ReadUnavailable, RemoteUncertain, RequestNotSent, pages
 
 CHECK_NAME = "cirra/audit"
-WAITING = ("awaiting_import", "awaiting_baseline")
+WAITING = ("awaiting_import", "awaiting_baseline", "awaiting_publication")
 # A noisy or wedged agent must not fill the state filesystem.
 MAX_AGENT_LOG_BYTES = 16 * 1024 * 1024
 FINAL = {
@@ -51,19 +52,35 @@ def settle(queue, store, job, on_complete=None):
     stopped = queue.stop_reason(job["id"])
     if attempt["state"] == "complete" and stopped:
         # Cancelled, or replaced by a newer head, before its result was published.
-        return queue.update(job["id"], state=stopped, result=result)
+        return queue.update(job["id"], settling=True, state=stopped, result=result)
     if attempt["state"] == "complete" and on_complete:
         result["publication"] = on_complete(job, attempt)
         if result["publication"]["state"] == "waiting":
-            return queue.update(job["id"], state="awaiting_baseline", result=result)
+            return queue.update(job["id"], settling=True, state="awaiting_baseline", result=result)
+        if result["publication"]["state"] == "retry":
+            tries = job.get("publication_tries", 0) + 1
+            due = max(
+                time.time() + 30 * 2 ** min(tries - 1, 4) * random.uniform(1, 1.25),
+                result["publication"].get("retry_at", 0),
+            )
+            return queue.update(
+                job["id"],
+                settling=True,
+                state="awaiting_publication" if tries < 5 else "attention",
+                not_before=due,
+                publication_tries=tries,
+                result=result,
+            )
         if result["publication"]["state"] == "stopped":
-            return queue.update(job["id"], state=result["publication"]["reason"], result=result)
+            return queue.update(
+                job["id"], settling=True, state=result["publication"]["reason"], result=result
+            )
         if result["publication"]["state"] == "failed":
             state = "attention"
-    return queue.update(job["id"], state=state, result=result)
+    return queue.update(job["id"], settling=True, state=state, result=result)
 
 
-def recover(queue, store, on_complete=None):
+def recover(queue, store, on_complete=None, on_job=None):
     """Settle waiting jobs and reconcile jobs a stopped worker left `running`.
 
     The single worker runs one audit at a time inside `audit_once`, so a job
@@ -71,7 +88,16 @@ def recover(queue, store, on_complete=None):
     attempt settles, a pending stop applies, and anything else runs again.
     """
     for job in queue.jobs():
-        if job["state"] in WAITING:
+        if on_job and job["state"] in (*WAITING, "running"):
+            on_job(job)
+        if job["state"] in WAITING and (
+            job["state"] != "awaiting_publication" or job["not_before"] <= time.time()
+        ):
+            if not job.get("attempt_id"):
+                queue.update(
+                    job["id"], state="attention", error="waiting audit has no saved attempt"
+                )
+                continue
             settle(queue, store, job, on_complete)
         elif job["state"] == "running":
             attempt_id = job.get("attempt_id")
@@ -97,18 +123,22 @@ def fail(queue, store, job, attempt_id, error, on_complete=None):
     return queue.update(job["id"], state="failed", error=error)
 
 
-def audit_once(queue, store, maximum, run, *, on_complete=None, now=None, interrupt=None):
+def audit_once(
+    queue, store, maximum, run, *, on_complete=None, now=None, interrupt=None, on_job=None
+):
     """Recover and settle earlier work, then run at most one runnable request.
 
     `interrupt()` reports work outside the audit queue (pending review deliveries)
     that should also preempt a full audit, since it becomes audit requests only
     once the worker loop gets to it.
     """
-    recover(queue, store, on_complete)
+    recover(queue, store, on_complete, on_job)
     job = queue.next_job(maximum, now)
     if job is None:
         return None
     job_id, attempt_id = job["id"], None
+    if on_job:
+        on_job(job)
 
     def stop(checkpoints=None):
         reason = queue.stop_reason(job_id)
@@ -136,6 +166,8 @@ def audit_once(queue, store, maximum, run, *, on_complete=None, now=None, interr
         )
         attempt_id = attempt["attempt_id"]
         job = queue.update(job_id, attempt_id=attempt_id)
+        if on_job:
+            on_job(job)
         if attempt["state"] == "complete":
             return settle(queue, store, job, on_complete)  # Attached to an existing result.
         if reason := queue.stop_reason(job_id):
@@ -158,9 +190,13 @@ def audit_once(queue, store, maximum, run, *, on_complete=None, now=None, interr
             )
         if outcome["state"] == "imported":
             return settle(queue, store, queue.read(job_id), on_complete)
-        raise CirraError(f"audit runner returned an unsupported outcome {outcome!r}")
+        raise CirraError("audit runner returned an unsupported outcome")
     except Exception as exc:  # noqa: BLE001 - any runner failure must end and fence the job
-        message = str(exc) if isinstance(exc, CirraError) else f"{type(exc).__name__}: {exc}"
+        message = (
+            str(exc)
+            if isinstance(exc, CirraError)
+            else f"audit runner failed ({type(exc).__name__})"
+        )
         return fail(queue, store, job, attempt_id, message, on_complete)
 
 
@@ -489,6 +525,12 @@ class AuditRunner:
                 try:
                     if process.poll() is None:
                         stop_process(process)
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise CirraError(
+                            "audit agent timed out and process cleanup failed"
+                        ) from exc
+                    raise CirraError("audit agent process cleanup failed") from exc
                 finally:
                     if getattr(process, "cirra_job", None):
                         process.cirra_job.close()  # ends anything the agent left running
@@ -609,7 +651,17 @@ class AuditCheckPublisher:
             {"Authorization": f"Bearer {token}", "X-GitHub-Api-Version": API_VERSION},
         )
 
-    def publish(self, head, external_id, conclusion, summary):
+    def publish(
+        self,
+        head,
+        external_id,
+        conclusion,
+        summary,
+        *,
+        reconcile_only=False,
+        before_create=None,
+        expected_summary_digest=None,
+    ):
         def get(route, params):
             data, more = self.http.request("GET", self.prefix + "/" + route, params)
             return record(data).get("check_runs"), more
@@ -626,8 +678,21 @@ class AuditCheckPublisher:
             and item.get("external_id") == external_id
             and str(record(item.get("app")).get("id")) == self.app_id
         ]
+        if len(found) > 1:
+            raise CirraError("multiple owned audit checks match this audit")
         if found:
+            if (
+                found[0].get("status") != "completed"
+                or found[0].get("conclusion") != conclusion
+                or digest(record(found[0].get("output")).get("summary"))
+                != (expected_summary_digest or digest(summary))
+            ):
+                raise CirraError("owned audit check does not match the completed report")
             return {"native_id": native_id(found[0].get("id")), "existing": True}
+        if reconcile_only:
+            raise RemoteUncertain("the audit check has no confirmed acknowledgement")
+        if before_create and (reason := before_create()):
+            return {"stopped": reason}
         item, _ = self.http.request(
             "POST",
             self.prefix + "/check-runs",
@@ -640,12 +705,23 @@ class AuditCheckPublisher:
                 "output": {"title": "Cirra production audit", "summary": summary},
             },
         )
-        if (
-            record(item).get("external_id") != external_id
-            or str(record(item.get("app")).get("id")) != self.app_id
-        ):
-            raise CirraError("GitHub check run acknowledgement failed ownership validation")
-        return {"native_id": native_id(item.get("id")), "existing": False}
+        try:
+            if (
+                record(item).get("external_id") != external_id
+                or str(record(item.get("app")).get("id")) != self.app_id
+                or item.get("name") != CHECK_NAME
+                or item.get("head_sha") != head
+                or item.get("status") != "completed"
+                or item.get("conclusion") != conclusion
+                or record(item.get("output")).get("summary") != summary
+            ):
+                raise CirraError("mismatched check")
+            identifier = native_id(item.get("id"))
+        except CirraError:
+            raise RemoteUncertain(
+                "GitHub audit check acknowledgement did not match the intent"
+            ) from None
+        return {"native_id": identifier, "existing": False}
 
 
 class AuditPublication:
@@ -659,10 +735,11 @@ class AuditPublication:
         if attempt["tier"] != "pr":
             return {"state": "not_published", "reason": f"{attempt['tier']} audits gate elsewhere"}
         path = self.directory / "audit-publication" / f"{attempt['audit_id']}.json"
+        previous = {}
         if path.exists():
-            receipt = json.loads(path.read_text(encoding="utf-8"))
-            if receipt["state"] == "published":
-                return {**receipt, "duplicate": True}
+            previous = json.loads(path.read_text(encoding="utf-8"))
+            if previous["state"] == "published":
+                return {**previous, "duplicate": True}
         identity = json.loads(attempt["identity_json"])
         route = route_for(self.routes, job["context"].get("route"), identity)
         if route is None:
@@ -673,8 +750,10 @@ class AuditPublication:
                 "state": "failed",
                 "reason": "the audit policy changed after this request; request it again",
             }
-        comparison = None
-        if "full" in policy.tiers:
+        uncertain = previous.get("uncertain", previous.get("state") in ("creating", "failed"))
+        saved_intent = uncertain and previous.get("summary_digest")
+        comparison = summary = None
+        if not saved_intent and "full" in policy.tiers:
             # Findings are only new against a baseline; without one, the gate waits.
             baseline = audits.latest_full(Store(self.directory), attempt["repository_key"])
             if baseline is not None and any(
@@ -688,20 +767,34 @@ class AuditPublication:
                     "reason": "waiting for a full audit baseline from the same skill and catalog",
                 }
             comparison = audits.compare(json.loads(attempt["report_json"]), baseline)
-        result = audits.gate(policy, "pr", attempt, comparison)
-        conclusion = (
-            "neutral"
-            if result["level"] == "none"
-            else {"block": "failure", "pass": "success"}[result["state"]]
-        )
-        receipt = {
-            "state": "published",
-            "audit_id": attempt["audit_id"],
-            "attempt_id": attempt["attempt_id"],
-            "gate": result["state"],
-            "conclusion": conclusion,
-            "blocking": len(result["blocking"]),
-        }
+        if saved_intent:
+            # A newer baseline can change the gate after a lost create response.
+            # Read back the exact check for which the existing intent was recorded.
+            receipt = {
+                key: previous[key]
+                for key in (
+                    "audit_id",
+                    "attempt_id",
+                    "gate",
+                    "conclusion",
+                    "blocking",
+                    "summary_digest",
+                )
+            }
+        else:
+            result = audits.gate(policy, "pr", attempt, comparison)
+            summary = audits.render(attempt, result)
+            receipt = {
+                "audit_id": attempt["audit_id"],
+                "attempt_id": attempt["attempt_id"],
+                "gate": result["state"],
+                "conclusion": "neutral"
+                if result["level"] == "none"
+                else {"block": "failure", "pass": "success"}[result["state"]],
+                "blocking": len(result["blocking"]),
+                "summary_digest": digest(summary),
+            }
+        receipt.update(state="published", observed_at=utc_now())
         if reason := AuditQueue(self.directory).stop_reason(job["id"]):
             # Cancelled or superseded while waiting: never publish stopped work.
             return {"state": "stopped", "reason": reason}
@@ -710,16 +803,43 @@ class AuditPublication:
                 state="unsupported", reason="audit publication is implemented for GitHub only"
             )
         else:
+            # Older failed receipts cannot distinguish a refused request from a lost reply.
+            recovering = uncertain
+
+            def starting():
+                nonlocal uncertain
+                queue = AuditQueue(self.directory)
+                with queue._lock():
+                    if reason := queue.stop_reason(job["id"]):
+                        return reason
+                    uncertain = True
+                    write_receipt(path, {**receipt, "state": "creating", "uncertain": True})
+                return None
+
             try:
+                publisher = self.publisher_for(route)
+                native = publisher.publish(
+                    attempt["head"],
+                    attempt["audit_id"],
+                    receipt["conclusion"],
+                    summary,
+                    reconcile_only=uncertain,
+                    expected_summary_digest=receipt["summary_digest"],
+                    before_create=starting,
+                )
+                if native.get("stopped"):
+                    return {"state": "stopped", "reason": native["stopped"]}
+                receipt.update(native)
+            except (ReadUnavailable, ProviderRateLimited, RemoteUncertain) as exc:
+                if isinstance(exc, (ProviderRateLimited, RequestNotSent)) and not recovering:
+                    uncertain = False  # The provider explicitly refused the create.
                 receipt.update(
-                    self.publisher_for(route).publish(
-                        attempt["head"],
-                        attempt["audit_id"],
-                        conclusion,
-                        audits.render(attempt, result),
-                    )
+                    state="retry",
+                    reason=str(exc),
+                    uncertain=uncertain,
+                    retry_at=getattr(exc, "retry_at", 0),
                 )
             except CirraError as exc:
-                receipt.update(state="failed", reason=str(exc))
+                receipt.update(state="failed", reason=str(exc), uncertain=recovering)
         write_receipt(path, receipt)
         return receipt

@@ -219,29 +219,51 @@ class GitLabPublisher:
         return {"id": native_id(item.get("id")), "metadata": metadata_from(item.get("body"))}
 
 
+def sync_directory(path):
+    """Commit directory entries on POSIX after moving a durable receipt into place."""
+    if os.name == "posix":
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def receipt_directory(path):
+    if not path.is_dir():
+        receipt_directory(path.parent)
+        path.mkdir(exist_ok=True)
+        sync_directory(path.parent)
+
+
+def replace_receipt(path, content):
+    temporary = path.with_name(f".{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        sync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def write_receipt(path, receipt, *, history=True):
     """Atomically replace `path`, keeping every distinct version as evidence.
 
     `history=False` is only for overwrite-in-place state such as heartbeats,
     whose every write differs and would otherwise grow history without bound.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_directory(path.parent)
     content = canonical(receipt) + "\n"
     if history:
         versions = path.parent / "history" / path.stem
-        versions.mkdir(parents=True, exist_ok=True)
+        receipt_directory(versions)
         historical = versions / f"{digest(receipt)}.json"
         if not historical.exists():
-            with historical.open("x", encoding="utf-8") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-    temporary = path.with_name(f".{uuid.uuid4().hex}.tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        stream.write(content)
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+            replace_receipt(historical, content)
+    replace_receipt(path, content)
 
 
 def checkpoint(store, claim, path, receipt):

@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import sys
+from functools import partial
 from pathlib import Path
 
 from cirra import __version__, audit_cli, extensions, gitlab, provenance, service_cli
@@ -49,13 +50,28 @@ def capture_change(
     instance=None,
     witness=None,
     witness_key=None,
+    strict_ci_reads=False,
 ):
     if provider == "github":
         client = GitHubClient(repository, token=token, timeout=timeout)
-        data = collect(repository, change, config, client=client, max_pages=max_pages)
+        data = collect(
+            repository,
+            change,
+            config,
+            client=client,
+            max_pages=max_pages,
+            strict_ci_reads=strict_ci_reads,
+        )
     elif provider == "gitlab":
         client = gitlab.GitLabClient(repository, token=token, timeout=timeout)
-        data = gitlab.collect(repository, change, config, client=client, max_pages=max_pages)
+        data = gitlab.collect(
+            repository,
+            change,
+            config,
+            client=client,
+            max_pages=max_pages,
+            strict_ci_reads=strict_ci_reads,
+        )
     else:
         from cirra import forgejo
 
@@ -164,7 +180,9 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
-        service_result = service_cli.run(args, token_from, capture_change)
+        service_result = service_cli.run(
+            args, token_from, partial(capture_change, strict_ci_reads=True)
+        )
         if service_result is not None:
             return service_result
         extension_result = extensions.run(args, token_from, capture_change)

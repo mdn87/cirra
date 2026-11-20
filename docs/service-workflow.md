@@ -6,6 +6,9 @@ runs the selected tests in an isolated Docker container, obtains an AI review,
 and publishes the results. GitHub still owns the repository, checks, branch
 rules, and merge decision. Cirra never merges a PR.
 
+Service objectives, alert ownership, publication recovery and cold storage are
+documented in [Worker operations](worker-operations.md).
+
 The worker also supports GitLab merge-request reviews, isolated tests, and
 maintained advisory notes. GitHub observations attest the supervisor's native
 check. GitLab observations use a signed `observer_run` record retained by Cirra;
@@ -302,16 +305,19 @@ a reason. Policy changes also stop old queued jobs for inspection.
 
 Defaults permit three attempts per job and 30 admitted job attempts per UTC day.
 Retry delays increase exponentially from `retry_seconds` to `max_retry_seconds`
-(one hour by default). A GitHub rate limit is not counted as an attempt: the
-job waits in `retry` until the reset time GitHub reports (at most one hour).
+(one hour by default). When GitHub or GitLab supplies a later reset time, the
+worker waits until that time. A quota refusal before execution returns the
+job's daily admission.
 Anonymous collection allows 60 reads an hour, so configure a read-only reader
 token for sustained traffic. `reconcile_seconds` defaults to zero (disabled).
 Polling queues each open PR head once; a head that another job already tested,
 or a move of only the target branch, does not queue it again.
 The daily limit survives restart; remaining jobs wait for the next day. Per-call
 review time and budget limits still apply. `cirra jobs` shows results and today's
-admission count. The queue retains up to 10,000 unique accepted bodies, after
-which ingress returns an error until an operator archives completed work.
+admission count. The review queue has 10,000 slots by default. At capacity,
+new deliveries and operator retries of archived jobs can reclaim one eligible
+terminal job. If all slots are occupied by ineligible work, the queue refuses
+new admissions until a slot opens. The worker also archives old terminal records.
 State, source archives, and bounded logs are retained for inspection; arrange
 backups and retention appropriate to the repository data.
 

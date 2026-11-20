@@ -3,6 +3,7 @@
 import json
 import os
 import signal
+import sys
 import threading
 from pathlib import Path
 
@@ -46,6 +47,11 @@ def register(commands):
             parser.add_argument("--route")
     status = commands.add_parser("jobs", help="inspect durable worker job results")
     status.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
+    cold = commands.add_parser(
+        "list-cold-evidence", help="write NUL-separated relative worker evidence paths for archival"
+    )
+    cold.add_argument("--state-dir", type=Path, required=True)
+    cold.add_argument("--older-than-days", type=int, default=30)
     health = commands.add_parser(
         "health", help="exit nonzero when the worker, queue, reconcile, or budget needs attention"
     )
@@ -71,6 +77,11 @@ def register(commands):
 
 
 def run(args, credential, capture):
+    if args.command == "list-cold-evidence":
+        from cirra.retention import manifest
+
+        manifest(args.state_dir, args.older_than_days, sys.stdout.buffer)
+        return 0
     if args.command == "observer-definition":
         data = load_observer(args.config)
         print(json.dumps({"definition_digest": data["definition_digest"], "image": data["image"]}))
@@ -84,6 +95,8 @@ def run(args, credential, capture):
 
         return health(args.state_dir, args.max_heartbeat_age, args.attention_window)
     if args.command == "jobs":
+        from cirra.health import queue_metrics
+
         queue = Queue(args.state_dir)
         status = queue.directory.parent / "worker-status.json"
         reconciliation = queue.directory.parent / "reconciliation.json"
@@ -92,6 +105,7 @@ def run(args, credential, capture):
             json.dumps(
                 {
                     "jobs": queue.status(),
+                    "queue_metrics": queue_metrics(queue),
                     "daily_usage": queue.usage(),
                     "worker": queue.read(status) if status.exists() else None,
                     "reconciliation": queue.read(reconciliation)
