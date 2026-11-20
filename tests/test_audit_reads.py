@@ -1,13 +1,16 @@
 import hashlib
 import json
 import os
+import select
+import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
-from http.client import HTTPConnection
+from http.client import HTTPConnection, HTTPResponse
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +18,7 @@ import pytest
 from audit_fixtures import build_report
 from test_audit_worker import AGENT, FakeGitHub, agent, request, store_baseline
 
-from cirra import audit_read_snapshot, audits
+from cirra import audit_read_snapshot, audit_reads, audits
 from cirra.audit_reads import AuditReadServer
 from cirra.audit_worker import AuditCheckPublisher, AuditPublication, audit_once
 from cirra.domain import CirraError, canonical, digest
@@ -341,19 +344,87 @@ def test_summary_page_memory_does_not_include_large_reports(served):
     assert peak < 6 * 1024 * 1024
 
 
-def test_read_error_is_correlated_without_echoing_input(served, capsys):
+@pytest.fixture
+def access_log(monkeypatch):
+    records, completed = [], threading.Event()
+    write_log = audit_reads.log_line
+
+    def capture(record):
+        write_log(record)
+        records.append(record)
+        if record["event"] == "audit_read":
+            completed.set()
+
+    monkeypatch.setattr(audit_reads, "log_line", capture)
+    return records, completed
+
+
+def test_read_error_is_correlated_without_echoing_input(served, access_log, capsys):
     (served.server.state_dir / "audit-waivers").mkdir()
     (served.server.state_dir / "audit-waivers" / "waiver.json").write_text(
         "secret-body", encoding="utf8"
     )
     response, _ = get(served.server, "/audits?tier=private")
     assert response.status == 503
+    _, completed = access_log
+    assert completed.wait(2)
     records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
-    error, access = records[-2:]
+    error, access = [
+        row for row in records if row["request_id"] == response.getheader("X-Request-ID")
+    ]
     assert error["level"] == "error" and error["operation"] == "audit_read"
     assert error["route"] == access["route"] == "audits"
     assert error["request_id"] == response.getheader("X-Request-ID") == access["request_id"]
+    assert access["outcome"] == "completed" and access["status"] == 503
     assert "secret-body" not in str(records) and "private" not in str(records)
+
+
+@pytest.mark.parametrize("disconnect", [False, True])
+def test_completion_includes_body_write_and_client_disconnect(
+    served, access_log, monkeypatch, disconnect
+):
+    records, completed = access_log
+    headers_sent, release = threading.Event(), threading.Event()
+    peers = []
+    clock = [10.0]
+    monkeypatch.setattr(audit_reads, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    end_headers = audit_reads.ReadHandler.end_headers
+
+    def pause_before_body(handler):
+        end_headers(handler)
+        peers.append(handler.request)
+        headers_sent.set()
+        assert release.wait(4)
+
+    monkeypatch.setattr(audit_reads.ReadHandler, "end_headers", pause_before_body)
+    with socket.create_connection(served.server.server_address, timeout=4) as client:
+        if disconnect:
+            # Force an observable peer reset on both Winsock and POSIX.
+            linger = struct.pack("HH" if os.name == "nt" else "ii", 1, 0)
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+        client.sendall(b"GET /audits?tier=private HTTP/1.0\r\n\r\n")
+        with HTTPResponse(client) as response:
+            response.begin()
+            request_id = response.getheader("X-Request-ID")
+            try:
+                assert headers_sent.wait(2) and response.status == 200
+                assert records == []
+                if disconnect:
+                    response.close()
+                    client.close()
+                    assert select.select(peers, [], [], 2)[0]
+                clock[0] += 2.75
+            finally:
+                release.set()
+            if not disconnect:
+                assert json.loads(response.read())["record"]["audits"] == []
+        assert completed.wait(2)
+    [entry] = records
+    assert entry["request_id"] == request_id
+    assert entry["duration_ms"] == 2750 and entry["status"] == 200
+    assert entry["outcome"] == ("disconnected" if disconnect else "completed")
+    assert entry["level"] == ("warning" if disconnect else "info")
+    assert entry["route"] == "audits" and "private" not in str(entry)
 
 
 def test_cli_serves_reads_without_credentials(world):

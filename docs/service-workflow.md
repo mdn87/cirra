@@ -115,6 +115,10 @@ also returns 503. Audit packets under
 These GET paths, the literal `cirra.audit-reads.v1` identifier, and the response
 fields form the v1 contract. A breaking change needs a separately selected version.
 Every response has a server-generated `X-Request-ID` for matching the request log.
+The reader emits one `audit_read` completion event per handled connection.
+Its `duration_ms` includes response writes and socket cleanup. The `status`
+field identifies the HTTP status selected, when known. Use `outcome` to
+distinguish a completed response from a disconnect or an internal failure.
 
 The optional systemd service uses the dedicated `cirra-audit-reader` account.
 Create that system account and group once, then run

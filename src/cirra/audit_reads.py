@@ -143,16 +143,44 @@ class AuditReadServer(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request, client_address):
-        self.request_context.id = uuid.uuid4().hex
-        self.request_context.route = "(other)"
-        self.request_context.started = time.monotonic()
+        context = self.request_context
+        started = time.monotonic()
+        context.id = uuid.uuid4().hex
+        context.route = context.method = "(other)"
+        context.status = None
+        context.outcome = "disconnected"
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self.slots.release()
+            try:
+                level = "info"
+                if context.outcome == "failed" or (context.status or 0) >= 500:
+                    level = "error"
+                elif context.outcome == "disconnected":
+                    level = "warning"
+                log_line(
+                    {
+                        "event": "audit_read",
+                        "level": level,
+                        "operation": "audit_read",
+                        "method": context.method,
+                        "route": context.route,
+                        "request_id": context.id,
+                        "duration_ms": round(1000 * (time.monotonic() - started), 2),
+                        "status": context.status,
+                        "outcome": context.outcome,
+                    }
+                )
+            finally:
+                self.slots.release()
 
     def handle_error(self, request, client_address):
-        self.log_error(sys.exc_info()[1])
+        exc = sys.exc_info()[1]
+        if isinstance(exc, OSError) and getattr(self.request_context, "id", None):
+            self.request_context.outcome = "disconnected"
+            return
+        self.request_context.outcome = "failed"
+        self.log_error(exc)
 
     def log_error(self, exc):
         log_line(
@@ -260,31 +288,30 @@ class ReadHandler(BaseHTTPRequestHandler):
             pass
 
     def finish(self):
-        self.deadline.cancel()
         try:
             super().finish()
         except OSError:
-            pass
+            self.server.request_context.outcome = "disconnected"
+        finally:
+            self.deadline.cancel()
 
     def log_message(self, format, *args):
         pass
 
     def log_request(self, code="-", size="-"):
         context = self.server.request_context
-        log_line(
-            {
-                "event": "audit_read",
-                "level": "error" if str(code).startswith("5") else "info",
-                "operation": "audit_read",
-                "method": self.command
-                if self.command in ("GET", "HEAD", "PUT", "POST", "OPTIONS", "DELETE", "PATCH")
-                else "(other)",
-                "route": context.route,
-                "request_id": context.id,
-                "duration_ms": round(1000 * (time.monotonic() - context.started), 2),
-                "status": int(code) if str(code).isdigit() else None,
-            }
-        )
+        context.status = int(code) if str(code).isdigit() else None
+        method = getattr(self, "command", None)
+        if method in ("GET", "HEAD", "PUT", "POST", "OPTIONS", "DELETE", "PATCH"):
+            context.method = method
+
+    def send_error(self, code, message=None, explain=None):
+        super().send_error(code, message, explain)
+        self.response_written()
+
+    def response_written(self):
+        self.wfile.flush()
+        self.server.request_context.outcome = "completed"
 
     def __getattr__(self, name):
         # Every method other than GET is answered 405, whatever its name.
@@ -315,6 +342,7 @@ class ReadHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(payload)
+        self.response_written()
         self.close_connection = True
 
     def end_headers(self):
