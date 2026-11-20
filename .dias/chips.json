@@ -423,16 +423,16 @@
       "projectId": "cirra",
       "title": "Verify the native release workflow",
       "summary": "Dispatch the evidence workflow with the Cirra GitHub App and match its successful run to the accepted release request.",
-      "stage": "blocked",
+      "stage": "done",
       "sequence": 9,
       "prereqs": [
         "cirra:prove-release-audit-gate"
       ],
       "linkedRunIds": [],
-      "confidence": "reported",
+      "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-20T13:39:14Z",
-        "updatedAt": "2026-11-20T13:45:26Z"
+        "updatedAt": "2026-11-20T22:52:29Z"
       },
       "evidence": [
         {
@@ -452,6 +452,18 @@
           "kind": "stage-change",
           "at": "2026-11-20T13:45:26Z",
           "message": "GitHub refused the restricted token. The account owner must save Actions write on the App and approve the updated Cirra installation."
+        },
+        {
+          "entryId": "cirra:verify-native-release-dispatch:grant-verified",
+          "kind": "stage-change",
+          "at": "2026-11-20T22:50:04Z",
+          "message": "GitHub confirmed Actions write for the App and its Cirra installation. The host obtained a token restricted to this repository."
+        },
+        {
+          "entryId": "cirra:verify-native-release-dispatch:done",
+          "kind": "stage-change",
+          "at": "2026-11-20T22:52:29Z",
+          "message": "GitHub run 44832190518 succeeded on its first attempt. Cirra matched one run to the request. The log confirmed the reviewed commit from pull request 45."
         }
       ]
     }
