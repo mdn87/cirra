@@ -216,7 +216,7 @@
       "projectId": "cirra",
       "title": "Enforce host builds, tests and code review on pull requests",
       "summary": "Prove the host builds, tests and reviews a real pull request commit. Require its results on GitHub and verify both a blocked merge and a passing merge.",
-      "stage": "active",
+      "stage": "done",
       "sequence": 5,
       "prereqs": [
         "cirra:prove-full-audit-baseline"
@@ -225,7 +225,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T08:23:08Z",
-        "updatedAt": "2026-11-20T08:42:53Z"
+        "updatedAt": "2026-11-20T09:35:49Z"
       },
       "evidence": [
         {
@@ -239,6 +239,45 @@
           "kind": "stage-change",
           "at": "2026-11-20T08:42:53Z",
           "message": "The host reviewer is signed in. The live observer omits the package build, advisory review reports neutral, and GitHub has no rules on the default branch."
+        },
+        {
+          "entryId": "cirra:restore-host-pr-review:refused",
+          "kind": "note",
+          "at": "2026-11-20T09:35:49Z",
+          "message": "GitHub refused pull request 35 when both checks were missing. It refused again when the host build passed and code review failed."
+        },
+        {
+          "entryId": "cirra:restore-host-pr-review:done",
+          "kind": "stage-change",
+          "at": "2026-11-20T09:35:49Z",
+          "message": "The host built, tested and reviewed the exact head of pull request 36. Both App checks passed and GitHub merged it with the branch rules active."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:prove-release-audit-gate",
+      "projectId": "cirra",
+      "title": "Prove that the release audit controls release planning",
+      "summary": "Use a protected target to show that release planning refuses missing audit evidence and accepts a valid release audit.",
+      "stage": "planned",
+      "sequence": 6,
+      "prereqs": [
+        "cirra:prove-full-audit-baseline",
+        "cirra:restore-host-pr-review"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T09:35:49Z",
+        "updatedAt": "2026-11-20T09:35:49Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:prove-release-audit-gate:created",
+          "kind": "created",
+          "at": "2026-11-20T09:35:49Z",
+          "message": "The audit baseline and protected pull request workflow are operational. The roadmap still calls for a live release gate demonstration."
         }
       ]
     }
