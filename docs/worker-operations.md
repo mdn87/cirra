@@ -13,6 +13,13 @@ On the host, `STATE=/srv/lugos/state/cirra`.
 | Webhook queue admission | Successful new submissions plus acknowledged duplicates divided by all eligible submissions in the UTC day. Use the webhook journal for the complete indicator. | At least 99%. |
 | Useful result within 30 minutes | Accepted webhook changes reaching `done` within 30 minutes divided by accepted changes at least 30 minutes old, accepted in the trailing 24 hours. See `eligible_webhooks_24h`, `completed_within_30m`, and `on_time_percent`. | At least 95%. |
 
+These objectives allow up to 1% of eligible submissions to be refused and up to
+5% of eligible changes to miss the 30-minute target. When a measured window
+exceeds either allowance, Matt defers feature releases affecting that path and
+prioritizes repairs. Recovery and security fixes can proceed. Resume routine
+releases when both affected indicators meet their targets over their stated
+windows with eligible traffic. Record the counts and recovery time in the incident.
+
 Admission counts authenticated requests for an enabled event from a trusted author
 that reached the queue. The journal records `admission` as `accepted`, `duplicate`
 or `refused`, including eligible submissions that encountered a lock or storage

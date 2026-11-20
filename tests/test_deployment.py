@@ -51,7 +51,7 @@ def deployment(tmp_path):
         " is-active:--quiet:cirra-audit-reads.service|"
         "is-active:--quiet:cirra-health.timer) return 3 ;;\n"
         ' is-active:--quiet:cirra-worker.service) test "$WORKER_UP" = yes ;;\n'
-        " show:cirra-worker.service:--property=MainPID) echo 419 ;;\n"
+        ' show:cirra-worker.service:--property=MainPID) echo "$WORKER_MAIN_PID" ;;\n'
         " show:cirra-worker.service:--property=InvocationID) echo new-worker ;;\n"
         " *) return 0 ;;\nesac\n}\n"
     )
@@ -60,12 +60,15 @@ def deployment(tmp_path):
         "BASH_ENV": str(stubs),
         "FAKE_LOG": str(tmp_path / "calls"),
         "WORKER_UP": "yes",
+        "WORKER_MAIN_PID": str(os.getpid()),
         "CIRRA_READY_TIMEOUT": "2",
     }
 
-    def rollback(up=True, invocation="new-worker", fail_restore=False):
+    def rollback(up=True, invocation="new-worker", fail_restore=False, worker_pid=None):
         (state / "worker-status.json").write_text(
-            json.dumps({"state": "running", "pid": 419, "invocation_id": invocation})
+            json.dumps(
+                {"state": "running", "pid": worker_pid or os.getpid(), "invocation_id": invocation}
+            )
         )
         return subprocess.run(
             [
@@ -200,3 +203,19 @@ def test_failed_unit_restore_still_restores_release_and_configuration(deployment
     assert result.returncode and "Could not restore every managed unit" in result.stderr
     assert (service / "current").resolve() == current
     assert (service / "config/setting").read_text() == "current"
+
+
+def test_launcher_child_must_belong_to_the_current_worker_unit(deployment):
+    rollback, _, _, _ = deployment
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]) as child:
+        try:
+            result = rollback(worker_pid=child.pid)
+            assert result.returncode == 0, result.stderr
+        finally:
+            child.terminate()
+
+
+def test_unrelated_process_cannot_satisfy_worker_readiness(deployment):
+    rollback, _, _, _ = deployment
+    result = rollback(worker_pid=os.getppid())
+    assert result.returncode and "post-restart readiness check" in result.stderr
