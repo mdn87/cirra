@@ -8,9 +8,9 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T13:45:26Z",
+  "assessedAt": "2026-11-20T13:50:46Z",
   "confidence": "reported",
-  "currentMilestone": "Resolve the production audit findings, retry CI and code review, and prove release planning on a protected branch.",
+  "currentMilestone": "Verify that the GitHub evidence workflow runs for the release that passed the protected audit.",
   "remainingSummary": "The GitHub App needs its owner to grant Actions write for the release workflow. The live storage encryption finding remains open by owner decision.",
   "nextChipId": "cirra:verify-native-release-dispatch",
   "source": {
