@@ -66,6 +66,33 @@ try {
 
 GitHub receives a neutral check with the exact examined revisions, findings,
 coverage, and CI limitations. Keep `cirra/review` out of required merge checks.
+
+### Require host builds and code review
+
+On a GitHub worker route with the isolated observer and automatic Claude review
+enabled, the operator can add this setting under `reviewer` in the trusted policy.
+
+```yaml
+merge_gate:
+  branch: main
+  block_at: high
+```
+
+Include the project build and test commands in the host observer policy and pin
+its definition digest in the route's expected `cirra/isolated-tests` check.
+For the selected target branch, the worker opens `cirra/code-review` while the
+run is in progress. It publishes success after it verifies passing exact-head CI,
+complete patch coverage, a completed Claude review and zero findings at or above
+the threshold. A review limitation or failed run prevents a passing result.
+The check summary identifies the PR head, target and local review report.
+
+In the GitHub ruleset for that branch, require a pull request, an up-to-date
+head, and both `cirra/isolated-tests` and `cirra/code-review` from the worker's
+GitHub App. Leave the bypass list empty to enforce the same checks for admins.
+GitHub associates checks with a commit. The worker issues its required review
+only on GitHub's test-merge commit for the configured target branch. It checks that
+commit's ordered parents against the reviewed target and head before publication.
+The isolated build and test receipt stays on the actual PR head.
 Native CI success without a trusted checkout witness remains unverified in
 Cirra's report; publishing does not upgrade that evidence.
 

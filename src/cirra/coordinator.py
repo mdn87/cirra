@@ -22,7 +22,7 @@ def analysis_identity(provider, config):
             "input_digest": digest(packet),
             "config_digest": config.digest,
             "prompt_digest": digest(
-                {"protocol": dispatch.PROTOCOL, "instructions": dispatch.INSTRUCTIONS}
+                {"protocol": dispatch.PROTOCOL, "instructions": dispatch.instructions(config)}
             ),
             "reviewer": {
                 "kind": "claude",
@@ -58,11 +58,15 @@ def review(provider, config, store, *, rereview=False, reviewer=None):
         run_id = attempt["run_id"]
         duration = attempt["duration_seconds"]
         if attempt["state"] == "prepared":
-            if reviewer is None:
+            if reviewer is None and not config.merge_gate:
                 reviewer = dispatch.ClaudeReviewer(config, store.path.parent / "dispatch" / run_id)
             store.begin_call(claim, run_id)
             started = time.monotonic()
             try:
+                if reviewer is None:
+                    reviewer = dispatch.ClaudeReviewer(
+                        config, store.path.parent / "dispatch" / run_id
+                    )
                 raw = reviewer.review(provider.packet())
                 if not isinstance(raw, str) or len(raw.encode()) > config.max_response_bytes:
                     envelope = {

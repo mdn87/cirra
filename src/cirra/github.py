@@ -376,6 +376,7 @@ def collect(repository, change, config, *, client=None, max_pages=10):
             "collection": {
                 "source": "github_rest",
                 "repository": repository,
+                "target_branch": branch_name,
                 "observed_at": utc_now(),
                 "check_errors": errors,
             },

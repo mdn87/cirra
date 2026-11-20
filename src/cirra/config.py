@@ -7,8 +7,16 @@ from pathlib import Path
 
 import yaml
 
-from cirra.audit import AuditPolicy, load_audit_policy
+from cirra.audit import SEVERITIES, AuditPolicy, load_audit_policy
 from cirra.domain import CirraError, fields, number, string
+
+REVIEW_OUTPUTS = ("cirra/review", "cirra/code-review")
+
+
+@dataclass(frozen=True)
+class MergeGate:
+    branch: str
+    block_at: str
 
 
 class UniqueLoader(yaml.SafeLoader):
@@ -46,6 +54,7 @@ class Config:
     review_timeout_seconds: float = 180
     review_budget_usd: float = 1
     audit: AuditPolicy | None = None
+    merge_gate: MergeGate | None = None
 
 
 def load_config(path):
@@ -90,10 +99,12 @@ def load_config(path):
         if check["source_id"] in ("not_exposed", "unknown"):
             raise CirraError("expected checks need an exposed native source identity")
         identity = (check["kind"], check["source_id"], check["name"])
-        if identity in identities or check["name"] == "cirra/review":
+        if identity in identities or check["name"] in REVIEW_OUTPUTS:
             raise CirraError("duplicate expected check or Cirra's own output in policy")
         identities.add(identity)
-    reviewer = fields(data["reviewer"], ["kind", "endpoint", "model"], label="reviewer")
+    reviewer = fields(
+        data["reviewer"], ["kind", "endpoint", "model"], ["merge_gate"], label="reviewer"
+    )
     endpoints = {"fake": "fake://local", "session": "session://manual", "claude": "cli://claude"}
     if not isinstance(reviewer["kind"], str) or reviewer["kind"] not in endpoints:
         raise CirraError("reviewer kind must be fake, session, or claude")
@@ -121,6 +132,26 @@ def load_config(path):
         number(limits["review_timeout_seconds"], "review_timeout_seconds", 1, 900)
     if "review_budget_usd" in limits:
         number(limits["review_budget_usd"], "review_budget_usd", 0.01, 20)
+    gate = None
+    if "merge_gate" in reviewer:
+        settings = fields(reviewer["merge_gate"], ["branch", "block_at"], label="merge gate")
+        branch = string(settings["branch"], "merge gate target branch", 255)
+        if (
+            settings["block_at"] not in SEVERITIES
+            or reviewer["kind"] != "claude"
+            or limits["max_findings"] == 0
+            or any(repo["provider"] != "github" for repo in repositories)
+            or not any(
+                c["kind"] == "check_run"
+                and c["name"] == "cirra/isolated-tests"
+                and c.get("definition_digest")
+                for c in ci["expected"]
+            )
+        ):
+            raise CirraError(
+                "merge gate needs GitHub, Claude findings, a severity and a pinned isolated check"
+            )
+        gate = MergeGate(branch, settings["block_at"])
     return Config(
         path=str(path),
         digest=hashlib.sha256(raw).hexdigest(),
@@ -132,4 +163,5 @@ def load_config(path):
         model=reviewer["model"],
         **limits,
         audit=load_audit_policy(data["audit"]) if "audit" in data else None,
+        merge_gate=gate,
     )

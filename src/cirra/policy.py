@@ -1,5 +1,6 @@
 """Assess expected CI identities without confusing association with tested revisions."""
 
+from cirra.config import REVIEW_OUTPUTS
 from cirra.domain import canonical
 
 STATES = {"success", "failure", "pending", "skipped", "cancelled", "inaccessible", "unknown"}
@@ -31,7 +32,7 @@ def assess_checks(checks, snapshot, config, collection_errors=()):
             "normalized_state", check["raw_state"] if check["raw_state"] in STATES else "unknown"
         )
         item["relationship"] = relationship(check, snapshot)
-        item["excluded"] = check["name"] == "cirra/review"
+        item["excluded"] = check["name"] in REVIEW_OUTPUTS
         evidence.append(item)
     assessments = []
     for expected in config.expected_checks:
