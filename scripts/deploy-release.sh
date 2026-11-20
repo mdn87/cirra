@@ -111,15 +111,35 @@ restart_and_check() {
        [ "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")" = 200 ] &&
        python3 - "$STATE/worker-status.json" "$pid" "$invocation" "$barrier" <<'PY'
 import json, os, sys
+from pathlib import Path
+
+def belongs_to_unit(pid, main_pid):
+    # A credential launcher can remain the unit's main process and start the worker as a child.
+    if type(pid) is not int:
+        return False
+    seen = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        # Linux stat starts with "pid (comm) state ppid". A name may contain spaces and ')'.
+        state, parent, *_ = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()
+        if state in (b"Z", b"X", b"x"):
+            return False
+        if pid == main_pid:
+            return True
+        pid = int(parent)
+    return False
+
 try:
     with open(sys.argv[1], "rb") as stream:
         updated = os.fstat(stream.fileno()).st_mtime_ns
         data = json.load(stream)
     # Older releases predate invocation IDs. Require a new post-restart heartbeat.
-    same = (data.get("pid"), data.get("invocation_id")) == (int(sys.argv[2]), sys.argv[3])
-    legacy = "pid" not in data and updated > int(sys.argv[4])
+    if not isinstance(data, dict):
+        sys.exit(1)
+    same = data.get("invocation_id") == sys.argv[3] and belongs_to_unit(data.get("pid"), int(sys.argv[2]))
+    legacy = "pid" not in data and "invocation_id" not in data and updated > int(sys.argv[4])
     sys.exit(0 if data.get("state") == "running" and (same or legacy) else 1)
-except (OSError, ValueError):
+except (OSError, ValueError, IndexError):
     sys.exit(1)
 PY
     then

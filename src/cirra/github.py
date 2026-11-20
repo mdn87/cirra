@@ -429,10 +429,21 @@ def review_comparisons(client, bases, head, primary, max_bytes):
     return variants, gaps
 
 
-def collect(repository, change, config, *, client=None, max_pages=10, strict_ci_reads=False):
+def collect(
+    repository,
+    change,
+    config,
+    *,
+    client=None,
+    max_pages=10,
+    strict_ci_reads=False,
+    reviewed_target=None,
+):
     repository_name(repository)
     number(change, "pull request number", 1, 2**31 - 1, integral=True)
     number(max_pages, "check page limit", 1, 100, integral=True)
+    if reviewed_target is not None:
+        sha(reviewed_target)
     if config.reviewer_kind not in ("session", "claude"):
         raise CirraError("live collection requires a session or claude reviewer policy")
     client = client if client is not None else GitHubClient(repository)
@@ -454,7 +465,13 @@ def collect(repository, change, config, *, client=None, max_pages=10, strict_ci_
         head, _, count = revisions(pr, repository_id, change)
         branch_name = string(pr["base"].get("ref"), "GitHub target branch", 1024)
         before = head, branch_name, count
-        target = target_revision(client, branch_name)
+        if reviewed_target is not None and pr.get("merged") is not True:
+            raise CirraError(
+                "only a merged pull request can refresh a historical release comparison"
+            )
+        target = (
+            reviewed_target if reviewed_target is not None else target_revision(client, branch_name)
+        )
         gated = config.merge_gate and branch_name == config.merge_gate.branch
         comparison, _ = client.get(
             f"compare/{target}...{head}", {"per_page": 100 if gated else 1, "page": 1}
@@ -485,8 +502,10 @@ def collect(repository, change, config, *, client=None, max_pages=10, strict_ci_
         after_head, _, after_count = revisions(after, repository_id, change)
         if (after_head, after["base"].get("ref"), after_count) != before:
             continue
-        if target_revision(client, branch_name) != target:
+        if reviewed_target is None and target_revision(client, branch_name) != target:
             continue
+        if reviewed_target is not None and after.get("merged") is not True:
+            raise CirraError("pull request merge state changed during release collection")
         data = {
             "schema_version": 1,
             **variants,
