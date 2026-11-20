@@ -309,9 +309,9 @@ def test_deploy_script_and_its_remote_half_are_valid_lf_bash():
         pytest.skip("Windows WSL launcher cannot read native Python test paths")
     script = Path(__file__).resolve().parents[1] / "scripts" / "deploy-release.sh"
     assert b"\r" not in script.read_bytes()
-    subprocess.run([bash, "-n", str(script)], check=True)
+    subprocess.run([bash, "-n", script.name], cwd=script.parent, check=True)
     remote = subprocess.run(
-        [bash, str(script), "--print-remote"], check=True, capture_output=True
+        [bash, script.name, "--print-remote"], cwd=script.parent, check=True, capture_output=True
     ).stdout
     assert b"\r" not in remote and b"observer-pins" in remote and b"--require-hashes" in remote
     assert b"flock -n 9" in remote  # concurrent deploys refuse instead of racing

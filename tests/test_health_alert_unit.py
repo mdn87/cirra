@@ -106,6 +106,22 @@ def test_alert_and_recovery_delivery_cycle(unit, receiver, monkeypatch):
         assert event["dedupe_key"] == "cirra-health-lugos-host"
 
 
+def test_event_body_uses_the_service_diagnostic_without_systemd_manager_messages(monkeypatch):
+    diagnostic = '{"healthy": false, "problems": [{"kind": "backup", "detail": "backup is stale"}]}'
+    lines = iter([diagnostic, '{"healthy": true}', "unstructured service error"])
+    monkeypatch.setenv("MONITOR_INVOCATION_ID", "1" * 32)
+
+    def journal(argv, **kwargs):
+        assert "_SYSTEMD_UNIT=cirra-health.service" in argv and "_TRANSPORT=stdout" in argv
+        assert "_SYSTEMD_INVOCATION_ID=" + "1" * 32 in argv
+        return subprocess.CompletedProcess(argv, 0, next(lines) + "\n")
+
+    monkeypatch.setattr(health_notify.subprocess, "run", journal)
+    assert health_notify.journal_detail() == diagnostic
+    assert health_notify.journal_detail() == ""
+    assert health_notify.journal_detail() == ""
+
+
 def test_only_loopback_uses_plain_http():
     for host in ("localhost", "127.0.0.1", "::1"):
         assert type(health_notify.receiver(host, 8787)) is http.client.HTTPConnection

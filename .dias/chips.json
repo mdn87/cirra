@@ -260,7 +260,7 @@
       "projectId": "cirra",
       "title": "Prove that the release audit controls release planning",
       "summary": "Use a protected target to show that release planning refuses missing audit evidence and accepts a valid release audit.",
-      "stage": "active",
+      "stage": "done",
       "sequence": 6,
       "prereqs": [
         "cirra:prove-full-audit-baseline",
@@ -270,7 +270,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T09:35:49Z",
-        "updatedAt": "2026-11-20T11:18:34Z"
+        "updatedAt": "2026-11-20T13:39:14Z"
       },
       "evidence": [
         {
@@ -290,6 +290,24 @@
           "kind": "note",
           "at": "2026-11-20T11:18:34Z",
           "message": "Release planning refused the reviewed and merged candidate because its release audit was missing. The worker queued the audit and saved no release request."
+        },
+        {
+          "entryId": "cirra:prove-release-audit-gate:merged-comparison",
+          "kind": "note",
+          "at": "2026-11-20T11:59:48Z",
+          "message": "A live comparison reproduced the saved review after the target advanced. The release audit and the native workflow permission still need verification."
+        },
+        {
+          "entryId": "cirra:prove-release-audit-gate:high-refusal",
+          "kind": "note",
+          "at": "2026-11-20T12:06:24Z",
+          "message": "The release audit found three high issues in pull request 38. The live planner refused the audited candidate and wrote no release request."
+        },
+        {
+          "entryId": "cirra:prove-release-audit-gate:done",
+          "kind": "stage-change",
+          "at": "2026-11-20T13:39:14Z",
+          "message": "The protected planner refused missing and high findings. Pull request 45 passed its 45-control release audit and produced an accepted request without a waiver."
         }
       ]
     },
@@ -337,7 +355,7 @@
       "projectId": "cirra",
       "title": "Resolve the production audit findings",
       "summary": "Recheck the full audit and fix outstanding issues in worker reliability, state access, deployment and recovery. Verify each result.",
-      "stage": "active",
+      "stage": "done",
       "sequence": 8,
       "prereqs": [
         "cirra:prove-full-audit-baseline"
@@ -346,7 +364,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T11:04:43Z",
-        "updatedAt": "2026-11-20T11:05:52Z"
+        "updatedAt": "2026-11-20T13:45:26Z"
       },
       "evidence": [
         {
@@ -360,6 +378,131 @@
           "kind": "stage-change",
           "at": "2026-11-20T11:05:52Z",
           "message": "Rechecked the baseline and began examining the outstanding deployment, recovery, data and worker findings."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:host-proof",
+          "kind": "note",
+          "at": "2026-11-20T11:59:48Z",
+          "message": "An encrypted backup restored all 321 signed receipts. The live baseline query uses its verified index. The locked observer passed the host deployment suite."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:launcher",
+          "kind": "note",
+          "at": "2026-11-20T11:59:48Z",
+          "message": "The rollout exposed a worker readiness failure under the credential launcher. The fix passed seven Linux tests and the live deployment retry."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:candidate-audit",
+          "kind": "note",
+          "at": "2026-11-20T13:32:25Z",
+          "message": "The host validated 117 controls on pull request 45. It closed 31 of the original 32 findings. Live disk and swap encryption remains a medium finding."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:storage-decision",
+          "kind": "note",
+          "at": "2026-11-20T13:32:25Z",
+          "message": "Matt chose to keep the current storage. The encryption finding remains open. The encrypted off-host snapshots and isolated restore were verified."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:unit-templates",
+          "kind": "note",
+          "at": "2026-11-20T13:45:26Z",
+          "message": "The deployment exposed a line ending mismatch. All ten Linux service templates now have identical archive bytes on Windows and Linux."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:done",
+          "kind": "stage-change",
+          "at": "2026-11-20T13:45:26Z",
+          "message": "The deployed release passed 494 host tests. An isolated restore verified all 369 signed receipts. The full audit closed 31 findings and records the storage decision."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:verify-native-release-dispatch",
+      "projectId": "cirra",
+      "title": "Verify the native release workflow",
+      "summary": "Dispatch the evidence workflow with the Cirra GitHub App and match its successful run to the accepted release request.",
+      "stage": "done",
+      "sequence": 9,
+      "prereqs": [
+        "cirra:prove-release-audit-gate"
+      ],
+      "linkedRunIds": [],
+      "confidence": "authoritative",
+      "timestamps": {
+        "createdAt": "2026-11-20T13:39:14Z",
+        "updatedAt": "2026-11-20T22:52:29Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:verify-native-release-dispatch:created",
+          "kind": "created",
+          "at": "2026-11-20T13:39:14Z",
+          "message": "The protected release request passed. Matt authorized a Cirra-only Actions write token for the evidence workflow."
+        },
+        {
+          "entryId": "cirra:verify-native-release-dispatch:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T13:39:28Z",
+          "message": "Verified the App serves Cirra alone. The installation requires owner approval for Actions write before GitHub can issue the restricted release token."
+        },
+        {
+          "entryId": "cirra:verify-native-release-dispatch:missing-grant",
+          "kind": "stage-change",
+          "at": "2026-11-20T13:45:26Z",
+          "message": "GitHub refused the restricted token. The account owner must save Actions write on the App and approve the updated Cirra installation."
+        },
+        {
+          "entryId": "cirra:verify-native-release-dispatch:grant-verified",
+          "kind": "stage-change",
+          "at": "2026-11-20T22:50:04Z",
+          "message": "GitHub confirmed Actions write for the App and its Cirra installation. The host obtained a token restricted to this repository."
+        },
+        {
+          "entryId": "cirra:verify-native-release-dispatch:done",
+          "kind": "stage-change",
+          "at": "2026-11-20T22:52:29Z",
+          "message": "GitHub run 44832190518 succeeded on its first attempt. Cirra matched one run to the request. The log confirmed the reviewed commit from pull request 45."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:resolve-pr43-credential-migration",
+      "projectId": "cirra",
+      "title": "Resolve the credential migration and its two failed review jobs",
+      "summary": "Update pull request 43, verify the credential scope of each service, and recover the two jobs that could not obtain a test merge.",
+      "stage": "active",
+      "sequence": 10,
+      "prereqs": [
+        "cirra:restore-host-pr-review",
+        "cirra:verify-native-release-dispatch"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T23:19:46Z",
+        "updatedAt": "2026-11-20T23:26:56Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:created",
+          "kind": "created",
+          "at": "2026-11-20T23:19:46Z",
+          "message": "GitHub reports a merge conflict and a review comment about relative manifests. The host recorded two failed jobs while the change lacked a test merge."
+        },
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T23:20:18Z",
+          "message": "Confirmed both host jobs stopped after GitHub could not create a test merge. Checking the manifest selection and the machine account permissions."
+        },
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:verified-inputs",
+          "kind": "note",
+          "at": "2026-11-20T23:26:56Z",
+          "message": "The host read all three Bitwarden entries and each matched its working credential. A regression test reproduced selection of the wrong manifest and passed after the fix."
         }
       ]
     }

@@ -108,7 +108,9 @@ completed the live webhook/worker flow with isolated tests, verified checkout
 evidence, successful review, and one maintained note. Repeat processing reused
 the execution and review; the MR is merged and its main pipeline passed.
 Hosted CI remains association-only until an independent checkout observer
-provides trusted receipts. Live release dispatch still needs its separate setup.
+provides trusted receipts. For PR #45, the Cirra GitHub App dispatched the
+evidence workflow and Cirra matched its successful run to the reviewed commit.
+[Release workflow run](https://github.com/mdn87/cirra/actions/runs/44832190518).
 See the [live acceptance results](docs/automation-workflow.md#live-acceptance-results).
 GitKraken, Autowork and Roundtable remain optional development tools.
 

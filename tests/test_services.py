@@ -323,6 +323,35 @@ def serve(route, tmp_path, **attributes):
     return server, thread
 
 
+def test_webhook_admission_excludes_conflicting_delivery_ids(route, tmp_path, capsys):
+    server, thread = serve(route, tmp_path)
+    server.queue.maximum = 1
+    try:
+        for identity, action, expected in [
+            ("first", "opened", 202),
+            ("replay", "opened", 202),
+            ("first", "reopened", 400),
+            ("next", "reopened", 503),
+        ]:
+            raw, headers = delivery(identity=identity, action=action)
+            client = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            client.request("POST", "/hooks/test", raw, headers)
+            response = client.getresponse()
+            assert response.status == expected
+            response.read()
+            client.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert {r["delivery"]: r["admission"] for r in records if r["status"] != 400} == {
+        "first": "accepted",
+        "replay": "duplicate",
+        "next": "refused",
+    }
+    assert [r["admission"] for r in records if r["status"] == 400] == [None]
+
+
 def test_receiver_closes_slow_requests_at_a_total_deadline(route, tmp_path):
     # Production audit C011/C075: a 5 s per-read timeout let a client trickling
     # bytes hold one of 16 slots for hours.

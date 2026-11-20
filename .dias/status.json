@@ -5,16 +5,16 @@
   "assessmentState": "watchlist",
   "assessmentScope": "current-milestone",
   "percentComplete": null,
-  "milestonePhase": "operational-proof",
+  "milestonePhase": "integration-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T11:18:34Z",
+  "assessedAt": "2026-11-20T23:19:46Z",
   "confidence": "reported",
-  "currentMilestone": "Resolve the production audit findings, retry CI and code review, and prove release planning on a protected branch.",
-  "remainingSummary": "The deployed checks passed. Complete the production fixes and prove protected release planning accepts a valid audit.",
-  "nextChipId": "cirra:resolve-production-audit",
+  "currentMilestone": "Migrate service credentials for pull request 43 and restore the two affected review jobs.",
+  "remainingSummary": "Resolve the conflict and manifest path issue, verify host access to three credentials, and obtain protected checks for the updated pull request.",
+  "nextChipId": "cirra:resolve-pr43-credential-migration",
   "source": {
-    "label": "Host review findings, Windows recovery logs and the project board",
+    "label": "Pull request review and host job records",
     "updatedAt": "2026-11-20"
   }
 }
