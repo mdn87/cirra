@@ -226,6 +226,15 @@ def test_reconciliation_skips_heads_already_tested_by_another_job(tmp_path):
     )
     assert result == [{"route": "repo", "jobs": [], "already_tested": [7]}]
     assert not queue.pending()
+    route.digest = "updated-policy"
+    result = sync(
+        config,
+        queue,
+        lambda _: None,
+        discover_changes=lambda *_: [(7, {"head": "a" * 40, "target": "b" * 40})],
+    )
+    assert not result[0]["jobs"][0]["duplicate"]
+    assert queue.pending()[0]["route_digest"] == "updated-policy"
 
 
 def test_branch_capture_failure_keeps_already_queued_pr_jobs(tmp_path, monkeypatch):

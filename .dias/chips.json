@@ -260,7 +260,7 @@
       "projectId": "cirra",
       "title": "Prove that the release audit controls release planning",
       "summary": "Use a protected target to show that release planning refuses missing audit evidence and accepts a valid release audit.",
-      "stage": "planned",
+      "stage": "active",
       "sequence": 6,
       "prereqs": [
         "cirra:prove-full-audit-baseline",
@@ -270,7 +270,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T09:35:49Z",
-        "updatedAt": "2026-11-20T09:35:49Z"
+        "updatedAt": "2026-11-20T11:18:34Z"
       },
       "evidence": [
         {
@@ -278,6 +278,18 @@
           "kind": "created",
           "at": "2026-11-20T09:35:49Z",
           "message": "The audit baseline and protected pull request workflow are operational. The roadmap still calls for a live release gate demonstration."
+        },
+        {
+          "entryId": "cirra:prove-release-audit-gate:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T11:05:52Z",
+          "message": "Confirmed the target is protected. Preparing the trusted evidence workflow and a policy with release audits enabled."
+        },
+        {
+          "entryId": "cirra:prove-release-audit-gate:refused",
+          "kind": "note",
+          "at": "2026-11-20T11:18:34Z",
+          "message": "Release planning refused the reviewed and merged candidate because its release audit was missing. The worker queued the audit and saved no release request."
         }
       ]
     },
@@ -287,7 +299,7 @@
       "projectId": "cirra",
       "title": "Fix and retry pull request checks",
       "summary": "Limit GitHub requests during review, fix the Windows recovery failure and verify both checks on a real pull request.",
-      "stage": "active",
+      "stage": "done",
       "sequence": 7,
       "prereqs": [
         "cirra:restore-host-pr-review"
@@ -296,7 +308,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T10:56:55Z",
-        "updatedAt": "2026-11-20T10:57:14Z"
+        "updatedAt": "2026-11-20T11:18:34Z"
       },
       "evidence": [
         {
@@ -310,6 +322,44 @@
           "kind": "stage-change",
           "at": "2026-11-20T10:57:14Z",
           "message": "Started regression checks for comparison requests and Windows recovery after the board files passed validation."
+        },
+        {
+          "entryId": "cirra:retry-host-ci-review:done",
+          "kind": "stage-change",
+          "at": "2026-11-20T11:18:34Z",
+          "message": "Pull requests 37 and 38 merged. The deployed fix passed isolated builds and real code review on pull request 38. Both Windows versions passed."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:resolve-production-audit",
+      "projectId": "cirra",
+      "title": "Resolve the production audit findings",
+      "summary": "Recheck the full audit and fix outstanding issues in worker reliability, state access, deployment and recovery. Verify each result.",
+      "stage": "active",
+      "sequence": 8,
+      "prereqs": [
+        "cirra:prove-full-audit-baseline"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T11:04:43Z",
+        "updatedAt": "2026-11-20T11:05:52Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:resolve-production-audit:created",
+          "kind": "created",
+          "at": "2026-11-20T11:04:43Z",
+          "message": "The full audit reported 32 findings. A later audit confirmed the missing alert credential fix and listed 31 open findings."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T11:05:52Z",
+          "message": "Rechecked the baseline and began examining the outstanding deployment, recovery, data and worker findings."
         }
       ]
     }

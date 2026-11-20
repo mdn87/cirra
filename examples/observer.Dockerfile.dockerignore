@@ -1,0 +1,7 @@
+*
+!examples/
+examples/*
+!examples/observer.Dockerfile
+!requirements/
+requirements/*
+!requirements/dev.txt

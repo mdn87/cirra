@@ -49,38 +49,134 @@ set -euo pipefail
 MODE=$1 SHA=$2 REPIN=$3 TESTS=$4 KEEP=$5 SERVICE=$6 RELEASES=$7 STATE=$8 PORT=$9
 CONFIG=$SERVICE/config
 STAGING=$SERVICE/staging
-UNITS="cirra-webhook.service cirra-worker.service"
+UNITS=(cirra-webhook.service cirra-worker.service)
+for optional in cirra-audit-reads.service cirra-health.timer; do
+  if systemctl is-active --quiet "$optional"; then UNITS+=("$optional"); fi
+done
 R=$RELEASES/$SHA
 
-case "$SHA" in *[!0-9a-f]*|"") echo "invalid release id: $SHA" >&2; exit 2 ;; esac
+[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release id" >&2; exit 2; }
 # One deploy or rollback at a time: a second run would rebuild the release
 # directory under the first one's test run.
 exec 9>"$STAGING/deploy.lock"
 flock -n 9 || { echo "another deploy or rollback is running on this host" >&2; exit 1; }
 current() { readlink -f "$SERVICE/current"; }
 switch_to() { ln -sfn "$1" "$SERVICE/current.next" && mv -T "$SERVICE/current.next" "$SERVICE/current"; }
-restart_and_check() {
-  sudo -n systemctl restart $UNITS
-  for _ in $(seq 1 20); do
-    systemctl is-active --quiet $UNITS && break
-    sleep 1
-  done
-  systemctl is-active $UNITS
-  local code deadline=$((SECONDS + 20))
-  # "active" precedes the receiver binding its port; give it until the deadline,
-  # probing once more at the deadline itself. Each probe is bounded.
-  while :; do
-    code=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz" || true)
-    [ "$code" = 200 ] && break
-    [ "$SECONDS" -ge "$deadline" ] && break
-    sleep 1
-  done
-  if [ "$code" != 200 ]; then
-    echo "receiver /healthz returned $code" >&2
+check_release_state() {
+  local guard="$SERVICE/worker-state-guard.py"
+  if [ ! -f "$guard" ]; then guard="$(current)/src/cirra/queue_format.py"; fi
+  if [ ! -f "$guard" ]; then guard="$1/src/cirra/queue_format.py"; fi
+  if [ -f "$guard" ]; then
+    python3 -I -B "$guard" "$STATE" "$1" || return 1
+  elif [ -e "$STATE/worker-queue-format.json" ]; then
+    echo "Live worker queue has a format marker but its compatibility guard is missing." >&2
     return 1
   fi
-  # /healthz only exercises the receiver; the worker must still be running too.
-  systemctl is-active $UNITS || return 1
+  check_schema "$1"
+}
+check_schema() {
+  "$1/.venv/bin/python" -I -B - "$STATE/cirra.sqlite3" <<'PY'
+import sqlite3, sys
+from pathlib import Path
+from cirra.store import SCHEMA_VERSION
+path = Path(sys.argv[1])
+if path.exists():
+    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
+        live = db.execute("PRAGMA user_version").fetchone()[0]
+    if live != SCHEMA_VERSION:
+        sys.exit(f"Live schema {live} differs from release schema {SCHEMA_VERSION}. "
+                 "Preserve the database and select a compatible release or planned migration.")
+PY
+}
+install_queue_guard() {
+  local from=$1 to=$2 guard="$SERVICE/worker-state-guard.py" source unit fragment dropin changed=0
+  source="$to/src/cirra/queue_format.py"
+  if [ ! -f "$source" ]; then source="$from/src/cirra/queue_format.py"; fi
+  [ -f "$source" ] || return 0
+  # This guard and its drop-ins survive switching back to historical units.
+  if ! cmp -s "$source" "$guard"; then
+    install -m 0644 "$source" "$guard.next" && mv -T "$guard.next" "$guard" || return 1
+  fi
+  printf '[Service]\nExecStartPre=/usr/bin/python3 -I -B "%s" "%s" "%s/current"\n' \
+    "$guard" "$STATE" "$SERVICE" > "$STAGING/worker-state-guard.conf" || return 1
+  for unit in cirra-worker.service cirra-webhook.service; do
+    fragment=$(systemctl show "$unit" --property=FragmentPath --value) || return 1
+    [ -n "$fragment" ] || continue
+    dropin="${CIRRA_SYSTEMD_UNIT_DIR:-/etc/systemd/system}/$unit.d"
+    if ! cmp -s "$STAGING/worker-state-guard.conf" "$dropin/40-worker-state.conf"; then
+      sudo -n install -d -m 0755 "$dropin" || return 1
+      sudo -n install -m 0644 "$STAGING/worker-state-guard.conf" "$dropin/40-worker-state.conf" || return 1
+      changed=1
+    fi
+  done
+  if [ "$changed" = 1 ]; then sudo -n systemctl daemon-reload || return 1; fi
+}
+sync_units() {
+  local from=$1 to=$2 unit installed old desired
+  local -a changed=()
+  for desired in "$to"/examples/systemd/cirra-*; do
+    unit=${desired##*/}
+    installed=$(systemctl show "$unit" --property=FragmentPath --value) || return 1
+    [ -n "$installed" ] || continue
+    cmp -s "$installed" "$desired" && continue
+    old="$from/examples/systemd/$unit"
+    if [ "$installed" != "/etc/systemd/system/$unit" ] || ! cmp -s "$installed" "$old"; then
+      echo "Custom unit $unit differs from the managed release. Reconcile the unit before switching." >&2
+      return 1
+    fi
+    changed+=("$unit")
+  done
+  for unit in "${changed[@]}"; do
+    sudo -n install -m 0644 "$to/examples/systemd/$unit" "/etc/systemd/system/$unit" || return 1
+  done
+  if (("${#changed[@]}")); then sudo -n systemctl daemon-reload || return 1; fi
+}
+restart_and_check() {
+  sudo -n systemctl restart "${UNITS[@]}" || return 1
+  local wait_seconds=${CIRRA_READY_TIMEOUT:-120}
+  [[ "$wait_seconds" =~ ^[1-9][0-9]{0,2}$ ]] || return 1
+  local barrier pid invocation unit deadline=$((SECONDS + wait_seconds))
+  barrier=$(date +%s%N) || return 1
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    local ready=1
+    for unit in "${UNITS[@]}"; do systemctl is-active --quiet "$unit" || ready=0; done
+    pid=$(systemctl show cirra-worker.service --property=MainPID --value)
+    invocation=$(systemctl show cirra-worker.service --property=InvocationID --value)
+    if [ "$ready" = 1 ] && [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -n "$invocation" ] &&
+       [ "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")" = 200 ] &&
+       python3 - "$STATE/worker-status.json" "$pid" "$invocation" "$barrier" <<'PY'
+import json, os, sys
+try:
+    with open(sys.argv[1], "rb") as stream:
+        updated = os.fstat(stream.fileno()).st_mtime_ns
+        data = json.load(stream)
+    # Older releases predate invocation IDs. Require a new post-restart heartbeat.
+    same = (data.get("pid"), data.get("invocation_id")) == (int(sys.argv[2]), sys.argv[3])
+    legacy = "pid" not in data and updated > int(sys.argv[4])
+    sys.exit(0 if data.get("state") == "running" and (same or legacy) else 1)
+except (OSError, ValueError):
+    sys.exit(1)
+PY
+    then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Receiver or worker failed its post-restart readiness check" >&2
+  return 1
+}
+
+restore_release() {
+  local failed=$1 prior=$2 config_backup=$3 result=0
+  check_release_state "$prior" || { echo "Rollback refused to preserve current state." >&2; return 1; }
+  sync_units "$failed" "$prior" || {
+    echo "Could not restore every managed unit. Continuing with release recovery." >&2
+    result=1
+  }
+  cp -a "$config_backup/." "$CONFIG/" || { echo "Could not restore configuration." >&2; result=1; }
+  switch_to "$prior" || { echo "Could not restore the release link." >&2; return 1; }
+  restart_and_check || { echo "The restored release also failed readiness." >&2; result=1; }
+  return "$result"
 }
 
 if [ "$MODE" = rollback ]; then
@@ -88,28 +184,46 @@ if [ "$MODE" = rollback ]; then
   CUR=$(current)
   CURSHA=$(basename "$CUR")
   [ "$CUR" != "$R" ] || { echo "release $SHA is already current" >&2; exit 1; }
+  check_release_state "$R"
+  install_queue_guard "$CUR" "$R"
+  saved=$(mktemp -d "$STAGING/config-at-rollback-XXXXXXXX")
+  cp -a "$CONFIG/." "$saved/"
+  if ! sync_units "$CUR" "$R"; then
+    sync_units "$R" "$CUR" || true
+    exit 1
+  fi
   if [ -d "$STAGING/config-before-$CURSHA" ]; then
-    cp -a "$CONFIG" "$STAGING/config-at-rollback-$(date -u +%Y%m%dT%H%M%SZ)"
     cp -a "$STAGING/config-before-$CURSHA/." "$CONFIG/"
     echo "restored configuration saved before $CURSHA"
   fi
   switch_to "$R"
-  restart_and_check
+  if ! restart_and_check; then
+    restore_release "$R" "$CUR" "$saved" || echo "Rollback recovery requires attention." >&2
+    exit 1
+  fi
   echo "rolled back from $CURSHA to $SHA"
   exit 0
 fi
 
 PREV=$(current)
-if [ ! -d "$R/.venv" ]; then
-  rm -rf "$R"
+# A pre-marker release stays a valid rollback target. Incomplete installation
+# directories are preserved for diagnosis and never reused on a same-SHA retry.
+if [ ! -f "$R/.installation-complete" ] && [ "$R" != "$PREV" ]; then
+  if [ -e "$R" ]; then
+    mv -T "$R" "$(mktemp -d "$STAGING/incomplete-$SHA.XXXXXXXX")"
+  fi
   mkdir -m 700 "$R"
   tar -xf "$STAGING/$SHA.tar" -C "$R"
   python3 -m venv "$R/.venv"
   "$R/.venv/bin/pip" install -q --disable-pip-version-check --require-hashes \
     -r "$R/requirements/dev.txt" </dev/null
-  "$R/.venv/bin/pip" install -q --disable-pip-version-check --no-deps "$R" </dev/null
+  "$R/.venv/bin/pip" install -q --disable-pip-version-check --no-build-isolation --no-deps "$R" </dev/null
+  "$R/.venv/bin/python" -I -B -c 'import cirra.cli'
+  touch "$R/.installation-complete"
 fi
 PY=$R/.venv/bin/python
+check_release_state "$R"
+check_schema "$PREV"
 
 if [ "$TESTS" = 1 ]; then
   IMG=$(sed -nE "s/^image: *'?(sha256:[0-9a-f]{64})'?.*/\1/p" "$CONFIG/observer.yaml" | head -1)
@@ -126,12 +240,15 @@ else
   }
 fi
 
+if ! install_queue_guard "$PREV" "$R" || ! sync_units "$PREV" "$R"; then
+  sync_units "$R" "$PREV" || true
+  cp -a "$STAGING/config-before-$SHA/." "$CONFIG/"
+  exit 1
+fi
 switch_to "$R"
 if ! restart_and_check; then
   echo "release $SHA failed to start; restoring configuration and $PREV" >&2
-  cp -a "$STAGING/config-before-$SHA/." "$CONFIG/"
-  switch_to "$PREV"
-  restart_and_check || true
+  restore_release "$R" "$PREV" "$STAGING/config-before-$SHA" || echo "Deployment recovery requires attention." >&2
   exit 1
 fi
 echo "deployed $SHA (previous: $(basename "$PREV"))"
