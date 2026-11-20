@@ -71,7 +71,7 @@
       "projectId": "cirra",
       "title": "Recover GitLab reader access",
       "summary": "Diagnose the provider authentication failure and restore reconciliation without hiding route coverage.",
-      "stage": "planned",
+      "stage": "blocked",
       "sequence": 2,
       "prereqs": [
         "cirra:audit-readiness"
@@ -80,7 +80,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T05:47:35Z",
-        "updatedAt": "2026-11-20T05:47:35Z"
+        "updatedAt": "2026-11-20T06:50:15Z"
       },
       "evidence": [
         {
@@ -88,6 +88,24 @@
           "at": "2026-11-20T05:47:35Z",
           "kind": "created",
           "message": "Live reconciliation returns HTTP 401 while the worker is running; credential cause is not yet established."
+        },
+        {
+          "entryId": "cirra:gitlab-reader-recovery:active",
+          "at": "2026-11-20T06:37:37Z",
+          "kind": "stage-change",
+          "message": "The operator reported saving a replacement after GitLab confirmed that the original reader had expired. Live verification started."
+        },
+        {
+          "entryId": "cirra:gitlab-reader-recovery:provider-check",
+          "at": "2026-11-20T06:50:15Z",
+          "kind": "note",
+          "message": "The replacement read the project and pipeline jobs and fetched the branch. GitLab denied the job log because the reader lacks Job Read."
+        },
+        {
+          "entryId": "cirra:gitlab-reader-recovery:blocked",
+          "at": "2026-11-20T06:50:15Z",
+          "kind": "stage-change",
+          "message": "The worker can read the original vault entry only. It restarted on that entry. The operator must save a reader with job log access there."
         }
       ]
     }

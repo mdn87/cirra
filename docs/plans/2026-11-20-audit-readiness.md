@@ -42,6 +42,25 @@ status, and resolution of the pending health alert. Keep the route enabled;
 disabling it would hide lost coverage. Credential replacement or rotation
 requires the operator's authorization. No such action was attempted here.
 
+### Recovery check at 06:49 UTC
+
+GitLab identified the deployed reader as expired. Bitwarden contained two
+entries with the same name in the same project. The November entry could read
+the GitLab project, open merge requests, the main branch, a pipeline and its
+job list. A shallow Git fetch matched the branch revision. The raw log for job
+`17222748463` returned HTTP 403 with `insufficient_granular_scope`. Reading
+that endpoint requires **Job → Read**. [GitLab job permissions](https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens_rest/#job)
+
+The worker's Bitwarden machine account returned 404 for the November entry
+and could read the original October entry. After restoring both launchers to
+the October reference, the worker restarted and wrote a fresh heartbeat.
+GitHub reconciliation succeeded. GitLab reconciliation still returned 401
+and the health alert remained open.
+
+The operator needs to update the value of the original entry with a sandbox
+reader that also grants **Job → Read**. Verify a nonempty job log from the
+worker host, then confirm fresh reconciliation and normal alert resolution.
+
 ## Audit activation after recovery
 
 1. Inspect the three pending packets and decide whether each still warrants

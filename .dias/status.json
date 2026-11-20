@@ -8,13 +8,13 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T05:47:35Z",
+  "assessedAt": "2026-11-20T06:50:15Z",
   "confidence": "reported",
   "currentMilestone": "Prove production audit operation beyond pull request reviews.",
-  "remainingSummary": "Restore GitLab reader access, settle three waiting audits, then prove full baseline and release audit operation.",
+  "remainingSummary": "Update the worker's existing vault entry with a reader that can read job logs. Verify recovery, settle three waiting audits, then prove full and release audits.",
   "nextChipId": "cirra:gitlab-reader-recovery",
   "source": {
-    "label": "Live service inspection and audit readiness assessment",
+    "label": "Live worker, vault access and GitLab permission checks",
     "updatedAt": "2026-11-20"
   }
 }

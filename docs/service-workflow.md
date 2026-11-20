@@ -245,20 +245,31 @@ corresponding route. It can be added to the same service configuration as GitHub
 both routes share the durable worker. Select sandbox-appropriate test commands
 in a separate observer policy and pin its computed definition digest.
 
-The private sandbox reader needs API reads for project/MR/diff/pipeline/job
-collection plus **Code → Download** for Git-over-HTTPS. The publisher remains a
-separate project-scoped token with Work Item Create/Read/Update and an explicit
-operator permission receipt. Neither the observer nor the publisher needs
+For the private sandbox reader, select only the sandbox project. Grant **Read**
+on **Project**, **Branch**, **Merge Request**, and **Pipeline** for collection,
+and **Code → Download** for Git-over-HTTPS. Reading the raw CI job log also
+requires **Job → Read**. GitLab checks that permission separately from the
+permission to list jobs in a pipeline. [GitLab REST permissions](https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens_rest/#job)
+
+The publisher uses its own project-scoped `GITLAB_PUBLISHER_TOKEN` with Work
+Item Create/Read/Update and an explicit operator permission receipt. Neither
+the observer nor the publisher needs
 repository-write or merge permission. The webhook uses Merge request events,
 TLS verification and `CIRRA_GITLAB_WEBHOOK_SECRET` at `/hooks/cirra-gitlab`.
 
-To change reader permissions, create a replacement fine-grained token with the
-existing reads and Code Download, then replace `GITLAB_TOKEN` in the local and
-worker credential files. Keep `GITLAB_PUBLISHER_TOKEN` unchanged. GitLab's
-[Rotate operation](https://docs.gitlab.com/user/profile/personal_access_tokens/#rotate-a-personal-access-token)
-preserves the original permissions. Verify the replacement before revoking the
-old token. Restart the worker to load the replacement; a delivery that exhausted
-its retries also needs explicit operator recovery with its prior record retained.
+To change reader permissions, generate a fine-grained token with the required
+selections. In a Glas deployment, edit the **Value** of the existing Bitwarden
+secret identified by the worker's `GITLAB_TOKEN` reference. Check the secret ID
+when names match. The machine account can have different access to each entry.
+In an env-file deployment, update the configured reader value in the credential
+files. [Bitwarden secret access](https://bitwarden.com/help/secrets/#assign-secrets-to-people-or-machine-accounts)
+
+Verify that the worker's machine account can load the reader, read the project
+and fetch the branch. If job logs are required, also read a nonempty trace.
+Restart the worker and check its next reconciliation and health result. A
+delivery that exhausted its retries needs explicit operator recovery with its
+prior record retained. Verify the replacement before revoking the previous
+token. GitLab's Rotate operation retains the current permissions. [GitLab token rotation](https://docs.gitlab.com/user/profile/personal_access_tokens/#rotate-a-personal-access-token)
 
 Native pipeline-dependent merge rules stay authoritative. Requiring the local
 observer in Cirra policy does not replace those rules or attest existing native
