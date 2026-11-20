@@ -214,7 +214,10 @@ cirra dispatch-release --request <request.json> --config <policy> --app-id <app-
 Planning requires complete captured GitHub evidence, verified successful CI
 including trusted definition digests, and a successful review with no findings.
 Dispatch requires the PR to be merged into the selected protected target branch
-and its reviewed head to be reachable from that branch. The workflow definition
+and its reviewed head to be reachable from that branch. Cirra refreshes the CI
+checks for that head and compares the change against the target commit saved
+at review time. Later merges into the target branch preserve this comparison.
+The workflow definition
 runs from the protected branch; the candidate checkout is the reviewed SHA.
 Squash/rebase merges that do not preserve that head's ancestry require a new
 review of the release candidate; this prototype refuses those requests. It mints a separate repository-scoped token

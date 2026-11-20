@@ -10,7 +10,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from cirra import events
-from cirra.domain import CirraError, canonical, utc_now
+from cirra.domain import CirraError, DeliveryConflict, canonical, utc_now
 from cirra.job_queue import Queue
 from cirra.queue_format import activate
 from cirra.reviewer import unique_object
@@ -258,19 +258,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.queue,
                 self.record_eligible,
             )
-            self.job_id = result.get("job_id")
-            if self.job_id:
-                self.admission = "duplicate" if result["duplicate"] else "accepted"
-            self.respond(202, result)
+        except DeliveryConflict:
+            self.admission = None
+            self.respond(400, {"error": "delivery identity was reused with a different payload"})
         except CirraError as exc:
-            code = 503 if "capacity" in str(exc) or "another invocation" in str(exc) else 400
+            code = 503 if self.admission == "refused" else 400
             if "authentication" in str(exc):
                 code = 401
             self.respond(
                 code, {"error": "delivery refused; check authentication, route, or capacity"}
             )
         except (TimeoutError, ConnectionError, ValueError, RecursionError):
-            self.respond(400, {"error": "invalid or interrupted delivery"})
+            if self.admission == "refused":
+                self.respond(
+                    503, {"error": "delivery storage unavailable", "request_id": self.request_id}
+                )
+            else:
+                self.respond(400, {"error": "invalid or interrupted delivery"})
         except OSError as exc:
             log_line(
                 {
@@ -285,3 +289,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(
                 503, {"error": "delivery storage unavailable", "request_id": self.request_id}
             )
+        else:
+            self.job_id = result.get("job_id")
+            if self.job_id:
+                self.admission = "duplicate" if result["duplicate"] else "accepted"
+            self.respond(202, result)

@@ -8,10 +8,10 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T11:18:34Z",
+  "assessedAt": "2026-11-20T11:59:48Z",
   "confidence": "reported",
   "currentMilestone": "Resolve the production audit findings, retry CI and code review, and prove release planning on a protected branch.",
-  "remainingSummary": "The deployed checks passed. Complete the production fixes and prove protected release planning accepts a valid audit.",
+  "remainingSummary": "Verify the remaining fixes against the full audit and demonstrate protected release planning. Native release dispatch needs a restricted Actions credential.",
   "nextChipId": "cirra:resolve-production-audit",
   "source": {
     "label": "Host review findings, Windows recovery logs and the project board",
