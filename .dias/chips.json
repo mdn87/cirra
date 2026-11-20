@@ -312,6 +312,32 @@
           "message": "Started regression checks for comparison requests and Windows recovery after the board files passed validation."
         }
       ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:resolve-production-audit",
+      "projectId": "cirra",
+      "title": "Resolve the production audit findings",
+      "summary": "Recheck the full audit and fix outstanding issues in worker reliability, state access, deployment and recovery. Verify each result.",
+      "stage": "ready",
+      "sequence": 8,
+      "prereqs": [
+        "cirra:prove-full-audit-baseline"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T11:04:43Z",
+        "updatedAt": "2026-11-20T11:04:43Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:resolve-production-audit:created",
+          "kind": "created",
+          "at": "2026-11-20T11:04:43Z",
+          "message": "The full audit reported 32 findings. A later audit confirmed the missing alert credential fix and listed 31 open findings."
+        }
+      ]
     }
   ]
 }

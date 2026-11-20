@@ -8,10 +8,10 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T10:56:55Z",
+  "assessedAt": "2026-11-20T11:04:43Z",
   "confidence": "reported",
-  "currentMilestone": "Resolve the two issues from pull request verification and retry the protected checks.",
-  "remainingSummary": "Bound the review requests, exercise recovery after lease expiry and verify the deployed checks. The release audit demonstration follows.",
+  "currentMilestone": "Resolve the production audit findings, retry CI and code review, and prove release planning on a protected branch.",
+  "remainingSummary": "The pull request checks are being retried. Audit repairs and a live release audit demonstration are also in scope.",
   "nextChipId": "cirra:retry-host-ci-review",
   "source": {
     "label": "Host review findings, Windows recovery logs and the project board",
