@@ -2,7 +2,7 @@
 # Build, verify and switch a Cirra release on a service host, or roll back.
 #
 # Run from a Cirra checkout on the operator machine:
-#   scripts/deploy-release.sh [--host HOST] [--ref REF] [--repin] [--skip-tests] [--keep N]
+#   scripts/deploy-release.sh [--host HOST] [--ref REF] [--fallback SHA] [--repin] [--skip-tests] [--keep N]
 #   scripts/deploy-release.sh --rollback SHA [--host HOST]
 #   scripts/deploy-release.sh --print-remote
 #
@@ -17,7 +17,7 @@
 # current or previous one, are removed after a successful deploy.
 #
 # Paths default to the lugos-host layout; override with CIRRA_HOST,
-# CIRRA_SERVICE_DIR, CIRRA_RELEASES, CIRRA_STATE and CIRRA_PORT.
+# CIRRA_SERVICE_DIR, CIRRA_RELEASES, CIRRA_STATE, CIRRA_PORT and CIRRA_AUDIT_READ_PORT.
 set -euo pipefail
 
 HOST=${CIRRA_HOST:-lugos-host}
@@ -25,7 +25,8 @@ SERVICE_DIR=${CIRRA_SERVICE_DIR:-/srv/lugos/services/cirra}
 RELEASES=${CIRRA_RELEASES:-/srv/lugos/releases/cirra}
 STATE=${CIRRA_STATE:-/srv/lugos/state/cirra}
 PORT=${CIRRA_PORT:-8796}
-MODE=deploy REF=HEAD TARGET="" REPIN=0 TESTS=1 KEEP=3
+READ_PORT=${CIRRA_AUDIT_READ_PORT:-8797}
+MODE=deploy REF=HEAD TARGET="" FALLBACK="" REPIN=0 TESTS=1 KEEP=3
 
 usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
@@ -33,29 +34,52 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST=$2; shift 2 ;;
     --ref) REF=$2; shift 2 ;;
+    --fallback) [[ ${2:-} =~ ^[0-9a-f]{40}$ ]] || usage; FALLBACK=$2; shift 2 ;;
     --repin) REPIN=1; shift ;;
     --skip-tests) TESTS=0; shift ;;
-    --keep) KEEP=$2; shift 2 ;;
+    --keep) [[ ${2:-} =~ ^[0-9]+$ ]] || usage; KEEP=$2; shift 2 ;;
     --rollback) MODE=rollback TARGET=$2; shift 2 ;;
     --print-remote) MODE=print; shift ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage ;;
   esac
 done
+if [ -n "$FALLBACK" ] && { [ "$MODE" != deploy ] || ! [[ "$FALLBACK" =~ ^[0-9a-f]{40}$ ]]; }; then
+  echo "--fallback requires a full installed commit SHA and deploy mode" >&2; exit 2
+fi
 
 remote_script() {
   cat <<'REMOTE'
 set -euo pipefail
 MODE=$1 SHA=$2 REPIN=$3 TESTS=$4 KEEP=$5 SERVICE=$6 RELEASES=$7 STATE=$8 PORT=$9
+FALLBACK_SHA=${10:-}
+READ_PORT=${11:-8797}
+FALLBACK=""
 CONFIG=$SERVICE/config
 STAGING=$SERVICE/staging
 UNITS=(cirra-webhook.service cirra-worker.service)
+HEALTH_PORTS=("$PORT")
 for optional in cirra-audit-reads.service cirra-health.timer; do
-  if systemctl is-active --quiet "$optional"; then UNITS+=("$optional"); fi
+  if systemctl is-active --quiet "$optional"; then
+    UNITS+=("$optional")
+    if [ "$optional" = cirra-audit-reads.service ]; then HEALTH_PORTS+=("$READ_PORT"); fi
+  fi
 done
 R=$RELEASES/$SHA
 
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release id" >&2; exit 2; }
+[[ "$KEEP" =~ ^[0-9]+$ ]] || { echo "invalid release retention count" >&2; exit 2; }
+for port in "${HEALTH_PORTS[@]}"; do
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || {
+    echo "invalid loopback health port" >&2; exit 2;
+  }
+done
+if [ -n "$FALLBACK_SHA" ]; then
+  [[ "$MODE" = deploy && "$FALLBACK_SHA" =~ ^[0-9a-f]{40}$ && "$FALLBACK_SHA" != "$SHA" ]] || {
+    echo "Fallback must identify a different installed release by full SHA." >&2; exit 2;
+  }
+  FALLBACK=$RELEASES/$FALLBACK_SHA
+fi
 # One deploy or rollback at a time: a second run would rebuild the release
 # directory under the first one's test run.
 exec 9>"$STAGING/deploy.lock"
@@ -72,13 +96,15 @@ check_release_state() {
     echo "Live worker queue has a format marker but its compatibility guard is missing." >&2
     return 1
   fi
-  check_schema "$1"
+  check_schema "$1" "${2:-}"
 }
 check_schema() {
-  "$1/.venv/bin/python" -I -B - "$STATE/cirra.sqlite3" <<'PY'
+  "$1/.venv/bin/python" -I -B - "$STATE/cirra.sqlite3" "${2:-}" <<'PY'
 import sqlite3, sys
 from pathlib import Path
 from cirra.store import SCHEMA_VERSION
+if sys.argv[2] and SCHEMA_VERSION != int(sys.argv[2]):
+    sys.exit("Fallback cannot read the candidate SQLite schema.")
 path = Path(sys.argv[1])
 if path.exists():
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
@@ -87,6 +113,52 @@ if path.exists():
         sys.exit(f"Live schema {live} differs from release schema {SCHEMA_VERSION}. "
                  "Preserve the database and select a compatible release or planned migration.")
 PY
+}
+verify_fallback() {
+  local schema
+  if [ -L "$FALLBACK" ] || [ ! -f "$FALLBACK/.installation-complete" ] || [ ! -x "$FALLBACK/.venv/bin/python" ]; then
+    echo "Fallback release $FALLBACK_SHA has no finished installation." >&2
+    return 1
+  fi
+  schema=$("$PY" -I -B - "$R" "$FALLBACK" "$CONFIG" "$1" "$REPIN" <<'PY'
+import sys
+from pathlib import Path
+from cirra.store import SCHEMA_VERSION
+
+def queue_format(release):
+    path = Path(release, "worker-state-version")
+    if not path.exists():
+        return 0
+    value = path.read_text(encoding="ascii").strip()
+    if not value.isascii() or not value.isdecimal():
+        sys.exit("Invalid release worker queue format.")
+    return int(value)
+
+candidate, fallback = map(queue_format, sys.argv[1:3])
+if fallback < candidate:
+    sys.exit(f"Fallback queue format {fallback} cannot read candidate format {candidate}.")
+if sys.argv[5] == "1":
+    from cirra.pins import check_pins
+    from cirra.service_config import load_service
+    config, saved = (Path(p).resolve() for p in sys.argv[3:5])
+    service = config / "service.yaml"
+    routes = load_service(service).routes
+    for row in check_pins(service):
+        if row["ok"]:
+            continue
+        policy = Path(routes[row["route"]].policy.path).resolve()
+        if not policy.is_relative_to(config):
+            sys.exit("Fallback cannot restore an externally stored policy changed by --repin.")
+        snapshot = (saved / policy.relative_to(config)).resolve()
+        if not snapshot.is_relative_to(saved) or snapshot.read_bytes() != policy.read_bytes():
+            sys.exit("Fallback copy does not preserve the policy to be repinned.")
+print(SCHEMA_VERSION)
+PY
+  ) || return 1
+  check_release_state "$FALLBACK" "$schema" || return 1
+  "$FALLBACK/.venv/bin/python" -I -B -m cirra observer-pins --service-config "$1/service.yaml" || {
+    echo "Fallback cannot verify the saved service configuration and observer pins." >&2; return 1;
+  }
 }
 install_queue_guard() {
   local from=$1 to=$2 guard="$SERVICE/worker-state-guard.py" source unit fragment dropin changed=0
@@ -115,6 +187,7 @@ sync_units() {
   local from=$1 to=$2 unit installed old desired
   local -a changed=()
   for desired in "$to"/examples/systemd/cirra-*; do
+    [ -f "$desired" ] || continue
     unit=${desired##*/}
     installed=$(systemctl show "$unit" --property=FragmentPath --value) || return 1
     [ -n "$installed" ] || continue
@@ -135,26 +208,48 @@ restart_and_check() {
   sudo -n systemctl restart "${UNITS[@]}" || return 1
   local wait_seconds=${CIRRA_READY_TIMEOUT:-120}
   [[ "$wait_seconds" =~ ^[1-9][0-9]{0,2}$ ]] || return 1
-  local barrier pid invocation unit deadline=$((SECONDS + wait_seconds))
+  local barrier pid invocation unit port deadline=$((SECONDS + wait_seconds))
   barrier=$(date +%s%N) || return 1
   while [ "$SECONDS" -lt "$deadline" ]; do
     local ready=1
     for unit in "${UNITS[@]}"; do systemctl is-active --quiet "$unit" || ready=0; done
+    for port in "${HEALTH_PORTS[@]}"; do
+      [ "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/healthz")" = 200 ] || ready=0
+    done
     pid=$(systemctl show cirra-worker.service --property=MainPID --value)
     invocation=$(systemctl show cirra-worker.service --property=InvocationID --value)
     if [ "$ready" = 1 ] && [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -n "$invocation" ] &&
-       [ "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")" = 200 ] &&
        python3 - "$STATE/worker-status.json" "$pid" "$invocation" "$barrier" <<'PY'
 import json, os, sys
+from pathlib import Path
+
+def belongs_to_unit(pid, main_pid):
+    # A credential launcher can remain the unit's main process and start the worker as a child.
+    if type(pid) is not int:
+        return False
+    seen = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        # Linux stat starts with "pid (comm) state ppid". A name may contain spaces and ')'.
+        state, parent, *_ = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()
+        if state in (b"Z", b"X", b"x"):
+            return False
+        if pid == main_pid:
+            return True
+        pid = int(parent)
+    return False
+
 try:
     with open(sys.argv[1], "rb") as stream:
         updated = os.fstat(stream.fileno()).st_mtime_ns
         data = json.load(stream)
     # Older releases predate invocation IDs. Require a new post-restart heartbeat.
-    same = (data.get("pid"), data.get("invocation_id")) == (int(sys.argv[2]), sys.argv[3])
-    legacy = "pid" not in data and updated > int(sys.argv[4])
+    if not isinstance(data, dict):
+        sys.exit(1)
+    same = data.get("invocation_id") == sys.argv[3] and belongs_to_unit(data.get("pid"), int(sys.argv[2]))
+    legacy = "pid" not in data and "invocation_id" not in data and updated > int(sys.argv[4])
     sys.exit(0 if data.get("state") == "running" and (same or legacy) else 1)
-except (OSError, ValueError):
+except (OSError, ValueError, IndexError):
     sys.exit(1)
 PY
     then
@@ -162,20 +257,43 @@ PY
     fi
     sleep 1
   done
-  echo "Receiver or worker failed its post-restart readiness check" >&2
+  echo "A Cirra service failed its post-restart readiness check" >&2
   return 1
 }
 
 restore_release() {
-  local failed=$1 prior=$2 config_backup=$3 result=0
-  check_release_state "$prior" || { echo "Rollback refused to preserve current state." >&2; return 1; }
+  local failed=$1 prior=$2 config_backup=$3 fallback=${4:-} result=0
+  if [ -n "$fallback" ]; then
+    # Freeze writers before choosing a reader for a format the candidate may still activate.
+    sudo -n systemctl stop cirra-webhook.service cirra-worker.service || return 1
+  fi
+  if ! check_release_state "$prior"; then
+    if [ -z "$fallback" ] || ! check_release_state "$fallback"; then
+      echo "Rollback refused to preserve current state." >&2; return 1
+    fi
+    prior=$fallback
+    echo "Previous release cannot read live state. Recovering with verified fallback $(basename "$prior")." >&2
+  fi
   sync_units "$failed" "$prior" || {
     echo "Could not restore every managed unit. Continuing with release recovery." >&2
     result=1
   }
-  cp -a "$config_backup/." "$CONFIG/" || { echo "Could not restore configuration." >&2; result=1; }
+  cp -a "$config_backup/." "$CONFIG/" || {
+    echo "Could not restore configuration." >&2
+    if [ -n "$fallback" ]; then return 1; fi
+    result=1
+  }
+  if [ -n "$fallback" ] && [ "$prior" = "$fallback" ]; then
+    "$prior/.venv/bin/python" -I -B -m cirra observer-pins --service-config "$CONFIG/service.yaml" || return 1
+  fi
   switch_to "$prior" || { echo "Could not restore the release link." >&2; return 1; }
-  restart_and_check || { echo "The restored release also failed readiness." >&2; result=1; }
+  if ! restart_and_check; then
+    echo "The restored release also failed readiness." >&2; result=1
+  elif [ -n "$fallback" ] && [ "$prior" = "$fallback" ]; then
+    "$prior/.venv/bin/python" -I -B -m cirra health --state-dir "$STATE" || {
+      echo "The fallback reports an application health problem." >&2; result=1;
+    }
+  fi
   return "$result"
 }
 
@@ -192,8 +310,10 @@ if [ "$MODE" = rollback ]; then
     sync_units "$R" "$CUR" || true
     exit 1
   fi
-  if [ -d "$STAGING/config-before-$CURSHA" ]; then
-    cp -a "$STAGING/config-before-$CURSHA/." "$CONFIG/"
+  backup="$STAGING/config-before-$CURSHA"
+  if [ -d "$STAGING/config-for-$CURSHA-$SHA" ]; then backup="$STAGING/config-for-$CURSHA-$SHA"; fi
+  if [ -d "$backup" ]; then
+    cp -a "$backup/." "$CONFIG/"
     echo "restored configuration saved before $CURSHA"
   fi
   switch_to "$R"
@@ -230,11 +350,29 @@ if [ "$TESTS" = 1 ]; then
   (cd "$R" && umask 077 && CIRRA_DOCKER_TEST_IMAGE="$IMG" "$PY" -m pytest -q -p no:cacheprovider </dev/null)
 fi
 
-[ -e "$STAGING/config-before-$SHA" ] || cp -a "$CONFIG" "$STAGING/config-before-$SHA"
-if [ "$REPIN" = 1 ]; then
-  "$PY" -m cirra observer-pins --service-config "$CONFIG/service.yaml" --repin
+if [ -n "$FALLBACK" ]; then
+  # Keep the exact configuration from this attempt, including on a same-SHA retry.
+  saved=$(mktemp -d "$STAGING/config-for-$SHA-$FALLBACK_SHA.XXXXXXXX")
+  if ! cp -a "$CONFIG/." "$saved/" || ! verify_fallback "$saved"; then
+    rm -rf -- "$saved"
+    exit 1
+  fi
+  for revision in "$FALLBACK_SHA" "${PREV##*/}"; do
+    link="$STAGING/config-for-$SHA-$revision"
+    ln -sfn "$saved" "$link.next"
+    mv -Tf "$link.next" "$link"
+  done
 else
-  "$PY" -m cirra observer-pins --service-config "$CONFIG/service.yaml" || {
+  saved="$STAGING/config-before-$SHA"
+  [ -e "$saved" ] || cp -a "$CONFIG" "$saved"
+fi
+if [ "$REPIN" = 1 ]; then
+  if ! "$PY" -I -B -m cirra observer-pins --service-config "$CONFIG/service.yaml" --repin; then
+    cp -a "$saved/." "$CONFIG/"
+    exit 1
+  fi
+else
+  "$PY" -I -B -m cirra observer-pins --service-config "$CONFIG/service.yaml" || {
     echo "observer digests changed; rerun with --repin after reviewing the release" >&2
     exit 1
   }
@@ -242,32 +380,39 @@ fi
 
 if ! install_queue_guard "$PREV" "$R" || ! sync_units "$PREV" "$R"; then
   sync_units "$R" "$PREV" || true
-  cp -a "$STAGING/config-before-$SHA/." "$CONFIG/"
+  cp -a "$saved/." "$CONFIG/"
   exit 1
 fi
 switch_to "$R"
 if ! restart_and_check; then
-  echo "release $SHA failed to start; restoring configuration and $PREV" >&2
-  restore_release "$R" "$PREV" "$STAGING/config-before-$SHA" || echo "Deployment recovery requires attention." >&2
+  echo "release $SHA failed to start; restoring a compatible release and its configuration" >&2
+  restore_release "$R" "$PREV" "$saved" "$FALLBACK" || echo "Deployment recovery requires attention." >&2
   exit 1
 fi
 echo "deployed $SHA (previous: $(basename "$PREV"))"
 "$PY" -m cirra health --state-dir "$STATE" || echo "health check reports problems (above)" >&2
 
-kept=0
-for dir in $(ls -1dt "$RELEASES"/*/ 2>/dev/null); do
-  dir=${dir%/}
-  name=$(basename "$dir")
-  case "$name" in *[!0-9a-f]*) continue ;; esac
-  [ "${#name}" = 40 ] || continue
-  if [ "$dir" = "$R" ] || [ "$dir" = "$PREV" ]; then continue; fi
-  kept=$((kept + 1))
-  if [ "$kept" -gt "$KEEP" ]; then
-    rm -rf "$dir"
-    echo "removed old release $name"
-  fi
-done
-echo "rollback: scripts/deploy-release.sh --rollback $(basename "$PREV") --host <host>"
+python3 -I -B - "$RELEASES" "$KEEP" "$SHA" "${PREV##*/}" "$FALLBACK_SHA" <<'PY'
+import os, re, shutil, sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve(strict=True)
+keep = int(sys.argv[2])
+protected = set(sys.argv[3:])
+with os.scandir(root) as entries:
+    candidates = sorted(
+        (entry.stat(follow_symlinks=False).st_mtime_ns, entry.name)
+        for entry in entries
+        if entry.name not in protected and re.fullmatch(r"[0-9a-f]{40}", entry.name)
+        and entry.is_dir(follow_symlinks=False)
+    )
+for _, name in candidates[:max(0, len(candidates) - keep)]:
+    shutil.rmtree(root / name)
+    print(f"removed old release {name}")
+PY
+rollback=$PREV
+if [ -n "$FALLBACK" ] && ! check_release_state "$PREV"; then rollback=$FALLBACK; fi
+echo "rollback: scripts/deploy-release.sh --rollback $(basename "$rollback") --host <host>"
 REMOTE
 }
 
@@ -287,4 +432,4 @@ else
 fi
 remote_script | ssh "$HOST" "cat > '$SERVICE_DIR/staging/deploy-$SHA.sh'"
 ssh "$HOST" bash "$SERVICE_DIR/staging/deploy-$SHA.sh" \
-  "$MODE" "$SHA" "$REPIN" "$TESTS" "$KEEP" "$SERVICE_DIR" "$RELEASES" "$STATE" "$PORT"
+  "$MODE" "$SHA" "$REPIN" "$TESTS" "$KEEP" "$SERVICE_DIR" "$RELEASES" "$STATE" "$PORT" "$FALLBACK" "$READ_PORT"

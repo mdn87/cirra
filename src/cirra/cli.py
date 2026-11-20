@@ -51,6 +51,7 @@ def capture_change(
     witness=None,
     witness_key=None,
     strict_ci_reads=False,
+    reviewed_target=None,
 ):
     if provider == "github":
         client = GitHubClient(repository, token=token, timeout=timeout)
@@ -61,6 +62,7 @@ def capture_change(
             client=client,
             max_pages=max_pages,
             strict_ci_reads=strict_ci_reads,
+            reviewed_target=reviewed_target,
         )
     elif provider == "gitlab":
         client = gitlab.GitLabClient(repository, token=token, timeout=timeout)

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from itertools import islice
 from pathlib import Path
 
-from cirra.domain import CirraError, digest, number, string, utc_now
+from cirra.domain import CirraError, DeliveryConflict, digest, number, string, utc_now
 from cirra.locking import change_lock
 from cirra.publish import receipt_directory, sync_directory, write_receipt
 from cirra.queue_format import activate
@@ -168,7 +168,7 @@ class Queue:
         with change_lock(self.directory / "locks", "enqueue", 2):
             delivery_path = self.directory / "deliveries" / (delivery + ".json")
             if delivery_path.exists() and self.read(delivery_path)["job_id"] != identifier:
-                raise CirraError("webhook delivery identity was reused with another payload")
+                raise DeliveryConflict("webhook delivery identity was reused with another payload")
             path = self.directory / (identifier + ".json")
             archived = self.directory / "archive" / path.name
             if (

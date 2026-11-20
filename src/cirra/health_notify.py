@@ -11,9 +11,12 @@ from pathlib import Path
 
 
 def journal_detail():
+    filters = ["_SYSTEMD_UNIT=cirra-health.service", "_TRANSPORT=stdout"]
+    if invocation := os.environ.get("MONITOR_INVOCATION_ID"):
+        filters.append("_SYSTEMD_INVOCATION_ID=" + invocation)
     try:
         result = subprocess.run(
-            ["journalctl", "-u", "cirra-health.service", "-n", "1", "-o", "cat", "--no-pager"],
+            ["journalctl", *filters, "-n", "1", "-o", "cat", "--no-pager"],
             capture_output=True,
             text=True,
             timeout=3,
@@ -21,7 +24,14 @@ def journal_detail():
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    return result.stdout.strip()[-900:] if result.returncode == 0 else ""
+    diagnostic = result.stdout.strip()
+    try:
+        health = json.loads(diagnostic)
+    except (ValueError, RecursionError):
+        return ""
+    if result.returncode or not isinstance(health, dict) or health.get("healthy") is not False:
+        return ""
+    return diagnostic[-900:]
 
 
 def receiver(host, port):

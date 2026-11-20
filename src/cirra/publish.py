@@ -264,6 +264,10 @@ def write_receipt(path, receipt, *, history=True):
         if not historical.exists():
             replace_receipt(historical, content)
     replace_receipt(path, content)
+    if path.parent.name in ("audit-publication", "audit-waivers"):
+        # Give a read-only observer a collision-free invalidation signal even
+        # when successive atomic replacements share a filesystem timestamp.
+        replace_receipt(path.parent / ".revision", uuid.uuid4().hex)
 
 
 def checkpoint(store, claim, path, receipt):

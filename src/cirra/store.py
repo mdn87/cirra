@@ -58,6 +58,13 @@ MIGRATIONS = {
     2: ["ALTER TABLE audits ADD COLUMN scope TEXT NOT NULL DEFAULT 'repository'"],
 }
 
+# SQLite stores rowid as the last index key. A backward scan of the matching
+# repository gives completed_at DESC, rowid DESC, including ties.
+BASELINE_INDEX = (
+    "CREATE INDEX IF NOT EXISTS audits_repository_baseline ON audits(repository_key, completed_at) "
+    "WHERE tier='full' AND state='complete' AND scope='repository'"
+)
+
 
 class Store:
     def __init__(self, directory):
@@ -88,6 +95,8 @@ class Store:
                     connection.execute(statement)
                 version += 1
                 connection.execute(f"PRAGMA user_version={version}")
+            if version >= 3:
+                connection.execute(BASELINE_INDEX)
 
     @contextmanager
     def connection(self):

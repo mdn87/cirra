@@ -10,6 +10,8 @@ from pathlib import Path
 
 from cirra.domain import CirraError
 
+AUDIT_PAGE_SIZE = 128
+
 
 def cold_evidence(state_dir, *, days=30, now=None):
     """Relative regular files only. Keep active records, current receipts and replay keys."""
@@ -94,18 +96,29 @@ def cold_evidence(state_dir, *, days=30, now=None):
     database = root / "cirra.sqlite3"
     if not attempts.is_dir() or not database.is_file() or database.resolve() != database:
         return
-    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+    uri = database.as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
         if not connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audits'"
         ).fetchone():
             return
-        rows = connection.execute(
-            "SELECT attempt_id FROM audits "
-            "WHERE state IN ('complete','failed','cancelled','superseded') "
-            "AND (completed_at IS NULL OR completed_at < ?)",
-            (cutoff,),
-        )
-        for (identifier,) in rows:
+        first, last = connection.execute(
+            "SELECT (SELECT min(rowid) FROM audits), (SELECT max(rowid) FROM audits)"
+        ).fetchone()
+    # Cap each read even when no rows in a page are terminal. Release SQLite's
+    # read lock before inspecting files or waiting for the manifest consumer.
+    while first is not None and first <= last:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            page = connection.execute(
+                "SELECT rowid, CASE WHEN state IN ('complete','failed','cancelled','superseded') "
+                "AND (completed_at IS NULL OR completed_at < ?) THEN attempt_id END "
+                "FROM audits WHERE rowid BETWEEN ? AND ? ORDER BY rowid LIMIT ?",
+                (cutoff, first, last, AUDIT_PAGE_SIZE),
+            ).fetchall()
+        if not page:
+            break
+        first = page[-1][0] + 1
+        for _, identifier in page:
             if not isinstance(identifier, str) or not re.fullmatch("[a-f0-9]{32}", identifier):
                 continue
             directory = attempts / identifier

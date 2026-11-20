@@ -5,7 +5,7 @@ import hmac
 import json
 from pathlib import Path
 
-from cirra.domain import CirraError, digest, number, string, utc_now
+from cirra.domain import CirraError, DeliveryConflict, digest, number, string, utc_now
 from cirra.publish import write_receipt
 from cirra.reviewer import unique_object
 
@@ -106,7 +106,7 @@ def ingest(store, hint, capture):
         with store.lease("payload:" + payload_key, 30, 10):
             previous = json.loads(path.read_text()) if path.exists() else None
             if previous and previous["hint"] != hint:
-                raise CirraError("webhook delivery identity was reused with another payload")
+                raise DeliveryConflict("webhook delivery identity was reused with another payload")
             payload = json.loads(payload_path.read_text()) if payload_path.exists() else None
             if payload and payload["state"] == "captured":
                 receipt = {**payload, "hint": hint, "duplicate": True}
