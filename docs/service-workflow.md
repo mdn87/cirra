@@ -622,7 +622,10 @@ definition digest. Review the release, then rerun with `--repin` to update the
 pins (each policy keeps a `.before-repin` copy). The script switches `current`
 atomically and restarts the receiver, worker, and any active audit reader or
 health timer. Promotion requires every unit to be active, a healthy receiver
-and a heartbeat from the new worker. Installed unit templates are synchronized
+and a heartbeat from the new worker. The heartbeat must identify the current
+systemd invocation and a live process belonging to the unit's main process
+or its descendants. This supports hosts with a credential launcher.
+Installed unit templates are synchronized
 with the release. Operator drop-ins remain in place. If a unit has local edits,
 the script names it so the operator can reconcile those edits before switching.
 An interrupted installation is retained under staging and rebuilt on retry.
