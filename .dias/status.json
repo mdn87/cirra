@@ -8,13 +8,13 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T09:35:49Z",
+  "assessedAt": "2026-11-20T10:56:55Z",
   "confidence": "reported",
-  "currentMilestone": "Prove release planning on the protected repository with a valid release audit.",
-  "remainingSummary": "Pull request CI and code review are enforced. The remaining release proof covers refusal without an audit, acceptance with one, and separate live dispatch.",
-  "nextChipId": "cirra:prove-release-audit-gate",
+  "currentMilestone": "Resolve the two issues from pull request verification and retry the protected checks.",
+  "remainingSummary": "Bound the review requests, exercise recovery after lease expiry and verify the deployed checks. The release audit demonstration follows.",
+  "nextChipId": "cirra:retry-host-ci-review",
   "source": {
-    "label": "Host execution and review receipts, live merge responses and the repository release roadmap",
+    "label": "Host review findings, Windows recovery logs and the project board",
     "updatedAt": "2026-11-20"
   }
 }

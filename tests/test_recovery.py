@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cirra.coordinator import analysis_identity
+from cirra.coordinator import analysis_identity, review
 from cirra.domain import digest
 from cirra.store import LostClaim, Store
 
@@ -140,3 +140,43 @@ def test_other_change_claim_cannot_mutate_attempt(inputs, tmp_path):
         store.begin_call(other, attempt["run_id"])
     store.release(first)
     store.release(other)
+
+
+@pytest.mark.parametrize("superseded", [False, True])
+def test_expiry_after_analysis_retries_only_the_final_report(
+    superseded, inputs, tmp_path, monkeypatch
+):
+    provider, config = inputs()
+    store = Store(tmp_path / "state")
+    generations = []
+    calls = []
+    save_report = store.save_report
+
+    def expire_before_first_save(claim, report):
+        if not generations:
+            with store.transaction() as conn:
+                conn.execute("UPDATE claims SET expires_at=0 WHERE owner=?", (claim.owner,))
+            if superseded:
+                other = store.acquire(claim.change_key, 20)
+                store.release(other)
+        generations.append(claim.generation)
+        save_report(claim, report)
+
+    def counted_review(packet):
+        calls.append(packet)
+        return provider.response
+
+    monkeypatch.setattr(store, "save_report", expire_before_first_save)
+    reviewer = SimpleNamespace(review=counted_review)
+    if superseded:
+        with pytest.raises(LostClaim):
+            review(provider, config, store, reviewer=reviewer)
+        assert len(generations) == 1
+        with store.connection() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 0
+    else:
+        report, reused = review(provider, config, store, reviewer=reviewer, rereview=True)
+        assert generations == [1, 2]
+        assert not reused and report["review"]["attempt"] == 1
+        assert store.latest_report(report["run_id"]) == report
+    assert len(calls) == 1

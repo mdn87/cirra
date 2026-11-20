@@ -76,6 +76,7 @@ enabled, the operator can add this setting under `reviewer` in the trusted polic
 merge_gate:
   branch: main
   block_at: high
+  max_intermediate_comparisons: 32
 ```
 
 Include the project build and test commands in the host observer policy and pin
@@ -95,6 +96,11 @@ of GitHub's current test merge immediately before publication. The reviewer
 also receives any distinct patches that would appear if the target advanced to
 an intermediate commit already in the PR head. Together with strict status
 checks and blocked force pushes, this keeps the result valid when PRs are stacked.
+Each collection can request up to 32 intermediate comparisons by default. The
+operator can set this limit from 0 to 100. Snapshot retries share the allowance,
+including comparisons that return identical patches. If the remaining allowance
+cannot cover every possible base, the required review reports incomplete coverage
+and prevents the merge. A smaller PR can bring the history within the limit.
 Native CI success without a trusted checkout witness remains unverified in
 Cirra's report; publishing does not upgrade that evidence.
 

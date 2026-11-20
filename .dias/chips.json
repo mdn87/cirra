@@ -280,6 +280,38 @@
           "message": "The audit baseline and protected pull request workflow are operational. The roadmap still calls for a live release gate demonstration."
         }
       ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:retry-host-ci-review",
+      "projectId": "cirra",
+      "title": "Fix and retry pull request checks",
+      "summary": "Limit GitHub requests during review, fix the Windows recovery failure and verify both checks on a real pull request.",
+      "stage": "active",
+      "sequence": 7,
+      "prereqs": [
+        "cirra:restore-host-pr-review"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T10:56:55Z",
+        "updatedAt": "2026-11-20T10:57:14Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:retry-host-ci-review:created",
+          "kind": "created",
+          "at": "2026-11-20T10:56:55Z",
+          "message": "Pull request review found unbounded comparison requests. A Windows recovery test lost its claim while saving a report."
+        },
+        {
+          "entryId": "cirra:retry-host-ci-review:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T10:57:14Z",
+          "message": "Started regression checks for comparison requests and Windows recovery after the board files passed validation."
+        }
+      ]
     }
   ]
 }

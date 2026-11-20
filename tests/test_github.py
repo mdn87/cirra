@@ -4,6 +4,7 @@ import json
 import traceback
 from dataclasses import replace
 from email.message import Message
+from itertools import pairwise
 from urllib.error import URLError
 from urllib.request import HTTPSHandler, build_opener
 from urllib.response import addinfourl
@@ -11,6 +12,7 @@ from urllib.response import addinfourl
 import pytest
 
 from cirra.cli import main
+from cirra.config import MergeGate
 from cirra.domain import CirraError, digest
 from cirra.fixture import FixtureProvider
 from cirra.github import GitHubClient, GitHubError, NoRedirect, collect, export_capture
@@ -405,10 +407,6 @@ def test_transport_reads_only_the_named_pull_merge_ref_and_pinned_commit():
 
 
 def test_gate_reviews_changes_that_only_appear_against_an_intermediate_main(github_policy):
-    from dataclasses import replace
-
-    from cirra.config import MergeGate
-
     api = API()
     mid = "4" * 40
     api.comparison.update(
@@ -445,6 +443,54 @@ def test_gate_reviews_changes_that_only_appear_against_an_intermediate_main(gith
     api.comparison["commits"].pop(0)
     incomplete = FixtureProvider.from_data(collect("example/repo", 9, config, client=api), config)
     assert "GitHub returned incomplete PR commit history" in incomplete.snapshot.coverage_gaps
+
+
+@pytest.mark.parametrize(
+    ("intermediates", "move_head", "expected_reads", "complete"),
+    [(2, False, 2, True), (3, False, 0, False), (2, True, 2, False)],
+)
+def test_intermediate_compare_budget_covers_collection_retries(
+    github_policy, intermediates, move_head, expected_reads, complete
+):
+    api = API()
+    bases = [f"{i:040x}" for i in range(1, intermediates + 1)]
+    old_head = "5" * 40
+    if move_head:
+        api.pr_sequence = [{**api.pr, "head": {"sha": old_head}}, api.pr]
+    for head in [old_head, HEAD] if move_head else [HEAD]:
+        chain = [TARGET, *bases, head]
+        api.overrides[(f"compare/{TARGET}...{head}", 1)] = (
+            {
+                **api.comparison,
+                "merge_base_commit": {"sha": TARGET},
+                "total_commits": len(chain) - 1,
+                "commits": [
+                    {"sha": child, "parents": [{"sha": parent}]}
+                    for parent, child in pairwise(chain)
+                ],
+            },
+            False,
+        )
+        for base in bases:
+            api.overrides[(f"compare/{base}...{head}", 1)] = (
+                {
+                    **api.comparison,
+                    "base_commit": {"sha": base},
+                    "merge_base_commit": {"sha": base},
+                },
+                False,
+            )
+    gate = MergeGate("main", "high", max_intermediate_comparisons=2)
+    policy = replace(github_policy, merge_gate=gate)
+    captured = collect("example/repo", 9, policy, client=api)
+    intermediate_routes = {f"compare/{base}" for base in bases}
+    extra_reads = [route for route, _ in api.calls if route.split("...")[0] in intermediate_routes]
+    assert len(extra_reads) == expected_reads
+    assert captured["additional_comparisons"] == []  # Every alternate had the same patch.
+    if complete:
+        assert not captured["coverage_gaps"]
+    else:
+        assert any("intermediate comparison limit" in gap for gap in captured["coverage_gaps"])
 
 
 def test_redirect_does_not_forward_credentials():

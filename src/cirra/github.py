@@ -333,8 +333,8 @@ def checks_from(client, head, max_pages):
     return checks, sorted(set(errors))
 
 
-def review_comparisons(client, comparison, target, head, primary, max_bytes, max_pages):
-    """Cover possible advancing bases of a strictly up-to-date, commit-scoped check."""
+def review_bases(client, comparison, target, head, max_pages):
+    """Find target advances that would still satisfy the strict up-to-date rule."""
     if comparison["merge_base_commit"]["sha"] != target:
         return [], ["update the PR with the current target before required review"]
     route = f"compare/{target}...{head}"
@@ -372,12 +372,15 @@ def review_comparisons(client, comparison, target, head, primary, max_bytes, max
                 pending.append(child)
     if head not in reachable:
         return [], ["GitHub commit history does not connect the target to the PR head"]
-    # A future protected tip that still passes the strict up-to-date rule must be
-    # one of these ancestors. Preserve each distinct combination of changed files.
+    return sorted(reachable - {target, head}), []
+
+
+def review_comparisons(client, bases, head, primary, max_bytes):
+    """Preserve each distinct combination of changed files across possible bases."""
     seen = {digest(primary)}
     remaining = max_bytes - sum(len((f["patch"] or "").encode()) for f in primary)
     variants, gaps = [], []
-    for base in sorted(reachable - {target, head}):
+    for base in bases:
         alternate, _ = client.get(f"compare/{base}...{head}", {"per_page": 1, "page": 1})
         if (
             record(alternate.get("base_commit")).get("sha") != base
@@ -421,6 +424,7 @@ def collect(repository, change, config, *, client=None, max_pages=10):
     }
     if identity not in config.repositories:
         raise CirraError("GitHub repository is not allowlisted by operator policy")
+    remaining = config.merge_gate.max_intermediate_comparisons if config.merge_gate else 0
     for _ in range(3):
         pr, _ = client.get(f"pulls/{change}")
         head, _, count = revisions(pr, repository_id, change)
@@ -438,9 +442,18 @@ def collect(repository, change, config, *, client=None, max_pages=10):
         files, gaps = files_from(comparison, count)
         variants = {}
         if gated:
-            extra, missing = review_comparisons(
-                client, comparison, target, head, files, config.max_diff_bytes, max_pages
-            )
+            bases, missing = review_bases(client, comparison, target, head, max_pages)
+            extra = []
+            if len(bases) > remaining:
+                missing.append(
+                    "PR history exceeds the intermediate comparison limit for this collection"
+                )
+            elif bases:
+                # Reserve all reads before starting. A moving head must share this budget.
+                remaining -= len(bases)
+                extra, missing = review_comparisons(
+                    client, bases, head, files, config.max_diff_bytes
+                )
             variants["additional_comparisons"] = extra
             gaps.extend(missing)
         checks, errors = checks_from(client, head, max_pages)
