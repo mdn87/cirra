@@ -6,7 +6,6 @@ from cirra.domain import CirraError, digest, number, sha, utc_now
 from cirra.events import trusted_change
 from cirra.github import (
     GitHubClient,
-    GitHubError,
     GitHubRateLimited,
     native_id,
     pull_merge_ref,
@@ -68,7 +67,7 @@ def discover(route, token=None):
                 revision["merge"] = pull_merge_ref(client, change)
             except GitHubRateLimited:
                 raise
-            except GitHubError:
+            except CirraError:
                 revision["merge"] = None
         changes.append((change, revision))
     return changes

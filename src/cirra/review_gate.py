@@ -83,7 +83,7 @@ class RequiredReviewCheck:
         self.route, self.change, self.transport = route, change, transport
         self.current_merge = current_merge
         self.merge = current_merge()
-        self.slot = digest([NAME, route.repository_id, route.policy.merge_gate.branch, self.merge])
+        self.slot = digest([NAME, route.repository_id, route.policy.digest, self.merge])
         self.path = directory / "review-gates" / (self.slot + ".json")
         self.prefix = "/repos/" + route.repository
 
@@ -127,6 +127,14 @@ class RequiredReviewCheck:
         identifier = native_id(matches[0]["id"]) if matches else None
         if prior.get("native_id") and prior["native_id"] != identifier:
             raise CirraError("required review check changed its native identity")
+        if matches and matches[0].get("status") == "completed":
+            # GitHub keeps completed check runs terminal. On redelivery, refresh
+            # the verdict in finish() without replacing the last report with a pending summary.
+            conclusion = matches[0].get("conclusion")
+            if conclusion not in ("success", "failure"):
+                raise CirraError("existing required review has an unexpected conclusion")
+            self.identifier = self.verify(matches[0], "completed", conclusion, identifier)
+            return
         body = {
             "name": NAME,
             "external_id": self.slot,

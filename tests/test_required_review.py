@@ -169,6 +169,9 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
         gate.finish(store, saved, lambda: provider)
     provider.collection["target_branch"] = "main"
     assert gate.finish(store, saved, lambda: provider)["conclusion"] == "success"
+    completed = http.item.copy()
+    gate.start()
+    assert http.item == completed
     provider.checks[0]["raw_state"] = "failure"
     assert gate.finish(store, saved, lambda: provider)["conclusion"] == "failure"
     http.item["conclusion"] = "neutral"
