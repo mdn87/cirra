@@ -33,7 +33,7 @@
       "projectId": "cirra",
       "title": "Verify production audit readiness",
       "summary": "Check live audit configuration, waiting jobs and release prerequisites; record the next safe activation step.",
-      "stage": "active",
+      "stage": "done",
       "sequence": 1,
       "prereqs": [
         "cirra:audit-tiers"
@@ -42,7 +42,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T05:44:41Z",
-        "updatedAt": "2026-11-20T05:44:51Z"
+        "updatedAt": "2026-11-20T05:47:35Z"
       },
       "evidence": [
         {
@@ -56,6 +56,38 @@
           "at": "2026-11-20T05:44:51Z",
           "kind": "stage-change",
           "message": "Board and status passed the Dias parsers; live readiness inspection started."
+        },
+        {
+          "entryId": "cirra:audit-readiness:done",
+          "at": "2026-11-20T05:47:35Z",
+          "kind": "stage-change",
+          "message": "Verified live policy, stored audits and service health; recorded activation prerequisites and the GitLab access failure."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:gitlab-reader-recovery",
+      "projectId": "cirra",
+      "title": "Recover GitLab reader access",
+      "summary": "Diagnose the provider authentication failure and restore reconciliation without hiding route coverage.",
+      "stage": "planned",
+      "sequence": 2,
+      "prereqs": [
+        "cirra:audit-readiness"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T05:47:35Z",
+        "updatedAt": "2026-11-20T05:47:35Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:gitlab-reader-recovery:created",
+          "at": "2026-11-20T05:47:35Z",
+          "kind": "created",
+          "message": "Live reconciliation returns HTTP 401 while the worker is running; credential cause is not yet established."
         }
       ]
     }

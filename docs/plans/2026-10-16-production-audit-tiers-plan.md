@@ -4,6 +4,10 @@ Date: 2026-10-16. Status: stages 1 to 6 implemented; see the
 [audit guide](../audit-workflow.md). The stage 4 live acceptance passed on
 lugos-host on 2026-10-18 (see stage 4).
 
+The [November readiness assessment](2026-11-20-audit-readiness.md) records
+the current live policy, waiting imports, and prerequisites for activating
+full and release audits. Implementation completion is not rollout completion.
+
 ## Purpose
 
 The `production-audit` skill (lugos, `plugins/lugos-toolset/skills/production-audit/`,
