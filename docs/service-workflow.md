@@ -681,6 +681,11 @@ readiness and application health. If the previous release still reads the live
 state, it takes precedence.
 The failed deployment exits nonzero even when recovery succeeds.
 
+On hosts with an active audit reader, choose a fallback with the same dedicated
+account and read-only mounts. Historical templates ran the listener under the
+worker account. Stop the optional reader before a rollback to those templates
+and restore its access restrictions before enabling it again.
+
 After a successful deployment, the script prints a compatible rollback command
 and keeps the current, previous and explicitly selected fallback directories
 when pruning other releases beyond `--keep` (3 by default). A manual rollback
