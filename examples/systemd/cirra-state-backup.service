@@ -2,6 +2,8 @@
 Description=Back up Cirra state and verify an isolated restore
 Wants=network-online.target
 After=network-online.target
+OnFailure=cirra-health.service
+OnSuccess=cirra-health.service
 StartLimitIntervalSec=4h
 StartLimitBurst=5
 
@@ -12,6 +14,7 @@ UMask=0077
 EnvironmentFile=/etc/lugos/restic-lugos-host.env
 EnvironmentFile=/etc/cirra-state-backup.conf
 ExecStart=/usr/bin/python3 -I /usr/local/libexec/cirra-backup-state.py backup
+ExecStopPost=-/usr/bin/python3 -I /usr/local/libexec/cirra-backup-health.py record-result
 ExecStopPost=/usr/bin/python3 -I /usr/local/libexec/cirra-backup-state.py resume
 StateDirectory=cirra-recovery
 StateDirectoryMode=0700

@@ -4,7 +4,13 @@ The recovery job takes a consistent off-host copy of the service database, durab
 
 ## Install the recovery job
 
-Install `scripts/backup-state.py` as the root-owned `/usr/local/libexec/cirra-backup-state.py` and the two `examples/systemd/cirra-state-backup.*` files in `/etc/systemd/system`. The installed script uses the system Python and its standard library. Review any change before replacing it. Keep the timer disabled until the first restore has succeeded.
+Install both root-owned helpers and the service and timer before starting the first backup. They use the system Python and its standard library. Review changes before replacing either helper.
+
+```sh
+sudo install -o root -g root -m 0755 scripts/backup-state.py /usr/local/libexec/cirra-backup-state.py
+sudo install -o root -g root -m 0755 scripts/backup-health.py /usr/local/libexec/cirra-backup-health.py
+sudo install -o root -g root -m 0644 examples/systemd/cirra-state-backup.{service,timer} /etc/systemd/system/
+```
 
 The example reads restic's existing protected environment file and a separate root-owned, mode-0600 `/etc/cirra-state-backup.conf`. Set `CIRRA_APPROVED_BACKUP_REPOSITORY` there to the exact restic repository location approved for Cirra private state. The helper checks that it matches `RESTIC_REPOSITORY` before invoking restic. Keep restic credentials, the witness key and publisher or webhook credentials outside the state tree. Secure the offline configuration archive and its recovery passphrase under separate access controls.
 
@@ -12,16 +18,22 @@ The default state is `/srv/lugos/state/cirra`. The script includes this one dire
 
 The service needs systemd, restic with `--retry-lock` and restore verification, access to the existing SFTP or storage credentials, and a Linux kernel that supports `tmpfs,noswap`. Verification restores to the service's private, non-executable tmpfs. Set its size for the uncompressed state and available RAM. The mount disappears when the service exits. The live state and backup snapshots remain intact. Multiple runs share a lock, and the snapshot also takes the deployment lock while work is paused.
 
-Start and verify the first backup before enabling its timer.
+Start and verify the first backup. Then enable monitoring on this host by installing the drop-in for the existing five-minute Cirra health check. Install the same drop-in when upgrading a host with an enabled backup timer.
 
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl start cirra-state-backup.service
 sudo cat /var/lib/cirra-recovery/last-verified.json
+sudo install -D -o root -g root -m 0644 examples/systemd/cirra-health.service.d/state-backup.conf /etc/systemd/system/cirra-health.service.d/state-backup.conf
+sudo systemctl daemon-reload
 sudo systemctl enable --now cirra-state-backup.timer
 ```
 
-The timer runs daily at 06:30 UTC and catches a missed scheduled run after boot. A failed run retries after 15 minutes, up to the configured start limit. Compare the time of the last verified snapshot with the service's recovery-point target. An encrypted restic snapshot on a separate LAN host protects against loss of the service disk. A site disaster requires an independently approved off-site copy.
+The timer runs daily at 06:30 UTC and catches a missed scheduled run after boot. A failed run retries after 15 minutes, up to the configured start limit. An encrypted restic snapshot on a separate LAN host protects against loss of the service disk. A site disaster requires an independently approved off-site copy.
+
+The health check alerts if verification evidence is missing or unreadable, the backup service reports failure, or the last verified capture is more than 26 hours old. The interval allows two hours beyond the daily schedule. A failed run records a private timestamp under `/var/lib/cirra-recovery`. Starting a retry or verifying an older snapshot leaves the alert active. A newly captured and successfully restored backup clears the backup problem. The normal alert resolves once the worker and backup checks both pass.
+
+Only the root-owned health helper reads the recovery receipt. The health journal and the operator event receive a short reason without the snapshot ID, repository location or credentials. Inspect `journalctl -u cirra-state-backup.service` locally for the failed run. A host without scheduled backups uses the ordinary health service without the drop-in.
 
 ## Snapshot and verification
 
