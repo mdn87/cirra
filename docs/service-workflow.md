@@ -612,8 +612,19 @@ observer image, and saves `staging/config-before-<sha>`. It then runs
 `cirra observer-pins`, which fails when a release changes the observer
 definition digest. Review the release, then rerun with `--repin` to update the
 pins (each policy keeps a `.before-repin` copy). The script switches `current`
-atomically, restarts both services and checks `/healthz`. If they do not come
-up, it restores the saved configuration and the previous release. Old
+atomically and restarts the receiver, worker, and any active audit reader or
+health timer. Promotion requires every unit to be active, a healthy receiver
+and a heartbeat from the new worker. Installed unit templates are synchronized
+with the release. Operator drop-ins remain in place. If a unit has local edits,
+the script names it so the operator can reconcile those edits before switching.
+An interrupted installation is retained under staging and rebuilt on retry.
+
+Before promotion or rollback the script reads the existing SQLite schema
+and checks compatibility with the selected binary. If it differs, keep the
+database and use a compatible binary. For a planned schema transition, first
+rehearse the change and recovery on an isolated, consistent copy. Preserve
+work accepted after the backup. A failed restart restores the saved
+configuration and previous release only if the database is compatible. Old
 releases beyond `--keep` (3 by default) are removed; the current and previous
 releases are always kept. A rollback restores the configuration saved before
 the current release and switches back.
