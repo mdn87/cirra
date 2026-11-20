@@ -3,8 +3,8 @@
 import json
 
 from cirra.audit import SEVERITIES
-from cirra.domain import CirraError, digest, sha
-from cirra.github import native_id, record, revisions, target_revision
+from cirra.domain import CirraError, digest
+from cirra.github import native_id, pull_merge_ref, record, revisions, target_revision
 from cirra.policy import assess_checks
 from cirra.publish import write_receipt
 from cirra.report import make_report, plain
@@ -27,7 +27,7 @@ def merge_revision(client, change, branch):
         or pr.get("mergeable") is not True
     ):
         raise CirraError("GitHub has no current test merge for this open pull request")
-    merge = sha(pr.get("merge_commit_sha"))
+    merge = pull_merge_ref(client, number)
     commit, _ = client.get(f"git/commits/{merge}")
     if (
         record(commit).get("sha") != merge

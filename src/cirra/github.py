@@ -17,6 +17,7 @@ API_VERSION = "2026-03-10"
 OID = r"(?:[a-f0-9]{40}|[a-f0-9]{64})"
 ROUTE = re.compile(
     rf"(?:pulls(?:/[1-9][0-9]*)?|branches/(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{{2}})+"
+    rf"|git/ref/pull/[1-9][0-9]*/merge|git/commits/{OID}"
     rf"|compare/{OID}\.\.\.{OID}|commits/{OID}/(?:check-runs|statuses))?"
 )
 
@@ -174,6 +175,15 @@ def target_revision(client, branch_name):
     if record(branch).get("name") != branch_name:
         raise CirraError("GitHub returned a different target branch")
     return sha(record(branch.get("commit")).get("sha"))
+
+
+def pull_merge_ref(client, change):
+    name = f"pull/{change}/merge"
+    ref, _ = client.get("git/ref/" + name)
+    obj = record(record(ref).get("object"))
+    if ref.get("ref") != "refs/" + name or obj.get("type") != "commit":
+        raise CirraError("GitHub returned a different pull-request merge ref")
+    return sha(obj.get("sha"))
 
 
 def files_from(comparison, count):

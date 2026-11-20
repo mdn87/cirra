@@ -390,6 +390,20 @@ def test_transport_encodes_target_branch_as_one_path_component():
     )
 
 
+def test_transport_reads_only_the_named_pull_merge_ref_and_pinned_commit():
+    transport = Transport([(200, b"{}", {}), (200, b"{}", {})])
+    client = client_with(transport)
+    paths = ["git/ref/pull/7/merge", "git/commits/" + "a" * 40]
+    for path in paths:
+        client.get(path)
+    assert [req.full_url for req in transport.requests] == [
+        "https://api.github.com/repos/example/repo/" + path for path in paths
+    ]
+    for path in ("git/ref/heads/main", "git/ref/pull/7/head", "git/commits/main"):
+        with pytest.raises(CirraError, match="unsupported"):
+            client.get(path)
+
+
 def test_redirect_does_not_forward_credentials():
     transport = Transport([(302, b"canary-secret", {"Location": "https://other.test/leak"})])
     with pytest.raises(GitHubError, match="redirect") as error:

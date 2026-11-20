@@ -4,7 +4,15 @@ from urllib.parse import quote
 
 from cirra.domain import CirraError, digest, number, sha, utc_now
 from cirra.events import trusted_change
-from cirra.github import GitHubClient, native_id, record, target_revision
+from cirra.github import (
+    GitHubClient,
+    GitHubError,
+    GitHubRateLimited,
+    native_id,
+    pull_merge_ref,
+    record,
+    target_revision,
+)
 from cirra.gitlab import GitLabClient
 from cirra.transport import pages
 
@@ -51,8 +59,17 @@ def discover(route, token=None):
                     raise CirraError("reconciliation target branch changed identity")
                 targets[branch] = sha(record(target.get("commit")).get("id"))
         revision = {"head": head, "target": targets[branch]}
-        if getattr(getattr(route, "policy", None), "merge_gate", None):
+        gate = getattr(getattr(route, "policy", None), "merge_gate", None)
+        if gate and branch == gate.branch:
             revision["target_branch"] = branch
+            # GitHub may regenerate its synthetic commit for identical parents.
+            # A PR without a usable merge ref still needs its independent head CI.
+            try:
+                revision["merge"] = pull_merge_ref(client, change)
+            except GitHubRateLimited:
+                raise
+            except GitHubError:
+                revision["merge"] = None
         changes.append((change, revision))
     return changes
 
@@ -73,7 +90,13 @@ def sync(config, queue, credential, *, route_name=None, discover_changes=discove
                     if gate and revision.get("target_branch") == gate.branch
                     else None
                 )
-                if queue.tested_head(route, change, revision["head"], review_target=target):
+                if queue.tested_head(
+                    route,
+                    change,
+                    revision["head"],
+                    review_target=target,
+                    review_merge=revision.get("merge"),
+                ):
                     tested.append(change)
                     continue
                 queued.append(

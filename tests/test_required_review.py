@@ -192,7 +192,7 @@ def test_reconciliation_requires_published_review_for_this_target_and_policy(tmp
     )
     queue = Queue(tmp_path)
     service = SimpleNamespace(routes={"github": route})
-    revision = {"target_branch": "main", "head": "a" * 40, "target": "b" * 40}
+    revision = {"target_branch": "main", "head": "a" * 40, "target": "b" * 40, "merge": "d" * 40}
 
     def poll():
         return sync(service, queue, lambda _: None, discover_changes=lambda *_: [(7, revision)])[0]
@@ -206,9 +206,13 @@ def test_reconciliation_requires_published_review_for_this_target_and_policy(tmp
         "state": "published",
         "head_sha": revision["head"],
         "target_sha": revision["target"],
+        "merge_sha": revision["merge"],
     }
     queue.save(job)
     assert poll()["already_tested"] == [7]
+    revision["merge"] = "e" * 40
+    assert not poll()["jobs"][0]["duplicate"]
+    revision["merge"] = "d" * 40
     revision["target"] = "c" * 40
     assert not poll()["jobs"][0]["duplicate"]
     revision["target"] = "b" * 40
@@ -217,7 +221,17 @@ def test_reconciliation_requires_published_review_for_this_target_and_policy(tmp
 
 
 @pytest.mark.parametrize(
-    "case", ["current", "retargeted", "new_base", "wrong_parents", "draft", "conflict"]
+    "case",
+    [
+        "current",
+        "retargeted",
+        "new_base",
+        "wrong_parents",
+        "wrong_ref",
+        "wrong_type",
+        "draft",
+        "conflict",
+    ],
 )
 def test_native_merge_binding_requires_the_open_pr_and_ordered_parents(case):
     from cirra.review_gate import merge_revision
@@ -232,12 +246,15 @@ def test_native_merge_binding_requires_the_open_pr_and_ordered_parents(case):
         "draft": case == "draft",
         "changed_files": 1,
         "mergeable": case != "conflict",
-        "merge_commit_sha": merge,
     }
     if case == "retargeted":
         pr["base"]["ref"] = "other"
     resources = {
         "pulls/7": pr,
+        "git/ref/pull/7/merge": {
+            "ref": "refs/pull/8/merge" if case == "wrong_ref" else "refs/pull/7/merge",
+            "object": {"sha": merge, "type": "tag" if case == "wrong_type" else "commit"},
+        },
         "branches/main": {"name": "main", "commit": {"sha": head if case == "new_base" else base}},
         "git/commits/" + merge: {
             "sha": merge,
