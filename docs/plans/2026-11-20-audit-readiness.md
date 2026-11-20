@@ -65,16 +65,44 @@ The worker restarted at 07:00:02 UTC and reconciled GitLab and GitHub at
 the alert service accepted the resolution with HTTP 202 and the pending alert
 marker cleared. GitHub PR audits 24, 25 and 28 still awaited import.
 
+## Three PR audits completed at 07:42 UTC
+
+Each report passed the Lugos validator and the deployed Cirra validator against
+the base and head in its original packet. Cirra stored all three reports.
+The worker marked each job done. GitHub returned one completed `cirra/audit`
+check on each head, with the same audit ID and conclusion as the worker receipt.
+
+| Pull request | Audited head | Findings | Published check |
+| --- | --- | --- | --- |
+| #24, webhook redelivery documentation | `65bf815` | None | [Passed](https://github.com/mdn87/cirra/runs/136155387332) |
+| #25, health alert recovery | `ea4f0f5` | Three medium | [Passed](https://github.com/mdn87/cirra/runs/136155397022) |
+| #28, loopback audit read API | `ff88dad` | Four medium, one low | [Passed](https://github.com/mdn87/cirra/runs/136155405276) |
+
+All eight findings fell below the configured critical threshold.
+
+- **Alert delivery.** The alert unit can report success after skipping delivery
+  when its credential is absent. Its journal read has no deadline, and the
+  automated suite does not exercise the alert and recovery notification cycle.
+  The configured recovery path did deliver the November 20 resolution.
+- **Audit read API.** The example service grants write access to Cirra state.
+  A concurrent receipt update can make the gate record and its generation
+  disagree. Each request scans the entire audit history and all receipt files,
+  and listing summaries loads full reports into memory. Invalid numeric page
+  parameters can also produce an HTTP 503 response. The service was reviewed
+  from its pinned revision and was absent on the production host.
+
+The live queue had zero jobs waiting for import, and the health check reported
+zero problems. Each stored comparison had an empty baseline reference. The
+store contained no full or release audit. The operator copies of both report
+formats are under `/srv/lugos/state/cirra/operator-audit-reports/<attempt_id>/`.
+
 ## Audit activation after recovery
 
-1. Inspect the three pending packets and decide whether each still warrants
-   an audit of its pinned revision. Import valid reports or explicitly cancel
-   obsolete work with a recorded reason; do not treat a merged PR as audited.
-2. Prove one repository-scoped full audit with the session runner. Preserve
+1. Prove one repository-scoped full audit with the session runner. Preserve
    the previous policy for rollback, enable `full`, observe baseline queueing,
    produce and import a report matching its packet, and verify baseline use
    by a subsequent PR audit. Full audits must remain non-blocking.
-3. Prepare the separate release demonstration: a protected target, a merged
+2. Prepare the separate release demonstration with a protected target, a merged
    candidate with witness-verified CI definition evidence, a trusted native
    workflow and the restricted Actions credential. Enable `release`, prove
    refusal without a valid audit, then prove a valid audit permits planning.

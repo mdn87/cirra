@@ -133,7 +133,7 @@
       "projectId": "cirra",
       "title": "Settle three waiting pull request audits",
       "summary": "Review the saved audit packets for three merged pull requests. Import valid reports or record why an obsolete audit was cancelled.",
-      "stage": "planned",
+      "stage": "done",
       "sequence": 3,
       "prereqs": [
         "cirra:audit-readiness",
@@ -143,7 +143,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T07:02:22Z",
-        "updatedAt": "2026-11-20T07:02:22Z"
+        "updatedAt": "2026-11-20T07:42:44Z"
       },
       "evidence": [
         {
@@ -151,6 +151,44 @@
           "at": "2026-11-20T07:02:22Z",
           "kind": "created",
           "message": "The live queue still has three pull request audits awaiting import after the worker recovered."
+        },
+        {
+          "entryId": "cirra:settle-pending-pr-audits:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T07:24:10Z",
+          "message": "Confirmed three prepared attempts and matching checkouts. Began reviewing the saved pull request revisions."
+        },
+        {
+          "entryId": "cirra:settle-pending-pr-audits:done",
+          "kind": "stage-change",
+          "at": "2026-11-20T07:42:44Z",
+          "message": "Imported three verified reports with eight findings. Each original revision has one matching GitHub audit check. No audit is waiting for import."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:prove-full-audit-baseline",
+      "projectId": "cirra",
+      "title": "Prove the full audit baseline",
+      "summary": "Run one full repository audit and verify that a later pull request audit uses it as its comparison baseline.",
+      "stage": "planned",
+      "sequence": 4,
+      "prereqs": [
+        "cirra:settle-pending-pr-audits"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T07:42:44Z",
+        "updatedAt": "2026-11-20T07:42:44Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:prove-full-audit-baseline:created",
+          "kind": "created",
+          "at": "2026-11-20T07:42:44Z",
+          "message": "The three completed pull request audits have no comparison baseline. The live store has no full audit."
         }
       ]
     }
