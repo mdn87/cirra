@@ -172,7 +172,7 @@
       "projectId": "cirra",
       "title": "Prove the full audit baseline",
       "summary": "Run one full repository audit and verify that a later pull request audit uses it as its comparison baseline.",
-      "stage": "planned",
+      "stage": "active",
       "sequence": 4,
       "prereqs": [
         "cirra:settle-pending-pr-audits"
@@ -181,7 +181,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T07:42:44Z",
-        "updatedAt": "2026-11-20T07:42:44Z"
+        "updatedAt": "2026-11-20T08:10:53Z"
       },
       "evidence": [
         {
@@ -189,6 +189,18 @@
           "kind": "created",
           "at": "2026-11-20T07:42:44Z",
           "message": "The three completed pull request audits have no comparison baseline. The live store has no full audit."
+        },
+        {
+          "entryId": "cirra:prove-full-audit-baseline:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T07:54:13Z",
+          "message": "Confirmed the worker is healthy and the repository has no baseline. Started the full audit and a pull request to verify its use."
+        },
+        {
+          "entryId": "cirra:prove-full-audit-baseline:imported",
+          "kind": "note",
+          "at": "2026-11-20T08:10:53Z",
+          "message": "The worker completed the scheduled full audit and selects it as the repository baseline. It covers all 117 concepts and records 32 findings."
         }
       ]
     }

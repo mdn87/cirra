@@ -511,7 +511,9 @@ Since 2026-10-19 the health unit also carries
 `OnSuccess=cirra-health-resolve.service`. The alert unit writes
 `health-alert.pending` (the generated request id) under the state directory
 and sends `ttl_seconds: 86400`, so an unresolved request expires a day after
-the last failed run. The resolve unit runs only while that marker exists
+the last failed run. If `LUGOS_EVENT_AUTH_TOKEN` is missing or empty, the
+alert unit exits with an error before writing the marker or contacting
+event-ingest. The resolve unit runs only while that marker exists
 (`ConditionPathExists=`), posts `operator_attention.resolved` with reason
 `run_succeeded` and no `id` (the daemon resolves the active request for the
 dedupe key; request ids are primary keys and cannot be reused across
