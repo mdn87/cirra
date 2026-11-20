@@ -493,6 +493,22 @@ def test_intermediate_compare_budget_covers_collection_retries(
         assert any("intermediate comparison limit" in gap for gap in captured["coverage_gaps"])
 
 
+def test_merged_release_refresh_preserves_the_reviewed_diff_and_reads_current_checks(github_policy):
+    api = API()
+    initial = collect("example/repo", 9, github_policy, client=api)
+    expected = FixtureProvider.from_data(initial, github_policy).snapshot.record()
+    api.branch["commit"]["sha"] = "5" * 40
+    api.pr["merged"] = True
+    api.checks[0]["conclusion"] = "failure"
+    refreshed = collect("example/repo", 9, github_policy, client=api, reviewed_target=TARGET)
+    assert FixtureProvider.from_data(refreshed, github_policy).snapshot.record() == expected
+    check_run = next(check for check in refreshed["checks"] if check["kind"] == "check_run")
+    assert check_run["normalized_state"] == "failure"
+    api.pr["merged"] = False
+    with pytest.raises(CirraError, match="only a merged pull request"):
+        collect("example/repo", 9, github_policy, client=api, reviewed_target=TARGET)
+
+
 def test_redirect_does_not_forward_credentials():
     transport = Transport([(302, b"canary-secret", {"Location": "https://other.test/leak"})])
     with pytest.raises(GitHubError, match="redirect") as error:

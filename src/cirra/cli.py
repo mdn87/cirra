@@ -49,10 +49,18 @@ def capture_change(
     instance=None,
     witness=None,
     witness_key=None,
+    reviewed_target=None,
 ):
     if provider == "github":
         client = GitHubClient(repository, token=token, timeout=timeout)
-        data = collect(repository, change, config, client=client, max_pages=max_pages)
+        data = collect(
+            repository,
+            change,
+            config,
+            client=client,
+            max_pages=max_pages,
+            reviewed_target=reviewed_target,
+        )
     elif provider == "gitlab":
         client = gitlab.GitLabClient(repository, token=token, timeout=timeout)
         data = gitlab.collect(repository, change, config, client=client, max_pages=max_pages)

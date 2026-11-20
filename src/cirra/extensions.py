@@ -143,6 +143,7 @@ def run(args, token_from, capture_change):
                 token=token_from(args.reader_token_env),
                 witness=args.provenance,
                 witness_key=token_from(args.witness_key_env),
+                reviewed_target=request["snapshot"]["target_sha"],
             )
             return FixtureProvider.from_data(data, config)
 
