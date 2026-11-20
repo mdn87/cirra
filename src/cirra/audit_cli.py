@@ -43,6 +43,12 @@ def register(commands):
     cancel.add_argument("--job", required=True)
     cancel.add_argument("--reason", required=True)
     cancel.add_argument("--state-dir", type=Path, default=Path(".cirra"))
+    publication = commands.add_parser(
+        "retry-audit-publication", help="reconcile a completed PR audit check"
+    )
+    publication.add_argument("--job", required=True)
+    publication.add_argument("--reason", required=True)
+    publication.add_argument("--state-dir", type=Path, default=Path(".cirra"))
     jobs = commands.add_parser("audit-jobs", help="list audit requests and their states")
     jobs.add_argument("--state-dir", type=Path, default=Path(".cirra"))
 
@@ -104,5 +110,9 @@ def run(args):
         return 0
     if args.command == "audit-jobs":
         print(json.dumps(AuditQueue(args.state_dir).status(), indent=2))
+        return 0
+    if args.command == "retry-audit-publication":
+        queue = AuditQueue(args.state_dir, Store(args.state_dir))
+        print(json.dumps(queue.retry_publication(args.job, args.reason), indent=2))
         return 0
     return None

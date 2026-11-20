@@ -16,6 +16,16 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+class ProviderAccessDenied(CirraError):
+    """The provider refused this credential or operation."""
+
+
+class ProviderRateLimited(CirraError):
+    def __init__(self, message, retry_at):
+        super().__init__(message)
+        self.retry_at = retry_at
+
+
 def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 

@@ -6,6 +6,9 @@ runs the selected tests in an isolated Docker container, obtains an AI review,
 and publishes the results. GitHub still owns the repository, checks, branch
 rules, and merge decision. Cirra never merges a PR.
 
+Service objectives, alert ownership, publication recovery and cold storage are
+documented in [Worker operations](worker-operations.md).
+
 The worker also supports GitLab merge-request reviews, isolated tests, and
 maintained advisory notes. GitHub observations attest the supervisor's native
 check. GitLab observations use a signed `observer_run` record retained by Cirra;
