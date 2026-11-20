@@ -325,7 +325,9 @@ exhausted, or a queue record is unreadable (the worker skips such records).
 `cirra-health-alert.service` (`OnFailure=`) posts an
 `operator_attention.requested` event to lugos event-ingest, and
 `cirra-health-resolve.service` (`OnSuccess=`) resolves it on the next healthy
-run; point both at your own units if you alert differently.
+run. Both units use HTTP for loopback and verified HTTPS for a remote recipient.
+The alert uses fallback text if the journal takes more than three seconds.
+A rejected resolution keeps the incident marker for the next healthy run.
 
 The receiver closes any connection that has not finished its request within
 10 seconds, so slow clients cannot hold its 16 handler slots. It writes one
