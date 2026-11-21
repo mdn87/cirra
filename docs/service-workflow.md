@@ -54,6 +54,23 @@ Relative paths resolve against the service configuration file.
    maps `CIRRA_GITHUB_WEBHOOK_SECRET`; the worker manifest maps
    `CIRRA_WITNESS_KEY`, `CIRRA_GITHUB_APP_PRIVATE_KEY_PEM`, and any configured reader or
    publisher tokens.
+6. On a fresh Linux host, create the shared Cirra state directory and the private
+   GLAS state directories before starting the example systemd units. The paths
+   in each unit's `ReadWritePaths` must exist before systemd can start the
+   receiver or worker. For the lugos-host layout, run
+
+   ```sh
+   sudo install -d -m 0700 -o matt -g matt \
+     /srv/lugos/state/cirra \
+     /srv/lugos/state/glas/cirra-webhook \
+     /srv/lugos/state/glas/cirra-worker \
+     /srv/lugos/state/glas/cirra-health \
+     /srv/lugos/state/glas/cirra-health-resolve
+   ```
+
+   If your installation uses a different service account or layout, use the
+   units' `User` and `Group`, the Cirra state path, and each GLAS configuration's
+   `home` path.
 
 Each service process has a separate GLAS manifest. For an interactive launch,
 `GLAS_MANIFEST` selects the manifest for `scripts/with-glas.py`. `GLAS_HOME`
