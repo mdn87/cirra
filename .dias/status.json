@@ -5,16 +5,16 @@
   "assessmentState": "watchlist",
   "assessmentScope": "current-milestone",
   "percentComplete": null,
-  "milestonePhase": "integration-proof",
+  "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-20T23:19:46Z",
-  "confidence": "reported",
-  "currentMilestone": "Migrate service credentials for pull request 43 and restore the two affected review jobs.",
-  "remainingSummary": "Resolve the conflict and manifest path issue, verify host access to three credentials, and obtain protected checks for the updated pull request.",
-  "nextChipId": "cirra:resolve-pr43-credential-migration",
+  "assessedAt": "2026-11-21T00:07:58Z",
+  "confidence": "authoritative",
+  "currentMilestone": "Pull request 43 migrated the services to Bitwarden and cleared the two failed review jobs.",
+  "remainingSummary": "The storage encryption finding remains open by owner decision. Five audit controls still need operating evidence or owner targets.",
+  "nextChipId": null,
   "source": {
-    "label": "Pull request review and host job records",
-    "updatedAt": "2026-11-20"
+    "label": "Protected GitHub checks, signed host receipts and production service verification",
+    "updatedAt": "2026-11-21"
   }
 }

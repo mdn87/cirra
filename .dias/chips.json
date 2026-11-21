@@ -473,17 +473,17 @@
       "projectId": "cirra",
       "title": "Resolve the credential migration and its two failed review jobs",
       "summary": "Update pull request 43, verify the credential scope of each service, and recover the two jobs that could not obtain a test merge.",
-      "stage": "active",
+      "stage": "done",
       "sequence": 10,
       "prereqs": [
         "cirra:restore-host-pr-review",
         "cirra:verify-native-release-dispatch"
       ],
       "linkedRunIds": [],
-      "confidence": "reported",
+      "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-20T23:19:46Z",
-        "updatedAt": "2026-11-20T23:26:56Z"
+        "updatedAt": "2026-11-21T00:07:58Z"
       },
       "evidence": [
         {
@@ -503,6 +503,24 @@
           "kind": "note",
           "at": "2026-11-20T23:26:56Z",
           "message": "The host read all three Bitwarden entries and each matched its working credential. A regression test reproduced selection of the wrong manifest and passed after the fix."
+        },
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:protected",
+          "kind": "note",
+          "at": "2026-11-21T00:07:58Z",
+          "message": "The host verified the signed isolated test run and completed code review for the final commit. All five GitHub CI jobs passed."
+        },
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:fresh-install",
+          "kind": "note",
+          "at": "2026-11-21T00:07:58Z",
+          "message": "The install guide now creates five private state directories. In empty scratch, both systemd roles could write their state with filesystem protection enabled."
+        },
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:done",
+          "kind": "stage-change",
+          "at": "2026-11-21T00:07:58Z",
+          "message": "Pull request 43 merged and deployed at 844179b. Four services use Bitwarden. Both retried jobs finished successfully. The original failures are preserved."
         }
       ]
     }
