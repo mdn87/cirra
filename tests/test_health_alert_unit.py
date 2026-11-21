@@ -122,7 +122,18 @@ def test_event_body_uses_the_service_diagnostic_without_systemd_manager_messages
     assert health_notify.journal_detail() == ""
 
 
-def test_only_loopback_uses_plain_http():
+def test_local_http_requires_an_explicit_transport(monkeypatch):
+    monkeypatch.delenv("LUGOS_EVENT_SCHEME", raising=False)
     for host in ("localhost", "127.0.0.1", "::1"):
         assert type(health_notify.receiver(host, 8787)) is http.client.HTTPConnection
+    assert type(health_notify.receiver("10.0.1.33", 8787)) is http.client.HTTPSConnection
     assert type(health_notify.receiver("events.example", 443)) is http.client.HTTPSConnection
+
+    monkeypatch.setenv("LUGOS_EVENT_SCHEME", "http")
+    assert type(health_notify.receiver("10.0.1.33", 8787)) is http.client.HTTPConnection
+    with pytest.raises(ValueError, match="private IP address"):
+        health_notify.receiver("events.example", 8787)
+
+    monkeypatch.setenv("LUGOS_EVENT_SCHEME", "invalid")
+    with pytest.raises(ValueError, match="LUGOS_EVENT_SCHEME"):
+        health_notify.receiver("10.0.1.33", 8787)

@@ -38,10 +38,18 @@ def receiver(host, port):
     if host == "localhost":
         host = "127.0.0.1"
     try:
-        loopback = ipaddress.ip_address(host).is_loopback
+        address = ipaddress.ip_address(host)
     except ValueError:
-        loopback = False
-    connection = http.client.HTTPConnection if loopback else http.client.HTTPSConnection
+        address = None
+    scheme = os.environ.get("LUGOS_EVENT_SCHEME", "auto")
+    if scheme not in ("auto", "http", "https"):
+        raise ValueError("LUGOS_EVENT_SCHEME must be auto, http, or https")
+    if scheme == "http" and (address is None or not address.is_private):
+        raise ValueError("LUGOS_EVENT_SCHEME=http requires a private IP address")
+    use_http = scheme == "http" or (
+        scheme == "auto" and address is not None and address.is_loopback
+    )
+    connection = http.client.HTTPConnection if use_http else http.client.HTTPSConnection
     return connection(host, port, timeout=8)
 
 
