@@ -20,10 +20,12 @@ def unit(tmp_path):
         path = Path(__file__).resolve().parents[1] / f"examples/systemd/cirra-health-{mode}.service"
         config = ConfigParser(interpolation=None)
         config.read(path, encoding="utf-8")
-        exe, flag, module, action, configured_marker = shlex.split(config["Service"]["ExecStart"])
-        assert exe.endswith("/python") and (flag, module) == ("-m", "cirra.health_notify")
-        assert (action, Path(configured_marker).name) == (mode, marker.name)
-        return health_notify.main([action, str(marker)])
+        assert config["Service"]["LoadCredentialEncrypted"].startswith("glas-bws-token:")
+        exe, launcher, runtime = shlex.split(config["Service"]["ExecStart"])
+        assert exe.endswith("/python3") and launcher.endswith("/host-runtime.py")
+        name = "cirra-health.json" if mode == "alert" else "cirra-health-resolve.json"
+        assert runtime.endswith("/" + name)
+        return health_notify.main([mode, str(marker)])
 
     return run, marker
 

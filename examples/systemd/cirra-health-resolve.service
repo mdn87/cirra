@@ -8,10 +8,9 @@ ConditionPathExists=/srv/lugos/state/cirra/health-alert.pending
 Type=oneshot
 User=matt
 Group=matt
-# Provides LUGOS_EVENT_HOST, LUGOS_EVENT_PORT and LUGOS_EVENT_AUTH_TOKEN.
-EnvironmentFile=-/etc/lugos/event-ingest.env
+LoadCredentialEncrypted=glas-bws-token:/etc/credstore.encrypted/glas-lugos-host-runtime
 # The resolved event carries no id: the attention daemon resolves the active
 # request for the dedupe_key, and request ids are primary keys that cannot be
 # reused across incidents. The marker is removed once the event is accepted,
 # so a failed post or a missing token leaves it in place for the next run.
-ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -m cirra.health_notify resolve /srv/lugos/state/cirra/health-alert.pending
+ExecStart=/usr/bin/python3 /srv/lugos/runtimes/glas/host-runtime.py /srv/lugos/runtimes/glas/config/cirra-health-resolve.json

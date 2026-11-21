@@ -18,6 +18,6 @@ routes:
     publisher:
       app_id: 5339263
       installation_id: 171924634
-      private_key_file: ../.cirra/credentials/mdn87-cirra-reviewer.2026-10-15.private-key.pem
+      private_key_env: CIRRA_GITHUB_APP_PRIVATE_KEY_PEM
     observer: observer.yaml
     witness_key_env: CIRRA_WITNESS_KEY

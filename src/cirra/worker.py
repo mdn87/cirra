@@ -88,12 +88,9 @@ class Processor:
 
     def app_token(self, route):
         settings = route.publisher
-        if "private_key_env" in settings:
-            pem = self.credential(settings["private_key_env"])
-            if not pem:
-                raise CirraError("GitHub App private key environment variable is missing")
-        else:
-            pem = Path(settings["private_key_file"]).read_text(encoding="utf-8")
+        pem = self.credential(settings["private_key_env"])
+        if not pem:
+            raise CirraError("GitHub App private key GLAS binding is missing")
         return github_app_token(
             settings["app_id"],
             settings["installation_id"],

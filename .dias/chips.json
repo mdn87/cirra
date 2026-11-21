@@ -466,6 +466,45 @@
           "message": "GitHub run 44832190518 succeeded on its first attempt. Cirra matched one run to the request. The log confirmed the reviewed commit from pull request 45."
         }
       ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:resolve-pr43-credential-migration",
+      "projectId": "cirra",
+      "title": "Resolve the credential migration and its two failed review jobs",
+      "summary": "Update pull request 43, verify the credential scope of each service, and recover the two jobs that could not obtain a test merge.",
+      "stage": "active",
+      "sequence": 10,
+      "prereqs": [
+        "cirra:restore-host-pr-review",
+        "cirra:verify-native-release-dispatch"
+      ],
+      "linkedRunIds": [],
+      "confidence": "reported",
+      "timestamps": {
+        "createdAt": "2026-11-20T23:19:46Z",
+        "updatedAt": "2026-11-20T23:26:56Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:created",
+          "kind": "created",
+          "at": "2026-11-20T23:19:46Z",
+          "message": "GitHub reports a merge conflict and a review comment about relative manifests. The host recorded two failed jobs while the change lacked a test merge."
+        },
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:active",
+          "kind": "stage-change",
+          "at": "2026-11-20T23:20:18Z",
+          "message": "Confirmed both host jobs stopped after GitHub could not create a test merge. Checking the manifest selection and the machine account permissions."
+        },
+        {
+          "entryId": "cirra:resolve-pr43-credential-migration:verified-inputs",
+          "kind": "note",
+          "at": "2026-11-20T23:26:56Z",
+          "message": "The host read all three Bitwarden entries and each matched its working credential. A regression test reproduced selection of the wrong manifest and passed after the fix."
+        }
+      ]
     }
   ]
 }

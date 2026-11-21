@@ -5,8 +5,7 @@ Description=Raise an operator-attention alert when the Cirra health check fails
 Type=oneshot
 User=matt
 Group=matt
-# Provides LUGOS_EVENT_HOST, LUGOS_EVENT_PORT and LUGOS_EVENT_AUTH_TOKEN.
-EnvironmentFile=-/etc/lugos/event-ingest.env
+LoadCredentialEncrypted=glas-bws-token:/etc/credstore.encrypted/glas-lugos-host-runtime
 # Posts one operator_attention.requested event per failed run. The daemon
 # keeps one active request per dedupe_key and only pushes again when the
 # urgency rises, so the request must be resolved on recovery
@@ -14,4 +13,4 @@ EnvironmentFile=-/etc/lugos/event-ingest.env
 # marker file tells the resolve unit that an alert is outstanding, and
 # ttl_seconds expires the request a day after the last failed run if the
 # resolve step never runs.
-ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -m cirra.health_notify alert /srv/lugos/state/cirra/health-alert.pending
+ExecStart=/usr/bin/python3 /srv/lugos/runtimes/glas/host-runtime.py /srv/lugos/runtimes/glas/config/cirra-health.json

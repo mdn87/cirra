@@ -66,11 +66,12 @@ records. A statement has this shape:
 ```
 
 ```text
-cirra sign-provenance --statement <statement.json> --key-env CIRRA_WITNESS_KEY --output <receipt.json>
-cirra collect --provider github --repo mdn87/cirra --change <number> --config <policy> --provenance <receipt.json> --witness-key-env CIRRA_WITNESS_KEY
+GLAS_MANIFEST=config/glas.witness.local.json python scripts/with-glas.py sign-provenance --statement <statement.json> --key-env CIRRA_WITNESS_KEY --output <receipt.json>
+GLAS_MANIFEST=config/glas.witness.local.json python scripts/with-glas.py collect --provider github --repo mdn87/cirra --change <number> --config <policy> --provenance <receipt.json> --witness-key-env CIRRA_WITNESS_KEY
 ```
 
-Use an independently generated secret containing at least 32 bytes. Signing is
+Bind an independently generated BWS secret containing at least 32 bytes to
+`CIRRA_WITNESS_KEY` in the ignored witness manifest. Signing is
 an operator assertion of independently checked facts, not a way to upgrade an
 untrusted CI artifact. Never put the witness key in a PR workflow, its tested
 code, or a reviewer. An ordinary artifact uploaded after tests can be modified
@@ -89,14 +90,13 @@ target invalidates old synthetic merge parentage through the normal policy.
 Install a GitHub App on the selected repository with **Checks: write** and
 **Metadata: read**. Record the numeric App ID and installation ID separately;
 the installation ID is not a secret key, and the App ID is not the Client ID.
-Keep the downloaded private PEM file under the ignored `.cirra/credentials/`
-directory. PEM files are also ignored throughout this repository. Load the file
-contents into a process environment variable when publishing; do not commit the
-key or paste its contents into chat. Existing `.env` files are not implicitly loaded.
+Import the GitHub App private PEM into BWS, then bind it to
+`CIRRA_GITHUB_APP_PRIVATE_KEY_PEM` in a separate ignored GLAS publication
+manifest. Do not commit the key or paste its contents into chat.
 Install the optional signing dependency locally with `pip install 'cirra[publish]'`.
 
 ```text
-cirra publish --run <run-id> --config <policy> --publisher-id <app-id> --installation-id <installation-id> --app-key-env CIRRA_GITHUB_APP_KEY
+GLAS_MANIFEST=config/glas.publisher.local.json python scripts/with-glas.py publish --run <run-id> --config <policy> --publisher-id <app-id> --installation-id <installation-id> --app-key-env CIRRA_GITHUB_APP_PRIVATE_KEY_PEM
 ```
 
 Cirra verifies the installation's App identity and mints an installation token
@@ -139,7 +139,7 @@ inspection, the explicit retry can create a replacement with duplicate risk reco
 ## GitLab portability
 
 ```text
-cirra collect --provider gitlab --repo mdn87/cirra-sandbox --change <iid> --config examples/gitlab-policy.yaml --token-env GITLAB_READER_TOKEN
+GLAS_MANIFEST=config/glas.gitlab-reader.local.json python scripts/with-glas.py collect --provider gitlab --repo mdn87/cirra-sandbox --change <iid> --config examples/gitlab-policy.yaml --token-env GITLAB_READER_TOKEN
 ```
 
 GitLab collection pins MR diff-version head/base/start commits and the current
@@ -169,7 +169,7 @@ actual selected project and permissions in GitLab before recording:
 ```
 
 ```text
-cirra publish --run <run-id> --config examples/gitlab-policy.yaml --reader-token-env GITLAB_READER_TOKEN --publisher-token-env GITLAB_PUBLISHER_TOKEN --publisher-id <user-id> --permission-receipt <local-receipt.json>
+GLAS_MANIFEST=config/glas.gitlab-publisher.local.json python scripts/with-glas.py publish --run <run-id> --config examples/gitlab-policy.yaml --reader-token-env GITLAB_READER_TOKEN --publisher-token-env GITLAB_PUBLISHER_TOKEN --publisher-id <user-id> --permission-receipt <local-receipt.json>
 ```
 
 This receipt is an explicit operator trust input, not an independently verified
@@ -188,7 +188,7 @@ See the live results below for the exact limits.
 
 ```text
 cirra collect --provider forgejo --instance https://codeberg.org --repo forgejo/forgejo --change <number> --config <allowlisted-policy>
-cirra ingest-event --provider github --headers <headers.json> --body <raw-body.json> --secret-env CIRRA_WEBHOOK_SECRET --config <policy>
+GLAS_MANIFEST=config/glas.webhook.local.json python scripts/with-glas.py ingest-event --provider github --headers <headers.json> --body <raw-body.json> --secret-env CIRRA_WEBHOOK_SECRET --config <policy>
 ```
 
 Forgejo uses an explicit HTTPS origin, native PR diffs and commit statuses.
@@ -208,7 +208,7 @@ Review the resulting snapshot with the normal `review` command.
 
 ```text
 cirra plan-release --run <run-id> --config <policy> --workflow-id <native-workflow-id> --ref <protected-target-branch> --output <request.json>
-cirra dispatch-release --request <request.json> --config <policy> --app-id <app-id> --installation-id <installation-id> --app-key-env CIRRA_RELEASE_APP_KEY --provenance <receipt.json> --witness-key-env CIRRA_WITNESS_KEY
+GLAS_MANIFEST=config/glas.release.local.json python scripts/with-glas.py dispatch-release --request <request.json> --config <policy> --app-id <app-id> --installation-id <installation-id> --app-key-env CIRRA_RELEASE_APP_KEY --provenance <receipt.json> --witness-key-env CIRRA_WITNESS_KEY
 ```
 
 Passing the same policy to both commands applies its configured release audit gate.

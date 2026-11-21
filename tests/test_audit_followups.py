@@ -279,7 +279,7 @@ def test_observer_pins_detects_and_repins_a_stale_definition_digest(tmp_path, po
                 "repository_id": "42",
                 "policy": "policy.yaml",
                 "webhook_secret_env": "HOOK_SECRET",
-                "publisher": {"app_id": 5, "installation_id": 6, "private_key_file": "app.pem"},
+                "publisher": {"app_id": 5, "installation_id": 6, "private_key_env": "APP_PEM"},
                 "observer": "observer.yaml",
                 "witness_key_env": "WITNESS_KEY",
             }
@@ -305,6 +305,8 @@ def test_deploy_script_and_its_remote_half_are_valid_lf_bash():
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash is not available")
+    if Path(bash).name.lower() == "bash.exe" and "system32" in str(Path(bash).parent).lower():
+        pytest.skip("Windows WSL launcher cannot read native Python test paths")
     script = Path(__file__).resolve().parents[1] / "scripts" / "deploy-release.sh"
     assert b"\r" not in script.read_bytes()
     subprocess.run([bash, "-n", script.name], cwd=script.parent, check=True)

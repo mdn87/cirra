@@ -46,26 +46,37 @@ Relative paths resolve against the service configuration file.
    commands, limits, launcher, and supervisor implementation. Recompute it after
    an observer upgrade or a move to another installation.
 4. Configure `examples/service.yaml` with that review policy and observer file.
-   The GitHub App key is a file reference. The worker mints repository-scoped
+   The GitHub App key is a BWS reference. The worker mints repository-scoped
    tokens with Checks write and Metadata read. Private repository collection
    needs a separate reader token that can also fetch the Git repository.
 5. Generate independent, high-entropy webhook and witness secrets of at least
-   32 characters. Store them in protected environment files, never in the repo.
-   A receiver file needs `CIRRA_GITHUB_WEBHOOK_SECRET`; a worker file needs
-   `CIRRA_WITNESS_KEY` and any explicitly configured reader/publisher tokens.
+   32 characters. Store them in BWS, never in the repo. The receiver manifest
+   maps `CIRRA_GITHUB_WEBHOOK_SECRET`; the worker manifest maps
+   `CIRRA_WITNESS_KEY`, `CIRRA_GITHUB_APP_PRIVATE_KEY_PEM`, and any configured reader or
+   publisher tokens.
 
-The service reads an environment file only with `--env-file`. It selects only
-the credential names needed by that process, does not expand shell expressions,
-and lets explicitly set environment variables take precedence. It never loads
-`.env` implicitly. The model and sandbox do not inherit these credentials.
+Each service process has a separate GLAS manifest. For an interactive launch,
+`GLAS_MANIFEST` selects the manifest for `scripts/with-glas.py`. `GLAS_HOME`
+selects the GLAS state directory. The launcher uses the default native credential
+profile. The units in `examples/systemd/` show how lugos-host runs each service.
+Systemd decrypts the host machine token into its private credential directory,
+and `host-runtime.py` launches GLAS with one receiver,
+worker, or health manifest. The machine account must be allowed to read every
+referenced BWS entry before the service is restarted. The model and sandbox do
+not inherit these credentials.
+
+The health alert and recovery units use `cirra-health.json` and
+`cirra-health-resolve.json`. Both launcher configurations reference the health
+manifest, which supplies `LUGOS_EVENT_AUTH_TOKEN`. Run `cirra.health_notify`
+in `alert` or `resolve` mode respectively, using the same pending-alert marker.
 
 ## Start the receiver and worker
 
 Run these as separate processes with the same state directory:
 
 ```text
-cirra serve-webhooks --service-config <service.yaml> --env-file <receiver.env> --state-dir <state> --port 8796
-cirra worker --service-config <service.yaml> --env-file <worker.env> --state-dir <state>
+GLAS_MANIFEST=<receiver-manifest> python scripts/with-glas.py serve-webhooks --service-config <service.yaml> --state-dir <state> --port 8796
+GLAS_MANIFEST=<worker-manifest> python scripts/with-glas.py worker --service-config <service.yaml> --state-dir <state>
 cirra jobs --state-dir <state>
 ```
 
@@ -174,7 +185,7 @@ Operators can request CI without fabricating a webhook:
 ```text
 cirra enqueue --service-config <service.yaml> --state-dir <state> --route cirra-github --change <PR-number>
 cirra enqueue --service-config <service.yaml> --state-dir <state> --route cirra-github --branch main
-cirra sync --service-config <service.yaml> --env-file <worker.env> --state-dir <state>
+GLAS_MANIFEST=<worker-manifest> python scripts/with-glas.py sync --service-config <service.yaml> --state-dir <state>
 cirra requeue --service-config <service.yaml> --state-dir <state> --route cirra-github --job <job-id> --reason "provider recovered"
 cirra jobs --state-dir <state>
 ```
@@ -285,8 +296,7 @@ To change reader permissions, generate a fine-grained token with the required
 selections. In a Glas deployment, edit the **Value** of the existing Bitwarden
 secret identified by the worker's `GITLAB_TOKEN` reference. Check the secret ID
 when names match. The machine account can have different access to each entry.
-In an env-file deployment, update the configured reader value in the credential
-files. [Bitwarden secret access](https://bitwarden.com/help/secrets/#assign-secrets-to-people-or-machine-accounts)
+[Bitwarden secret access](https://bitwarden.com/help/secrets/#assign-secrets-to-people-or-machine-accounts)
 
 Verify that the worker's machine account can load the reader, read the project
 and fetch the branch. If job logs are required, also read a nonempty trace.
