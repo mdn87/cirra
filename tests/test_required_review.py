@@ -65,6 +65,7 @@ def test_gate_policy_requires_real_review_and_a_pinned_observer(policy_data, tmp
         ("none", "GitHub"),
         ("high", "Address the high finding"),
         ("incomplete", "coverage gap"),
+        ("unspecified_gap", "coverage gap"),
         ("timeout", "saved review error"),
         ("unverified", "Verify the tested revision"),
         ("merge_exact", "exact PR head"),
@@ -106,6 +107,8 @@ def test_required_verdict_fails_closed(defect, action):
     elif defect == "incomplete":
         report["coverage"] = {"complete": False, "gaps": ["changed files page unavailable"]}
         report["review"]["findings"][0]["severity"] = "high"
+    elif defect == "unspecified_gap":
+        report["coverage"]["complete"] = False
     elif defect == "timeout":
         report["review"]["outcome"] = "timeout"
     elif defect == "unverified":

@@ -77,8 +77,7 @@ def coverage_next_step(report):
                     f"Inspect the unavailable patch for {excerpt(file['path'])} "
                     "before requesting another review."
                 )
-        gap = excerpt(report["coverage"]["gaps"][0])
-        return f"Resolve the coverage gap “{gap}” before requesting another review."
+        return "Resolve the coverage gap before requesting another review."
     return "Inspect the review notes in the saved report before relying on the review."
 
 
