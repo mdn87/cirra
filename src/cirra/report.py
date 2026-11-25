@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 from cirra.domain import digest, utc_now
+from cirra.policy import verified_failure
 
 
 def make_report(snapshot, ci, review, identity, run_id, config, *, collection=None):
@@ -51,6 +52,76 @@ def plain(value):
     return text.replace("\r", " ").replace("\n", " ")
 
 
+def excerpt(value):
+    """Keep a quoted evidence label short enough for a native check summary."""
+    return plain(value[:200]) + ("…" if len(value) > 200 else "")
+
+
+def with_next_step(summary, action):
+    return f"{summary}\n\n**Next step** — {action}"
+
+
+def reviewer_next_step(review):
+    if review["outcome"] == "awaiting_session":
+        return "Import the session review response for this revision."
+    if review["outcome"] == "succeeded":
+        return "Inspect the saved reviewer provenance before requesting another automatic review."
+    return "Inspect the saved review error before requesting another review."
+
+
+def coverage_next_step(report):
+    if not report["coverage"]["complete"]:
+        for file in report["snapshot"]["files"]:
+            if file["gap"]:
+                return (
+                    f"Inspect the unavailable patch for {excerpt(file['path'])} "
+                    "before requesting another review."
+                )
+        return "Resolve the coverage gap before requesting another review."
+    return "Inspect the review notes in the saved report before relying on the review."
+
+
+def ci_next_step(ci):
+    for check in ci["expected"]:
+        if verified_failure(check):
+            relation = check["evidence"]["relationship"]
+            revision = "test merge" if relation == "merge_exact" else "commit"
+            return f"Inspect the failing check {excerpt(check['name'])} on the verified {revision}."
+    if ci.get("collection_errors"):
+        return "Inspect the CI collection errors to see which check results are missing."
+    for check in ci["expected"]:
+        if not check["satisfied"]:
+            name = excerpt(check["name"])
+            if check["evidence"] and not check["verified_revision"]:
+                return f"Verify the tested revision for {name} before relying on its result."
+            if check["evidence"] and not check.get("definition_verified", True):
+                return f"Check which test definition {name} used before relying on its result."
+            return f"Obtain a verified passing result for {name} on this revision."
+    return None
+
+
+def advisory_next_step(report):
+    if report["review"]["outcome"] != "succeeded":
+        return reviewer_next_step(report["review"])
+    if not report["coverage"]["complete"]:
+        return coverage_next_step(report)
+    ci_action = ci_next_step(report["ci"])
+    if ci_action:
+        return ci_action
+    if report["review"]["notes"]:
+        return coverage_next_step(report)
+    return "Review the findings and CI evidence, then follow the repository’s normal merge process."
+
+
+def check_result(expected):
+    state, evidence = expected["state"], expected["evidence"]
+    result = plain(state)
+    if evidence and evidence["raw_state"] != state:
+        result += f" (reported {excerpt(evidence['raw_state'])})"
+    relation = evidence["relationship"] if evidence else "no verified evidence"
+    return f"{result}, {plain(relation)}"
+
+
 def render_markdown(report):
     snap, review, ci = report["snapshot"], report["review"], report["ci"]
     lines = [
@@ -58,8 +129,11 @@ def render_markdown(report):
         "",
         "Advisory report. Maintainers retain merge authority.",
         "",
-        f"Status: **{plain(report['status'])}**. CI: **{plain(ci['outcome'])}**. "
-        f"Reviewer: **{plain(review['outcome'])}**.",
+        with_next_step(
+            f"Status: **{plain(report['status'])}**. CI: **{plain(ci['outcome'])}**. "
+            f"Reviewer: **{plain(review['outcome'])}**.",
+            advisory_next_step(report),
+        ),
         "",
         f"Change: {plain(snap['provider'])} / {plain(snap['repository_id'])} / "
         f"{plain(snap['change_id'])}",
@@ -86,11 +160,9 @@ def render_markdown(report):
     if not ci["expected"]:
         lines.append("Review-only policy: no conventional CI checks are required.")
     for expected in ci["expected"]:
-        evidence = expected["evidence"]
-        relation = evidence["relationship"] if evidence else "no verified evidence"
         lines.append(
             f"- {plain(expected['name'])} (source {plain(expected['source_id'])}): "
-            f"{plain(expected['state'])}; {plain(relation)}. {plain(expected['reason'])}."
+            f"{check_result(expected)}. {plain(expected['reason'])}."
         )
     lines.extend(["", "## Review findings", ""])
     if not review["findings"]:

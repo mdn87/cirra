@@ -24,6 +24,14 @@ def relationship(check, snapshot):
     return "unrelated"
 
 
+def verified_failure(check):
+    return (
+        check["state"] == "failure"
+        and check["verified_revision"]
+        and check.get("definition_verified", "definition_digest" not in check)
+    )
+
+
 def assess_checks(checks, snapshot, config, collection_errors=()):
     evidence = []
     for check in checks:
@@ -92,10 +100,7 @@ def assess_checks(checks, snapshot, config, collection_errors=()):
         outcome = "incomplete"
     elif config.ci_mode == "review_only":
         outcome = "review_only"
-    elif any(
-        item["verified_revision"] and item["definition_verified"] and item["state"] == "failure"
-        for item in assessments
-    ):
+    elif any(verified_failure(item) for item in assessments):
         outcome = "failed"
     elif all(item["satisfied"] for item in assessments):
         outcome = "verified"

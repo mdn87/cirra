@@ -60,19 +60,30 @@ def test_gate_policy_requires_real_review_and_a_pinned_observer(policy_data, tmp
 
 
 @pytest.mark.parametrize(
-    "defect",
-    ["none", "high", "incomplete", "timeout", "unverified", "merge_exact", "notes", "fake"],
+    "defect, action",
+    [
+        ("none", "GitHub"),
+        ("high", "Address the high finding"),
+        ("incomplete", "coverage gap"),
+        ("unspecified_gap", "coverage gap"),
+        ("timeout", "saved review error"),
+        ("unverified", "Verify the tested revision"),
+        ("merge_exact", "exact PR head"),
+        ("notes", "review note"),
+        ("fake", "reviewer provenance"),
+    ],
 )
-def test_required_verdict_fails_closed(defect):
+def test_required_verdict_fails_closed(defect, action):
     from cirra.review_gate import verdict
 
     report = {
         "status": "complete",
-        "coverage": {"complete": True},
+        "coverage": {"complete": True, "gaps": []},
+        "snapshot": {"files": []},
         "inputs": {"reviewer": {"kind": "claude"}},
         "review": {
             "outcome": "succeeded",
-            "findings": [{"severity": "medium"}],
+            "findings": [{"severity": "medium", "title": "Handle @input"}],
             "notes": [],
             "session": {"tool": "claude", "provenance": "cli_transport"},
         },
@@ -83,6 +94,9 @@ def test_required_verdict_fails_closed(defect):
                     "name": "cirra/isolated-tests",
                     "definition_digest": "a" * 64,
                     "satisfied": True,
+                    "verified_revision": True,
+                    "definition_verified": True,
+                    "state": "success",
                     "evidence": {"relationship": "head_exact"},
                 }
             ],
@@ -91,18 +105,28 @@ def test_required_verdict_fails_closed(defect):
     if defect == "high":
         report["review"]["findings"][0]["severity"] = "high"
     elif defect == "incomplete":
+        report["coverage"] = {"complete": False, "gaps": ["changed files page unavailable"]}
+        report["review"]["findings"][0]["severity"] = "high"
+    elif defect == "unspecified_gap":
         report["coverage"]["complete"] = False
     elif defect == "timeout":
         report["review"]["outcome"] = "timeout"
     elif defect == "unverified":
         report["ci"]["outcome"] = "incomplete"
+        report["ci"]["expected"][0].update(verified_revision=False, satisfied=False)
+        report["ci"]["expected"][0]["evidence"]["relationship"] = "associated_only"
     elif defect == "merge_exact":
         report["ci"]["expected"][0]["evidence"]["relationship"] = "merge_exact"
     elif defect == "notes":
         report["review"]["notes"] = ["A section could not be reviewed."]
     elif defect == "fake":
         report["inputs"]["reviewer"]["kind"] = "fake"
-    assert verdict(report, "high")[0] == ("success" if defect == "none" else "failure")
+    conclusion, summary = verdict(report, "high")
+    assert conclusion == ("success" if defect == "none" else "failure")
+    (step,) = [line for line in summary.splitlines() if line.startswith("**Next step**")]
+    assert action in step
+    if defect == "high":
+        assert "&#64;input" in step
 
 
 def test_gate_reopens_owned_check_and_only_completes_a_current_review(
@@ -179,11 +203,14 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
         gate.finish(store, saved, lambda: provider)
     provider.collection["target_branch"] = "main"
     assert gate.finish(store, saved, lambda: provider)["conclusion"] == "success"
+    summary = http.item["output"]["summary"]
+    assert summary.count("**Next step**") == 1 and "GitHub" in summary
     completed = http.item.copy()
     gate.start()
     assert http.item == completed
     provider.checks[0]["raw_state"] = "failure"
     assert gate.finish(store, saved, lambda: provider)["conclusion"] == "failure"
+    assert "failing check cirra&#47;isolated\\-tests" in http.item["output"]["summary"]
     http.item["conclusion"] = "neutral"
     with pytest.raises(RemoteUncertain):
         gate.verify(http.item, "completed", "failure", "11")
