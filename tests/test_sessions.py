@@ -47,6 +47,7 @@ def test_session_round_trip_without_fake_response(inputs, policy_data, fixture_d
     assert reused is False
     assert pending["status"] == "incomplete"
     assert pending["review"]["outcome"] == "awaiting_session"
+    assert "**Next step** — Import the session review response" in render_markdown(pending)
     assert packet["input"] == provider.packet()
     assert "reviewer_response" not in json.dumps(packet)
     again, _, reused = prepare(provider, config, store)

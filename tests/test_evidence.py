@@ -15,6 +15,50 @@ def run_report(inputs, tmp_path, data=None, policy=None, **kwargs):
     return review(provider, config, Store(tmp_path / "state"), **kwargs)
 
 
+def next_step(report):
+    (line,) = [
+        line for line in render_markdown(report).splitlines() if line.startswith("**Next step**")
+    ]
+    return line
+
+
+def test_missing_patch_takes_precedence_over_a_verified_failure(inputs, fixture_data, tmp_path):
+    fixture_data["files"].append(
+        {"path": "docs/@owner.md", "old_path": None, "status": "added", "patch": None}
+    )
+    fixture_data["checks"][0]["raw_state"] = "failure"
+    report, _ = run_report(inputs, tmp_path, fixture_data)
+    step = next_step(report)
+    assert "patch" in step and "docs&#47;&#64;owner" in step
+    assert "before requesting another review" in step
+    assert "failure" in render_markdown(report) and "head\\_exact" in render_markdown(report)
+
+
+@pytest.mark.parametrize("raw_state", ["success", "timed_out"])
+def test_provider_result_needs_checkout_evidence(raw_state, inputs, fixture_data, tmp_path):
+    check = fixture_data["checks"][0]
+    check["provenance"]["trusted"] = False
+    check.update(
+        raw_state=raw_state, normalized_state="failure" if raw_state == "timed_out" else "success"
+    )
+    report, _ = run_report(inputs, tmp_path, fixture_data)
+    assert "Verify the tested revision for test" in next_step(report)
+    markdown = render_markdown(report)
+    assert "associated\\_only" in markdown
+    if raw_state == "timed_out":
+        assert "timed\\_out" in markdown and "failure" in markdown
+
+
+def test_failed_check_with_other_definition_needs_definition_evidence(
+    inputs, fixture_data, policy_data, tmp_path
+):
+    policy_data["ci"]["expected"][0]["definition_digest"] = "a" * 64
+    fixture_data["checks"][0]["provenance"]["definition_digest"] = "b" * 64
+    fixture_data["checks"][0]["raw_state"] = "failure"
+    report, _ = run_report(inputs, tmp_path, fixture_data, policy_data)
+    assert "which test definition test used" in next_step(report)
+
+
 def test_no_network_and_ci_refresh_does_not_repeat_review(
     inputs, fixture_data, tmp_path, monkeypatch
 ):
@@ -29,6 +73,8 @@ def test_no_network_and_ci_refresh_does_not_repeat_review(
     assert reused and first["run_id"] == latest["run_id"]
     assert latest["ci"]["outcome"] == "failed"
     assert latest["status"] == "complete"  # Complete evidence does not mean permission to merge.
+    assert "failing check test" in next_step(latest)
+    assert "repository" in next_step(first)
 
 
 @pytest.mark.parametrize("field", ["head_sha", "diff_base_sha", "target_sha"])
@@ -114,6 +160,8 @@ def test_failed_check_does_not_hide_another_unverified_failure(
     report, _ = run_report(inputs, tmp_path, fixture_data, policy_data)
     assert report["ci"]["outcome"] == "failed"
     assert report["status"] == "incomplete"
+    assert "failing check test" in next_step(report)
+    assert "associated\\_only" in render_markdown(report)
 
 
 def test_review_only_requires_explicit_policy(inputs, fixture_data, policy_data, tmp_path):
@@ -124,6 +172,7 @@ def test_review_only_requires_explicit_policy(inputs, fixture_data, policy_data,
     report, _ = run_report(inputs, tmp_path, fixture_data, policy_data)
     assert report["ci"]["outcome"] == "review_only"
     assert report["status"] == "complete"
+    assert "repository" in next_step(report)
 
 
 @pytest.mark.parametrize("gap", ["binary", "truncated", "limit", "collection"])
@@ -217,6 +266,7 @@ def test_reviewer_timeout_is_persisted_without_automatic_retry(inputs, tmp_path)
 
     report, _ = run_report(inputs, tmp_path, reviewer=TimeoutReviewer())
     assert report["review"]["outcome"] == "timeout"
+    assert "saved review error" in next_step(report)
     assert "sensitive" not in str(report)
     repeated, reused = run_report(inputs, tmp_path)
     assert reused and repeated["review"]["outcome"] == "timeout"

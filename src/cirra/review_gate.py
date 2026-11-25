@@ -7,7 +7,16 @@ from cirra.domain import CirraError, digest
 from cirra.github import native_id, pull_merge_ref, record, revisions, target_revision
 from cirra.policy import assess_checks
 from cirra.publish import write_receipt
-from cirra.report import make_report, plain
+from cirra.report import (
+    check_result,
+    ci_next_step,
+    coverage_next_step,
+    excerpt,
+    make_report,
+    plain,
+    reviewer_next_step,
+    with_next_step,
+)
 from cirra.transport import RemoteUncertain, pages
 
 NAME = "cirra/code-review"
@@ -39,6 +48,7 @@ def merge_revision(client, change, branch):
 
 
 def verdict(report, threshold):
+    """Return the conclusion and Markdown summary from the first applicable gate rule."""
     review, ci = report["review"], report["ci"]
     session = review.get("session") or {}
     if (
@@ -47,9 +57,13 @@ def verdict(report, threshold):
         or session.get("tool") != "claude"
         or session.get("provenance") != "cli_transport"
     ):
-        return "failure", "The automatic code reviewer did not complete successfully."
+        return "failure", with_next_step(
+            "Cirra could not verify a completed automatic code review.", reviewer_next_step(review)
+        )
     if not report["coverage"]["complete"] or review["notes"]:
-        return "failure", "The reviewer could not cover the entire change."
+        return "failure", with_next_step(
+            "The reviewer could not cover the entire change.", coverage_next_step(report)
+        )
     if (
         report["status"] != "complete"
         or ci["outcome"] != "verified"
@@ -61,20 +75,27 @@ def verdict(report, threshold):
             for item in ci["expected"]
         )
     ):
-        return "failure", "The worker could not verify passing CI on this exact commit."
+        return "failure", with_next_step(
+            "The worker could not verify passing CI on this exact commit.",
+            ci_next_step(ci)
+            or "Verify that the configured cirra/isolated-tests check passed on the exact PR head.",
+        )
     blocking = [
         f
         for f in review["findings"]
         if SEVERITIES.index(f["severity"]) >= SEVERITIES.index(threshold)
     ]
     if blocking:
-        return (
-            "failure",
+        finding = blocking[0]
+        return "failure", with_next_step(
             f"The review found {len(blocking)} issue(s) at {threshold} severity or above.",
+            f"Address the {finding['severity']} finding “{excerpt(finding['title'])}” "
+            "and submit the new revision for review.",
         )
-    return (
-        "success",
+    return "success", with_next_step(
         f"The reviewer covered the change and found no issues at {threshold} severity or above.",
+        "Consult GitHub for approval and merge requirements now that Cirra’s checks passed "
+        "on this revision.",
     )
 
 
@@ -199,15 +220,28 @@ class RequiredReviewCheck:
                 collection=provider.collection,
             )
             store.save_report(claim, report)
-            conclusion, reason = verdict(report, config.merge_gate.block_at)
+            conclusion, explanation = verdict(report, config.merge_gate.block_at)
             summary = [
-                reason,
+                explanation,
                 "",
+                f"CI evidence: {plain(ci['outcome'])}.",
                 f"PR #{self.change['change_id']} targeting {plain(branch)}.",
                 f"Head `{self.change['head_sha']}` · target `{self.change['target_sha']}`",
                 f"Verified test merge `{self.merge}`.",
                 f"Review `{saved['run_id']}` · report `{report['report_digest']}`",
             ]
+            for label, details in (
+                ("Coverage gap", report["coverage"]["gaps"]),
+                ("Review note", report["review"]["notes"]),
+                ("Review error", report["review"]["errors"]),
+                ("CI collection error", ci["collection_errors"]),
+            ):
+                if details:
+                    summary.append(f"{label} — {excerpt(details[0])}")
+            for check in [item for item in ci["expected"] if not item["satisfied"]][:10]:
+                summary.append(
+                    f"- {excerpt(check['name'])} — {check_result(check)}. {plain(check['reason'])}."
+                )
             for finding in report["review"]["findings"][:10]:
                 summary.append(f"- {plain(finding['severity'])} — {plain(finding['title'][:200])}")
             body = {
