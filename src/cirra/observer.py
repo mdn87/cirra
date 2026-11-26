@@ -498,9 +498,12 @@ def publish_observation(publisher, change, identifier, result, saved, path, poli
         fence.observe(check["native_id"], proof)
         return check
     fence.observe(None, None)
-    with fence.writing(proof, None):
+
+    def prepare():
+        write_receipt(path, {**saved, "state": "publishing"})
         saved["state"] = "publishing"
-        write_receipt(path, saved)
+
+    with fence.writing(proof, None, prepare=prepare):
         native = publisher.create(
             head,
             identifier,

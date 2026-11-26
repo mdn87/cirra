@@ -167,8 +167,9 @@ class RequiredReviewCheck:
             "settled": {**settled, "operation_id": operation},
         }
         proof = digest([body["status"], settled.get("conclusion"), intent["output_digest"]])
-        with self.fence.writing(proof, settled.get("native_id")):
-            write_receipt(self.path, intent)
+        with self.fence.writing(
+            proof, settled.get("native_id"), prepare=lambda: write_receipt(self.path, intent)
+        ):
             try:
                 item, _ = http.request(method, path, body=body)
             except RemoteUncertain:
