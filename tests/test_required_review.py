@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
@@ -215,6 +216,9 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
     with pytest.raises(RemoteUncertain, match="acknowledgement"):
         gate.finish(store, saved, lambda: provider)
     assert http.item["output"] != completed["output"]
+    pending = json.loads(gate.path.read_text())
+    assert pending["native_id"]["last_known_id"] == "11"
+    assert pending["native_id"]["operation_id"] == pending["settled"]["operation_id"]
     http.stale_reply = None
     http.stale_read = completed
     with pytest.raises(RemoteUncertain, match="acknowledgement"):

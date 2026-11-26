@@ -28,6 +28,10 @@ class RequestNotSent(ReadUnavailable):
     """The local deadline expired before sending the request."""
 
 
+class ResourceMissing(CirraError):
+    """The provider could not return the selected resource."""
+
+
 class JSONClient:
     def __init__(self, origin, headers, *, timeout=60, opener=None, max_bytes=8 * 1024 * 1024):
         parsed = urlsplit(origin)
@@ -110,6 +114,10 @@ class JSONClient:
                     ) from None
                 if status in (401, 403):
                     raise ProviderAccessDenied(
+                        f"provider refused request (HTTP {status}); check permissions or target"
+                    ) from None
+                if method == "GET" and status in (404, 410):
+                    raise ResourceMissing(
                         f"provider refused request (HTTP {status}); check permissions or target"
                     ) from None
                 if method != "GET" and status >= 500:

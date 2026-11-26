@@ -1,15 +1,19 @@
 import hashlib
 import hmac
+import io
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from urllib.error import HTTPError
 
 import pytest
 import test_services
 
 from cirra.domain import CirraError
 from cirra.job_queue import Queue
+from cirra.transport import JSONClient, ResourceMissing
 from cirra.webhook import accept
-from cirra.webhook_recovery import recent_ids, restore
+from cirra.webhook_recovery import recent_ids, recover, restore
 
 route = test_services.route
 SECRET = test_services.SECRET
@@ -101,22 +105,58 @@ def test_cursor_pages_keep_exact_ids_and_report_an_incomplete_window():
             return [older, {**recent, "id": ID - 2}], False
 
     api = API()
-    since = NOW - timedelta(minutes=1)
-    assert set(recent_ids(api, "/repos/example/repo/hooks/717/deliveries", since, 2)) == {
-        ID,
-        ID - 2,
-    }
+    # Starting an HTTP delivery before a host's snapshot does not prove it was queued by capture.
+    assert recent_ids(api, "/repos/example/repo/hooks/717/deliveries", 2) == [ID - 1, ID - 2, ID]
     with pytest.raises(CirraError, match="page limit"):
-        recent_ids(api, "/repos/example/repo/hooks/717/deliveries", since, 1)
+        recent_ids(api, "/repos/example/repo/hooks/717/deliveries", 1)
 
 
-def test_cli_uses_read_access_and_exits_nonzero_for_an_unrecoverable_delivery(
-    route, tmp_path, monkeypatch, capsys
+def test_snapshot_replays_a_delivery_started_before_capture(route, tmp_path, monkeypatch):
+    upstream, original = archived(route, Queue(tmp_path / "primary"))
+    started = datetime.now(UTC) - timedelta(seconds=5)
+    snapshot = started + timedelta(seconds=1)
+    row = {"event": "pull_request", "id": ID, "delivered_at": started.isoformat()}
+
+    class API:
+        def request(self, method, path, params=None):
+            return ([row] if params else upstream), False
+
+    monkeypatch.setattr("cirra.webhook_recovery.JSONClient", lambda *a, **kw: API())
+    args = SimpleNamespace(
+        snapshot_at=snapshot.isoformat(),
+        route=route.name,
+        hook_id=HOOK,
+        token_env="READER",
+        delivery_id=None,
+        max_pages=1,
+        state_dir=tmp_path / "standby",
+    )
+    result = recover(
+        test_services.settings(route), args, {"HOOK_SECRET": SECRET, "READER": "read"}.__getitem__
+    )
+    assert result["accepted"] == 1 and not result["unresolved"]
+    assert Queue(args.state_dir).pending()[0]["id"] == original["job_id"]
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_missing_archived_details_are_distinct_from_service_failures(status):
+    class Missing:
+        def open(self, request, timeout):
+            raise HTTPError(request.full_url, status, "unavailable", {}, io.BytesIO(b""))
+
+    with pytest.raises(ResourceMissing, match=str(status)):
+        JSONClient("https://api.github.com", {}, opener=Missing()).request("GET", "/delivery")
+
+
+@pytest.mark.parametrize("detail_error", ("missing", "rate_limited"))
+def test_cli_reports_partial_recovery_and_continues_past_a_missing_delivery(
+    route, tmp_path, monkeypatch, capsys, detail_error
 ):
     from cirra.cli import main
+    from cirra.domain import ProviderRateLimited
 
     upstream, _ = archived(route, Queue(tmp_path / "primary"))
-    damaged = {**upstream, "id": ID + 1, "guid": "wrong-delivery"}
+    damaged = {**upstream, "id": ID + 2, "guid": "wrong-delivery"}
     config = test_services.settings(route)
     monkeypatch.setattr("cirra.service_cli.load_service", lambda _: config)
     monkeypatch.setenv("RECOVERY_READER", "fixture-reader")
@@ -132,7 +172,12 @@ def test_cli_uses_read_access_and_exits_nonzero_for_an_unrecoverable_delivery(
 
         def request(self, method, path):
             reads.append((method, path))
-            return (upstream if path.endswith(str(ID)) else damaged), False
+            i = int(path.rsplit("/", 1)[1])
+            if i == ID + 1:
+                if detail_error == "missing":
+                    raise ResourceMissing("provider refused request (HTTP 404)")
+                raise ProviderRateLimited("provider rate limit (HTTP 429)", 42)
+            return (damaged if i == ID + 2 else {**upstream, "id": i}), False
 
     monkeypatch.setattr("cirra.webhook_recovery.JSONClient", API)
     args = [
@@ -147,14 +192,16 @@ def test_cli_uses_read_access_and_exits_nonzero_for_an_unrecoverable_delivery(
         str(HOOK),
         "--token-env",
         "RECOVERY_READER",
-        "--delivery-id",
-        str(ID),
-        "--delivery-id",
-        str(ID + 1),
     ]
+    for i in range(ID, ID + 4):
+        args.extend(["--delivery-id", str(i)])
     assert main(args) == 1
     counts = json.loads(capsys.readouterr().out)
-    assert counts["accepted"] == 1 and counts["unresolved"] == [ID + 1]
-    assert reads == [
-        ("GET", f"/repos/example/repo/hooks/{HOOK}/deliveries/{i}") for i in (ID, ID + 1)
-    ]
+    assert counts["accepted"] == 1
+    if detail_error == "missing":
+        assert counts["unresolved"] == [ID + 1, ID + 2] and counts["duplicate"] == 1
+        attempted = range(ID, ID + 4)
+    else:
+        assert counts["unresolved"] == [ID + 1, ID + 2, ID + 3] and "429" in counts["error"]
+        attempted = (ID, ID + 1)
+    assert reads == [("GET", f"/repos/example/repo/hooks/{HOOK}/deliveries/{i}") for i in attempted]

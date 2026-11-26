@@ -11,7 +11,7 @@ from cirra.domain import CirraError, digest, number, string
 from cirra.github import API_VERSION, native_id, record, repository_name
 from cirra.job_queue import Queue
 from cirra.reviewer import unique_object
-from cirra.transport import JSONClient
+from cirra.transport import JSONClient, ResourceMissing
 from cirra.webhook import MAX_BODY, accept
 
 
@@ -25,8 +25,8 @@ def timestamp(value):
     raise CirraError("delivery timestamps require an ISO date and time zone")
 
 
-def recent_ids(http, path, since, max_pages):
-    """Finish reading the window before queueing. A partial inventory cannot prove coverage."""
+def recent_ids(http, path, max_pages):
+    """Read all retained PR deliveries. GitHub's clock can straddle the local snapshot."""
     params, seen, deliveries = {"per_page": 100}, set(), {}
     for _ in range(max_pages):
         rows, more = http.request("GET", path, params)
@@ -36,8 +36,7 @@ def recent_ids(http, path, since, max_pages):
             if record(row).get("event") == "pull_request":
                 when = timestamp(row.get("delivered_at"))
                 identifier = int(native_id(row.get("id")))
-                if when >= since:
-                    deliveries[identifier] = when
+                deliveries[identifier] = when
         if not more:
             return sorted(deliveries, key=lambda identifier: (deliveries[identifier], identifier))
         # Extract only the cursor. The next request stays on our fixed repository and hook path.
@@ -125,11 +124,11 @@ def recover(config, args, credential):
     if route is None or route.provider != "github":
         raise CirraError("webhook recovery requires a configured GitHub route")
     hook = native_id(args.hook_id)
-    if args.since is not None:
-        since = timestamp(args.since)
+    if args.snapshot_at is not None:
+        snapshot = timestamp(args.snapshot_at)
         now = datetime.now(UTC)
-        if not now - timedelta(days=3) < since <= now:
-            raise CirraError("recovery window must start within GitHub's last three days")
+        if not now - timedelta(days=3) < snapshot <= now:
+            raise CirraError("the snapshot must be within GitHub's last three days of deliveries")
     secret, token = credential(route.secret_env), credential(args.token_env)
     if not isinstance(secret, str) or len(secret) < 32 or not token:
         raise CirraError("recovery requires the route secret and a GitHub webhook reader")
@@ -142,18 +141,28 @@ def recover(config, args, credential):
     if args.delivery_id:
         ids = list(dict.fromkeys(int(native_id(value)) for value in args.delivery_id))
     else:
-        ids = recent_ids(
-            http, path, since, number(args.max_pages, "page limit", 1, 100, integral=True)
-        )
+        ids = recent_ids(http, path, number(args.max_pages, "page limit", 1, 100, integral=True))
     queue = Queue(args.state_dir, config.max_jobs)
     result = {"seen": len(ids), "accepted": 0, "duplicate": 0, "ignored": 0, "unresolved": []}
-    for identifier in ids:
-        detail, _ = http.request("GET", f"{path}/{identifier}")
+    for index, identifier in enumerate(ids):
+        try:
+            detail, _ = http.request("GET", f"{path}/{identifier}")
+        except ResourceMissing:
+            result["unresolved"].append(identifier)
+            continue
+        except CirraError as exc:
+            result["unresolved"].extend(ids[index:])
+            result["error"] = str(exc)
+            break
         try:
             outcome = restore(detail, identifier, hook, route, secret, queue)
         except (CirraError, ValueError, RecursionError):
             result["unresolved"].append(identifier)
             continue
+        except OSError:
+            result["unresolved"].extend(ids[index:])
+            result["error"] = "local queue storage unavailable"
+            break
         key = "duplicate" if outcome.get("duplicate") else outcome["state"]
         result[key] += 1
     return result

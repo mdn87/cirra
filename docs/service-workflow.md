@@ -226,14 +226,14 @@ Inspect those separately using the existing review/publication recovery flow.
 ### Recover GitHub deliveries after host loss
 
 Restore the private state snapshot on the surviving host first. With its worker
-paused, replay the repository webhook deliveries since the snapshot. Supply the
+paused, replay the repository's retained pull request deliveries. Supply the
 existing webhook secret through the configured route and a separate GitHub token
 with repository **Webhooks: read** access. All GitHub API calls are reads.
 
 ```sh
 cirra recover-webhooks --service-config "$SERVICE_CONFIG" --state-dir "$RESTORED_STATE" \
   --route cirra-github --hook-id "$HOOK_ID" --token-env CIRRA_HOOK_READER \
-  --since "$SNAPSHOT_CAPTURED_AT"
+  --snapshot-at "$SNAPSHOT_CAPTURED_AT"
 ```
 
 The command checks the archived destination path, hook and repository IDs,
@@ -243,8 +243,10 @@ queue to deduplicate repeat deliveries. The output counts new jobs, duplicates
 and ignored events. A nonzero exit means recovery needs attention. Retry exact
 IDs with `--delivery-id` or request redelivery at GitHub when the archived JSON
 cannot reproduce the signed bytes. GitHub retains recent deliveries for three
-days. Keep the restored worker paused until publication ownership and the day's
-existing review and audit reservations have been reconciled.
+days. Cirra includes deliveries started before the snapshot because they might
+have reached the queue after capture. Keep the restored worker paused until
+publication ownership and the day's existing review and audit reservations
+have been reconciled.
 [GitHub delivery history](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/viewing-webhook-deliveries)
 
 On November 26, Cirra checked three actual archived deliveries in a private
@@ -265,7 +267,8 @@ the old worker cannot settle it. Production still uses the single worker.
 The required GitHub review check records a unique marker before each write.
 It verifies the returned title, summary and marker before recording success.
 After an uncertain reply, the next worker pass reads the owned check and
-requires the same output before updating it again.
+requires the same output before updating it again. A rollback to an older
+worker leaves that check pending until a compatible worker verifies the reply.
 
 The primary and the Intel Mac have a staged Docker context named
 `cirra-ha-observer`. It points to the host's approved local engine on each

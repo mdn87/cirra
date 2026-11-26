@@ -150,7 +150,10 @@ class RequiredReviewCheck:
         body["output"]["text"] = f"<!-- cirra-operation:{operation} -->"
         intent = {
             "state": "awaiting_ack",
-            "native_id": settled.get("native_id"),
+            # Until readback, identity includes the write as well as the object. Legacy
+            # workers only accept a matching scalar GitHub ID, so they park this slot
+            # on rollback even if GitHub is already showing a previous generation.
+            "native_id": {"last_known_id": settled.get("native_id"), "operation_id": operation},
             "expected_status": body["status"],
             "output_digest": digest(body["output"]),
             "settled": {**settled, "operation_id": operation},
@@ -188,11 +191,11 @@ class RequiredReviewCheck:
         if len(matches) > 1 or (prior and prior["state"] != "refused" and not matches):
             raise CirraError("required review check has no unique visible owner after a write")
         identifier = native_id(matches[0]["id"]) if matches else None
-        if prior.get("native_id") and prior["native_id"] != identifier:
-            raise CirraError("required review check changed its native identity")
         if prior.get("state") == "awaiting_ack":
             self.identifier = self.confirm(matches[0], prior)["native_id"]
             return
+        if prior.get("native_id") and prior["native_id"] != identifier:
+            raise CirraError("required review check changed its native identity")
         if matches and matches[0].get("status") == "completed":
             # GitHub keeps completed check runs terminal. On redelivery, refresh
             # the verdict in finish() without replacing the last report with a pending summary.

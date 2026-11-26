@@ -48,7 +48,9 @@ def register(commands):
             parser.add_argument("--token-env", required=True, help="repository Webhooks read token")
             select = parser.add_mutually_exclusive_group(required=True)
             select.add_argument("--delivery-id", action="append", type=int)
-            select.add_argument("--since", help="start of the recovery window, including time zone")
+            select.add_argument(
+                "--snapshot-at", help="time of restored snapshot; replay retained PR deliveries"
+            )
             parser.add_argument("--max-pages", type=int, default=10)
     status = commands.add_parser("jobs", help="inspect durable worker job results")
     status.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
