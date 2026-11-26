@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-FORMAT = 1
+FORMAT = 2
 MARKER = "worker-queue-format.json"
 
 
@@ -18,15 +18,15 @@ def live_format(root):
     return 0
 
 
-def activate(root):
+def activate(root, minimum=1):
     from cirra.domain import CirraError
     from cirra.publish import write_receipt
 
     floor = live_format(root)
     if floor > FORMAT:
         raise CirraError("live worker queue requires a newer release")
-    if floor < FORMAT:
-        write_receipt(Path(root) / MARKER, {"format": FORMAT}, history=False)
+    if floor < minimum:
+        write_receipt(Path(root) / MARKER, {"format": minimum}, history=False)
 
 
 def check(root, release):
@@ -45,20 +45,20 @@ def check(root, release):
                 "queue-slots.json",
             )
         ):
-            required = FORMAT
+            required = 1
         else:
             for path in (root / "audit-queue").glob("*.json"):
                 if (
                     json.loads(path.read_text(encoding="utf-8")).get("state")
                     == "awaiting_publication"
                 ):
-                    required = FORMAT
+                    required = 1
                     break
             if not required:
                 for path in (root / "audit-publication").glob("*.json"):
                     receipt = json.loads(path.read_text(encoding="utf-8"))
                     if receipt.get("uncertain") or receipt.get("state") in ("creating", "retry"):
-                        required = FORMAT
+                        required = 1
                         break
     if supported < required:
         raise ValueError(f"live worker queue format {required} exceeds release format {supported}")

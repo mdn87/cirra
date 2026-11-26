@@ -15,6 +15,7 @@ from cirra.github import API_VERSION, check_from, check_summary_digest, record
 from cirra.locking import change_lock
 from cirra.observer_process import run_control
 from cirra.observer_source import export_source
+from cirra.publication_fence import PublicationFence, require_send, require_state_owner
 from cirra.publish import write_receipt
 from cirra.service_config import read_yaml
 from cirra.transport import JSONClient, RemoteUncertain, pages
@@ -265,6 +266,9 @@ class ObserverCheck:
         ]
 
     def create(self, head, identifier, result, started_at, definition, *, operation_id=None):
+        output = observation_output(head, definition, operation_id)
+        proof = digest([identifier, result, timestamp(started_at), output])
+        require_send("observer", identifier, proof, None)
         item, _ = self.request(
             "POST",
             f"/repos/{self.repository}/check-runs",
@@ -276,7 +280,7 @@ class ObserverCheck:
                 "conclusion": result,
                 "started_at": started_at,
                 "completed_at": utc_now(),
-                "output": observation_output(head, definition, operation_id),
+                "output": output,
             },
         )
         return self.validate(item, head, identifier, result)
@@ -294,6 +298,7 @@ def observe(
     source=None,
     on_execution=None,
 ):
+    require_state_owner(state_dir)
     change = data["change"]
     provider = change["provider"]
     if provider not in ("github", "gitlab") or change["instance"] != f"https://{provider}.com":
@@ -449,6 +454,9 @@ def observe(
 def publish_observation(publisher, change, identifier, result, saved, path, policy):
     head, definition = change["head_sha"], policy["definition_digest"]
     operation_id = saved.get("publication_id")
+    fence = PublicationFence("observer", identifier)
+    if fence.owner is not None and type(publisher) is not ObserverCheck:
+        raise CirraError("shared observation requires the native GitHub check writer")
     try:
         matches = publisher.find(head, identifier, result)
     except RemoteUncertain:
@@ -463,13 +471,34 @@ def publish_observation(publisher, change, identifier, result, saved, path, poli
         raise CirraError(
             "multiple native observer checks match this execution; inspect before proceeding"
         )
-    if matches:
-        native = matches[0]
-    elif saved["state"] in ("publishing", "published"):
+    if not matches and saved["state"] in ("publishing", "published"):
         raise CirraError(
             "observer publication is uncertain; reconciliation found no unique native check"
         )
-    else:
+    if not matches and fence.owner is not None and operation_id is None:
+        # An unsubmitted execution can predate per-write markers.
+        operation_id = saved["publication_id"] = uuid.uuid4().hex
+    output = observation_output(head, definition, operation_id)
+    started = timestamp(saved["started_at"])
+    proof = digest([identifier, result, started, output])
+
+    def verified(native):
+        check = check_from(native, "check_run", head, utc_now())
+        if (
+            check["started_at"] != started
+            or (saved.get("native_id") is not None and check["native_id"] != saved["native_id"])
+            or check_summary_digest(native, output["title"], text=output.get("text"))
+            != digest(output["summary"])
+        ):
+            raise RemoteUncertain("native observer check does not match this execution attempt")
+        return check
+
+    if matches:
+        check = verified(matches[0])
+        fence.observe(check["native_id"], proof)
+        return check
+    fence.observe(None, None)
+    with fence.writing(proof, None):
         saved["state"] = "publishing"
         write_receipt(path, saved)
         native = publisher.create(
@@ -480,13 +509,6 @@ def publish_observation(publisher, change, identifier, result, saved, path, poli
             definition,
             operation_id=operation_id,
         )
-    check = check_from(native, "check_run", head, utc_now())
-    output = observation_output(head, definition, operation_id)
-    if (
-        check["started_at"] != timestamp(saved["started_at"])
-        or (saved.get("native_id") is not None and check["native_id"] != saved["native_id"])
-        or check_summary_digest(native, output["title"], text=output.get("text"))
-        != digest(output["summary"])
-    ):
-        raise RemoteUncertain("native observer check does not match this execution attempt")
-    return check
+        check = verified(native)
+        fence.acknowledged(proof, check["native_id"], target=None)
+        return check

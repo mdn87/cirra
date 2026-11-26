@@ -6,10 +6,11 @@ import os
 import re
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from itertools import islice
 from pathlib import Path
 
+from cirra import quorum_budget
 from cirra.domain import (
     CirraError,
     DeliveryConflict,
@@ -21,10 +22,15 @@ from cirra.domain import (
 )
 from cirra.locking import change_lock
 from cirra.publish import receipt_directory, sync_directory, write_receipt
-from cirra.queue_format import activate
+from cirra.queue_format import activate, live_format
 from cirra.queue_slots import Slots, hot_paths
+from cirra.quorum import current_owner
 
 TERMINAL_REVIEW = ("done", "attention", "skipped")
+
+
+class QueueCapacity(CirraError):
+    """No private execution slot is presently available."""
 
 
 def provider_retry_time(exc, minimum_delay=1):
@@ -167,7 +173,7 @@ class Queue:
         return True
 
     def record_admission(self, hint, outcome):
-        if hint.get("source"):
+        if hint.get("source") or hint.get("delivery", "").startswith("quorum:"):
             return
         day = datetime.now(UTC).date().isoformat()
         path = self.directory.parent / "webhook-admissions" / f"{day}.json"
@@ -180,6 +186,8 @@ class Queue:
         identifier = digest([route.name, hint["payload_digest"]])
         delivery = digest([route.name, hint["delivery"]])
         with change_lock(self.directory / "locks", "enqueue", 2):
+            if live_format(self.directory.parent) >= 2 and current_owner() is None:
+                raise CirraError("coordinated intake requires a committed shared job")
             delivery_path = self.directory / "deliveries" / (delivery + ".json")
             if delivery_path.exists() and self.read(delivery_path)["job_id"] != identifier:
                 raise DeliveryConflict("webhook delivery identity was reused with another payload")
@@ -206,7 +214,7 @@ class Queue:
                     {"observed_at": utc_now(), "maximum": self.maximum},
                     history=False,
                 )
-                raise CirraError("queue capacity reached; retry after active work finishes")
+                raise QueueCapacity("queue capacity reached; retry after active work finishes")
             job = {
                 "schema_version": 1,
                 "id": identifier,
@@ -240,6 +248,8 @@ class Queue:
             or job.get("state") not in ("queued", "running", "retry", *TERMINAL_REVIEW)
             or type(job.get("attempts")) is not int
             or job["attempts"] < 0
+            or type(job.get("budget_sequence", 0)) is not int
+            or job.get("budget_sequence", 0) < 0
             or type(job.get("not_before")) not in (int, float)
             or not math.isfinite(job["not_before"])
             or not all(
@@ -449,6 +459,10 @@ class Queue:
         return self.directory.parent / "worker-usage" / (day + ".json")
 
     def usage(self):
+        if owner := current_owner():
+            return quorum_budget.sync_usage(owner, self.directory.parent, quorum_budget.utc_day())[
+                "review"
+            ]
         path = self.usage_path()
         return self.read(path) if path.exists() else {"attempts": 0}
 
@@ -468,9 +482,38 @@ class Queue:
         self.defer_route(route, until, reader=True)
         return until
 
+    def begin_review(self, job, maximum):
+        owner = quorum_budget.mutation_owner(self.directory.parent)
+        if owner is None:
+            path = self.usage_path()
+            return path if self.reserve_attempt(maximum, path) else None
+        day = quorum_budget.utc_day()
+        sequence = job.get("budget_sequence", job["attempts"])
+        ticket = quorum_budget.operation("review", job["id"], sequence)
+        if job["state"] == "running":
+            outcome = "uncertain"
+        else:
+            outcome = quorum_budget.reserve(
+                owner, self.directory.parent, "review", day, maximum, ticket
+            )
+        if outcome == "full":
+            return None
+        job["budget_sequence"] = sequence + 1
+        if outcome == "uncertain":
+            job.update(
+                state="attention",
+                error="prior review execution is uncertain; reconcile before requeue",
+                updated_at=utc_now(),
+            )
+            self.save(job)
+            return None
+        return day, ticket
+
     def reserve_attempt(self, maximum, path=None):
         # The caller holds the process-lifetime worker lock. Persist before work
         # so a crash cannot reset the daily admission limit.
+        if quorum_budget.mutation_owner(self.directory.parent) is not None:
+            raise CirraError("shared admission requires a review job identity")
         path = self.usage_path() if path is None else path
         usage = self.read(path) if path.exists() else {"attempts": 0}
         if usage["attempts"] >= maximum:
@@ -482,6 +525,14 @@ class Queue:
         return True
 
     def return_unused_attempt(self, path):
+        if isinstance(path, tuple):
+            day, ticket = path
+            owner = current_owner()
+            if owner is None:
+                raise CirraError("shared refund requires the current worker owner")
+            return quorum_budget.refund(owner, self.directory.parent, "review", day, ticket)
+        if quorum_budget.mutation_owner(self.directory.parent) is not None:
+            raise CirraError("shared refund requires the original review reservation")
         usage = self.read(path)
         usage.update(attempts=max(0, usage["attempts"] - 1), updated_at=utc_now())
         write_receipt(path, usage)
@@ -570,6 +621,8 @@ class AuditQueue:
                     and math.isfinite(job["not_before"])
                     and isinstance(job.get("result", {}), dict)
                     and type(job.get("publication_tries", 0)) is int
+                    and type(job.get("budget_sequence", 0)) is int
+                    and job.get("budget_sequence", 0) >= 0
                     and isinstance(job.get("cancel_requested"), bool)
                     and isinstance(job.get("context"), dict)
                     and (
@@ -691,6 +744,10 @@ class AuditQueue:
                 "accepted_at": utc_now(),
                 "fresh": fresh,
             }
+            if fresh and current_owner() is not None:
+                from cirra.audits import completed
+
+                job["budget_predecessor"] = completed(self.store, audit_id) if self.store else None
             for other in jobs:
                 if other["work_key"] != work_key:
                     continue
@@ -734,7 +791,7 @@ class AuditQueue:
             return -1
         return AUDIT_PRIORITY[job["tier"]]
 
-    def runnable(self, now=None):
+    def runnable(self, now=None, *, retry_deferred=False):
         now = time.time() if now is None else now
         today = datetime.fromtimestamp(now, UTC).date().isoformat()
         jobs = self.jobs()
@@ -746,7 +803,10 @@ class AuditQueue:
                 if job["not_before"] <= now
                 and (
                     job["state"] == "queued"
-                    or (job["state"] == "deferred" and job.get("deferred_on") != today)
+                    or (
+                        job["state"] == "deferred"
+                        and (retry_deferred or job.get("deferred_on") != today)
+                    )
                 )
             ),
             key=lambda job: (self.priority(job, blocked), job["sequence"]),
@@ -760,6 +820,13 @@ class AuditQueue:
     def admission_left(self, maximum, now=None):
         now = time.time() if now is None else now
         path = self.usage_path(now)
+        if owner := quorum_budget.mutation_owner(self.directory.parent):
+            usage = quorum_budget.sync_usage(
+                owner, self.directory.parent, date.fromisoformat(path.stem)
+            )["audit"]
+            if usage["maximum"] != maximum:
+                raise CirraError("local daily admission limit differs from the seeded policy")
+            return usage["attempts"] < maximum
         used = json.loads(path.read_text(encoding="utf-8"))["attempts"] if path.exists() else 0
         return used < maximum
 
@@ -767,37 +834,87 @@ class AuditQueue:
         day = datetime.fromtimestamp(now, UTC).date().isoformat()
         return self.directory.parent / "audit-usage" / (day + ".json")
 
+    @staticmethod
+    def _audit_ticket(job, sequence):
+        # A regular request can be reconstructed with a different local UUID on the survivor.
+        # A new scheduled audit of an unchanged head belongs to the prior completed attempt.
+        identity = [job["work_key"], job["audit_id"]]
+        if job.get("fresh"):
+            identity += ["fresh", job["budget_predecessor"]]
+        return quorum_budget.operation("audit", identity, sequence)
+
+    def _shared_admission(self, owner, job, now, maximum):
+        sequence = job.get("budget_sequence", 0)
+        if (
+            (job.get("admitted_on") and not sequence)
+            or job.get("recovered")
+            or (job.get("fresh") and "budget_predecessor" not in job)
+        ):
+            return "uncertain"
+        ticket = self._audit_ticket(job, sequence)
+        previous = self._audit_ticket(job, sequence - 1) if sequence else None
+        day = datetime.fromtimestamp(now, UTC).date()
+        outcome = quorum_budget.reserve(
+            owner, self.directory.parent, "audit", day, maximum, ticket, previous=previous
+        )
+        if outcome in ("charged", "resumed"):
+            job["budget_sequence"] = sequence + 1
+        return outcome
+
+    def return_unused_admission(self, job):
+        owner = quorum_budget.mutation_owner(self.directory.parent)
+        if owner is not None and job.get("budget_sequence"):
+            return quorum_budget.refund(
+                owner,
+                self.directory.parent,
+                "audit",
+                date.fromisoformat(job["admitted_on"]),
+                self._audit_ticket(job, job["budget_sequence"] - 1),
+            )
+
     def next_job(self, maximum, now=None):
         """Claim the highest-priority runnable request within daily admission."""
         now = time.time() if now is None else now
         today = datetime.fromtimestamp(now, UTC).date().isoformat()
         with self._lock():
-            for job in self.runnable(now):
-                if job.get("admitted_on") == today:
-                    # Resuming a preempted or recovered run admitted today is free.
-                    job.update(state="running", started_at=utc_now())
-                    self.save(job)
-                    return job
-                path = self.usage_path(now)
-                used = (
-                    json.loads(path.read_text(encoding="utf-8"))["attempts"] if path.exists() else 0
+            owner = quorum_budget.mutation_owner(self.directory.parent)
+            retry_deferred = owner is not None and self.admission_left(maximum, now)
+            for job in self.runnable(now, retry_deferred=retry_deferred):
+                outcome = (
+                    self._shared_admission(owner, job, now, maximum)
+                    if owner is not None
+                    else self._local_admission(job, now, maximum)
                 )
-                if used >= maximum:
+                if outcome == "uncertain":
+                    job.update(
+                        state="attention",
+                        error="reconcile the uncertain audit before requesting a fresh run",
+                    )
+                    self.save(job)
+                    continue
+                if outcome == "full":
                     if job["tier"] != "full":
                         # Shown in status and retried tomorrow; a gate is never skipped.
                         job.update(
                             state="deferred",
-                            deferred_on=datetime.fromtimestamp(now, UTC).date().isoformat(),
+                            deferred_on=today,
                         )
                         self.save(job)
                     continue  # Full audits simply wait for the next day.
-                write_receipt(
-                    path, {"attempts": used + 1, "maximum": maximum, "updated_at": utc_now()}
-                )
                 job.update(state="running", started_at=utc_now(), admitted_on=today)
                 self.save(job)
                 return job
         return None
+
+    def _local_admission(self, job, now, maximum):
+        path = self.usage_path(now)
+        if job.get("admitted_on") == path.stem:
+            return "resumed"
+        used = json.loads(path.read_text(encoding="utf-8"))["attempts"] if path.exists() else 0
+        if used >= maximum:
+            return "full"
+        write_receipt(path, {"attempts": used + 1, "maximum": maximum, "updated_at": utc_now()})
+        return "charged"
 
     def update(self, identifier, *, settling=False, **changes):
         with self._lock():

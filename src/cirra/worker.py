@@ -454,19 +454,27 @@ def heartbeat(queue, **extra):
 
 
 def work_once(config, queue, process):
+    from cirra.quorum import current_owner
+
     jobs = queue.pending(config.routes)
     if not jobs:
         return None
     job = jobs[0]
     route = config.routes.get(job["route"])
+    shared_inbox = getattr(queue, "shared_inbox", None)
     if route is None or route.digest != job["route_digest"]:
         job.update(state="attention", error="route or policy changed; inspect before requeuing")
+    elif shared_inbox is not None and not shared_inbox.require_pending(current_owner(), job):
+        job.update(
+            state="skipped",
+            result={"state": "skipped", "reason": "already settled by a previous publishing owner"},
+        )
     elif job["attempts"] >= config.max_attempts:
         job.update(state="attention", error="retry limit reached; inspect the saved job")
     else:
-        reservation = queue.usage_path()
-        if not queue.reserve_attempt(config.max_jobs_per_day, reservation):
-            return None  # Keep accepted jobs durable until the next UTC day.
+        reservation = queue.begin_review(job, config.max_jobs_per_day)
+        if reservation is None:
+            return job if job["state"] == "attention" else None
         started = time.monotonic()
         job.update(
             state="running",
