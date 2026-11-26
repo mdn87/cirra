@@ -175,11 +175,14 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
         item = None
         posts = 0
         lose_ack = True
+        stale_reply = None
+        stale_read = None
 
         def request(self, method, path, params=None, *, body=None):
             if method == "GET":
                 assert params["check_name"] == "cirra/code-review"
-                return {"check_runs": [self.item] if self.item else []}, False
+                visible = self.stale_read or self.item
+                return {"check_runs": [visible] if visible else []}, False
             if method == "POST":
                 self.posts += 1
                 self.item = {"id": 11, "app": {"id": 42}, **body}
@@ -189,6 +192,8 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
             if self.lose_ack:
                 self.lose_ack = False
                 raise RemoteUncertain("lost acknowledgement")
+            if self.stale_reply is not None:
+                return self.stale_reply.copy(), False
             return self.item.copy(), False
 
     http = HTTP()
@@ -205,6 +210,18 @@ def test_gate_reopens_owned_check_and_only_completes_a_current_review(
     assert gate.finish(store, saved, lambda: provider)["conclusion"] == "success"
     summary = http.item["output"]["summary"]
     assert summary.count("**Next step**") == 1 and "GitHub" in summary
+    completed = http.item.copy()
+    http.stale_reply = completed
+    with pytest.raises(RemoteUncertain, match="acknowledgement"):
+        gate.finish(store, saved, lambda: provider)
+    assert http.item["output"] != completed["output"]
+    http.stale_reply = None
+    http.stale_read = completed
+    with pytest.raises(RemoteUncertain, match="acknowledgement"):
+        gate.start()
+    with pytest.raises(RemoteUncertain, match="readback"):
+        gate.finish(store, saved, lambda: provider)
+    http.stale_read = None
     completed = http.item.copy()
     gate.start()
     assert http.item == completed

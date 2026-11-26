@@ -22,6 +22,7 @@ def register(commands):
         ("enqueue", "queue current PR/MR CI and optional review without a webhook"),
         ("requeue", "recover an inspected terminal job, retaining its prior record"),
         ("sync", "find missed open PR/MR revisions using provider reads"),
+        ("recover-webhooks", "recover signed GitHub deliveries into this host's queue"),
     ):
         parser = commands.add_parser(name, help=help_text)
         parser.add_argument("--service-config", type=Path, required=True)
@@ -41,6 +42,14 @@ def register(commands):
             parser.add_argument("--reason", required=True)
         elif name == "sync":
             parser.add_argument("--route")
+        elif name == "recover-webhooks":
+            parser.add_argument("--route", required=True)
+            parser.add_argument("--hook-id", type=int, required=True)
+            parser.add_argument("--token-env", required=True, help="repository Webhooks read token")
+            select = parser.add_mutually_exclusive_group(required=True)
+            select.add_argument("--delivery-id", action="append", type=int)
+            select.add_argument("--since", help="start of the recovery window, including time zone")
+            parser.add_argument("--max-pages", type=int, default=10)
     status = commands.add_parser("jobs", help="inspect durable worker job results")
     status.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
     cold = commands.add_parser(
@@ -127,9 +136,22 @@ def run(args, credential, capture):
             except KeyboardInterrupt:
                 pass
         return 0
-    if args.command not in ("serve-webhooks", "worker", "enqueue", "requeue", "sync"):
+    if args.command not in (
+        "serve-webhooks",
+        "worker",
+        "enqueue",
+        "requeue",
+        "sync",
+        "recover-webhooks",
+    ):
         return None
     config = load_service(args.service_config)
+    if args.command == "recover-webhooks":
+        from cirra.webhook_recovery import recover
+
+        result = recover(config, args, credential)
+        print(json.dumps(result))
+        return int(bool(result["unresolved"]))
     if args.command in ("enqueue", "requeue"):
         route = config.routes.get(args.route)
         if route is None:

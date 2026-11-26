@@ -223,6 +223,55 @@ prior job and operator reason before resetting its attempts. It does not reset
 the daily budget or force an uncertain model call/native write to repeat.
 Inspect those separately using the existing review/publication recovery flow.
 
+### Recover GitHub deliveries after host loss
+
+Restore the private state snapshot on the surviving host first. With its worker
+paused, replay the repository webhook deliveries since the snapshot. Supply the
+existing webhook secret through the configured route and a separate GitHub token
+with repository **Webhooks: read** access. All GitHub API calls are reads.
+
+```sh
+cirra recover-webhooks --service-config "$SERVICE_CONFIG" --state-dir "$RESTORED_STATE" \
+  --route cirra-github --hook-id "$HOOK_ID" --token-env CIRRA_HOOK_READER \
+  --since "$SNAPSHOT_CAPTURED_AT"
+```
+
+The command checks the archived destination path, hook and repository IDs,
+delivery GUID and original HMAC. For a previously admitted job, it also checks
+the job ID in the receiver's original HTTP 202 response. It uses the normal
+queue to deduplicate repeat deliveries. The output counts new jobs, duplicates
+and ignored events. A nonzero exit means recovery needs attention. Retry exact
+IDs with `--delivery-id` or request redelivery at GitHub when the archived JSON
+cannot reproduce the signed bytes. GitHub retains recent deliveries for three
+days. Keep the restored worker paused until publication ownership and the day's
+existing review and audit reservations have been reconciled.
+[GitHub delivery history](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/viewing-webhook-deliveries)
+
+On November 26, Cirra checked three actual archived deliveries in a private
+scratch queue on the primary. Two reproduced their original job IDs and remained
+duplicates on repeat. The third had been ignored. Both production processes kept
+their original service invocations throughout.
+
+### Rehearse publisher failover
+
+Run `python scripts/rehearse-publisher-quorum.py --etcd <local-etcd-executable>`
+to exercise three temporary voters on loopback with a synthetic HTTP publisher.
+The drill checks that two voters can record an admission, a lone voter cannot
+acknowledge it, and a pending publication survives loss of its owner. A stale
+or empty provider response keeps the operation pending. The drill also checks
+that the exact response permits the next update and that a delayed reply from
+the old worker cannot settle it. Production still uses the single worker.
+
+The required GitHub review check records a unique marker before each write.
+It verifies the returned title, summary and marker before recording success.
+After an uncertain reply, the next worker pass reads the owned check and
+requires the same output before updating it again.
+
+The primary and the Intel Mac have a staged Docker context named
+`cirra-ha-observer`. It points to the host's approved local engine on each
+machine. Both ran the same pinned candidate observer policy against revision
+`67be2e9`. Lint, formatting, tests and the package build passed on each.
+
 Each finished execution has a signed standalone receipt before GitHub publication
 is attempted. The worker also records the latest CI conclusion, tested SHA,
 receipt path and publication status under `ci/`, displayed by `cirra jobs`.

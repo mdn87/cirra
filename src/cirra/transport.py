@@ -45,6 +45,7 @@ class JSONClient:
         self.origin, self.headers = origin.rstrip("/"), dict(headers)
         self.deadline, self.max_bytes = time.monotonic() + timeout, max_bytes
         self.opener = opener if opener is not None else build_opener(NoRedirect())
+        self.last_link = ""
 
     def request(self, method, route, params=None, body=None, *, raw_text=False):
         if (
@@ -85,8 +86,9 @@ class JSONClient:
                         if raw
                         else None
                     )
+                    self.last_link = response.headers.get("Link", "")
                     more = bool(response.headers.get("X-Next-Page")) or bool(
-                        re.search(r'rel="next"', response.headers.get("Link", ""))
+                        re.search(r'rel="next"', self.last_link)
                     )
                     return data, more
             except HTTPError as exc:

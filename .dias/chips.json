@@ -450,6 +450,12 @@
           "kind": "note",
           "at": "2026-11-26T06:53:42Z",
           "message": "The Intel Mac refreshed the verified snapshot and recovered 44 audits and 130 reports offline. Its pinned observer image passed 12 tests. Public failover remains open."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:nov26-delivery-recovery",
+          "kind": "note",
+          "at": "2026-11-26T08:23:49Z",
+          "message": "Two signed GitHub deliveries recovered their original jobs. Three local voters fenced a delayed test publication. Both hosts passed the same observer policy."
         }
       ]
     },
