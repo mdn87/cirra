@@ -717,9 +717,11 @@ account and read-only mounts. Historical templates ran the listener under the
 worker account. Stop the optional reader before a rollback to those templates
 and restore its access restrictions before enabling it again.
 
-After a successful deployment, the script prints a compatible rollback command
-and keeps the current, previous and explicitly selected fallback directories
-when pruning other releases beyond `--keep` (3 by default). A manual rollback
+After a successful deployment, the script prints a rollback command with the
+selected host and a compatible release. Run it from the operator checkout
+with the same path and port settings used for deployment. The script keeps
+the current, previous and explicitly selected fallback directories when
+pruning other releases beyond `--keep` (3 by default). A manual rollback
 to the selected fallback reuses the configuration verified for this deployment.
 
 To inspect the deployment without printing credentials:
