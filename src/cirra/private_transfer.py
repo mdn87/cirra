@@ -908,19 +908,30 @@ def scheduled_backup(state, expected_host, witness_key, *, wait_seconds=120):
 def _credential_bytes(path):
     path = Path(path)
     info = path.lstat()
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_nlink != 1
-        or info.st_size > 65536
-        or (os.name == "posix" and (info.st_mode & 0o077 or info.st_uid not in (0, os.geteuid())))
+    if not stat.S_ISREG(info.st_mode) or (
+        getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
     ):
         raise CirraError("transfer credentials require a private regular configuration file")
     with read_locked_file(path) as source:
-        if _fingerprint(os.fstat(source.fileno())) != _fingerprint(info):
+        opened = os.fstat(source.fileno())
+        if not os.path.samestat(info, opened):
             raise CirraError("the transfer credential file changed while opening it")
+        if (
+            opened.st_nlink != 1
+            or opened.st_size > 65536
+            or (
+                os.name == "posix"
+                and (opened.st_mode & 0o077 or opened.st_uid not in (0, os.geteuid()))
+            )
+        ):
+            raise CirraError("transfer credentials require a private regular configuration file")
         value = source.read(65537)
         if len(value) > 65536:
             raise CirraError("the transfer credential exceeds its supported size")
+        if _fingerprint(os.fstat(source.fileno())) != _fingerprint(opened) or _fingerprint(
+            path.lstat()
+        ) != _fingerprint(info):
+            raise CirraError("the transfer credential file changed during the read")
     return value
 
 
