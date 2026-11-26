@@ -52,6 +52,10 @@ class GitHubReadUnavailable(ReadUnavailable, GitHubError):
     """A bounded GitHub read can be retried after the provider recovers."""
 
 
+class GitHubRedirect(ProviderIdentityMismatch, GitHubError):
+    """The configured repository route requires operator correction."""
+
+
 def rate_limit_reset(headers, now=None):
     """Epoch seconds when GitHub says a limited read may be retried (default: one minute)."""
     now = time.time() if now is None else now
@@ -151,7 +155,7 @@ class GitHubClient:
                 retry_at = rate_limit_reset(exc.headers) if limited else None
                 exc.close()
                 if 300 <= status < 400:
-                    raise GitHubError(
+                    raise GitHubRedirect(
                         "GitHub redirect refused; use the canonical repository name"
                     ) from None
                 if limited:
@@ -359,7 +363,13 @@ def checks_from(client, head, max_pages, *, strict_ci_reads=False):
                     errors.append(f"{endpoint}: check page limit reached")
             except CirraError as exc:
                 if strict_ci_reads and isinstance(
-                    exc, (ProviderAccessDenied, ProviderRateLimited, ReadUnavailable)
+                    exc,
+                    (
+                        ProviderAccessDenied,
+                        ProviderIdentityMismatch,
+                        ProviderRateLimited,
+                        ReadUnavailable,
+                    ),
                 ):
                     raise
                 errors.append(f"{endpoint}: {exc}")
