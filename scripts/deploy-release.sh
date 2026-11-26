@@ -413,7 +413,7 @@ for _, name in candidates[:max(0, len(candidates) - keep)]:
 PY
 rollback=$PREV
 if [ -n "$FALLBACK" ] && ! check_release_state "$PREV"; then rollback=$FALLBACK; fi
-printf 'rollback: scripts/deploy-release.sh --rollback %q --host %q\n' "${rollback##*/}" "$OPERATOR_HOST"
+printf 'rollback: bash scripts/deploy-release.sh --rollback %q --host %q\n' "${rollback##*/}" "$OPERATOR_HOST"
 REMOTE
 }
 

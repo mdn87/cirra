@@ -392,6 +392,7 @@ def test_operator_deploy_and_printed_rollback(format_transition, monkeypatch, wi
         if line.startswith("rollback: ")
     ]
     assert shlex.split(command) == [
+        "bash",
         "scripts/deploy-release.sh",
         "--rollback",
         previous.name,
