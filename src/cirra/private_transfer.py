@@ -102,15 +102,30 @@ def _component(value):
         raise CirraError("private transfer contains a nonportable path")
 
 
-def _fingerprint(info):
+def _fingerprint(info, mode=None):
     return (
         info.st_dev,
         info.st_ino,
-        info.st_mode,
+        info.st_mode if mode is None else mode,
         info.st_size,
         info.st_mtime_ns,
         info.st_ctime_ns,
     )
+
+
+def _opened_fingerprint(path, stream, path_info=None):
+    opened = os.fstat(stream.fileno())
+    if os.name != "nt":
+        return _fingerprint(opened)
+    # Windows path queries can return creation time as ctime and add execute bits
+    # from the filename. Use handle metadata for change detection on every pass.
+    info = path.lstat() if path_info is None else path_info
+    if (
+        not os.path.samestat(info, opened)
+        or info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    ):
+        raise CirraError("private file changed identity during capture")
+    return _fingerprint(opened, info.st_mode)
 
 
 def _inventory(state):
@@ -140,7 +155,11 @@ def _inventory(state):
                 pending.append(child)
             elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise CirraError("private state contains a link or a special file")
-            entries[child.relative_to(state).as_posix()] = _fingerprint(info)
+            fingerprint = _fingerprint(info)
+            if os.name == "nt" and stat.S_ISREG(info.st_mode):
+                with read_locked_file(child) as stream:
+                    fingerprint = _opened_fingerprint(child, stream, info)
+            entries[child.relative_to(state).as_posix()] = fingerprint
     return entries
 
 
@@ -293,12 +312,13 @@ def capture_quiesced(state, archive, witness_key):
                     "type": "dir" if stat.S_ISDIR(mode) else "file",
                 }
                 if stat.S_ISREG(mode):
-                    with read_locked_file(state / name) as source:
-                        if _fingerprint(os.fstat(source.fileno())) != details:
+                    path = state / name
+                    with read_locked_file(path) as source:
+                        if _opened_fingerprint(path, source) != details:
                             raise CirraError("private state changed while starting capture")
                         with bundle.open("state/" + name, "w", force_zip64=True) as target:
                             size, sha = _copy(source, target, details[3])
-                        if size != details[3] or _fingerprint(os.fstat(source.fileno())) != details:
+                        if size != details[3] or _opened_fingerprint(path, source) != details:
                             raise CirraError("private state changed during capture")
                     entry.update(size=size, sha256=sha)
                 entries[name] = entry

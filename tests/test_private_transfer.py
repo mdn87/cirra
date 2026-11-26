@@ -77,6 +77,10 @@ def test_complete_tree_roundtrip_under_the_real_worker_locks(tmp_path):
     private = state / "late-issued-result"
     private.write_bytes(b"\x00 private state")
     private.chmod(0o600)
+    # On Windows the pathname gives .cmd execute bits that its open handle omits.
+    command_file = state / "operator.cmd"
+    command_file.write_bytes(b"synthetic archived bytes")
+    os.utime(command_file, (946684800, 946684800))
     archive = tmp_path / "original.zip"
     with enrollment_locks(state):
         receipt = transfer.capture_quiesced(state, archive, KEY.decode())
