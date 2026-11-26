@@ -132,6 +132,18 @@ def test_full_private_queue_preserves_unmaterialized_shared_job(systems):
     assert voters.get(COUNT) == "1"
 
 
+def test_shared_admission_continues_while_a_private_backup_holds_local_intake(systems):
+    from cirra.locking import change_lock
+
+    a, _, voters, _, route = systems
+    event = hint("during-capture")
+    with change_lock(a.queue.directory / "locks", "enqueue", 0):
+        admitted = a.enqueue(route, event)
+    assert admitted["duplicate"] is False and voters.get(PENDING + admitted["job_id"])
+    assert a.private_change(route, a.change_id(route, event["change"])) is None
+    assert voters.get(COUNT) == "1"
+
+
 def test_policy_and_cache_mismatches(systems):
     a, b, voters, owner, route = systems
     original = hint("one")
