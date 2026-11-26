@@ -7,7 +7,9 @@ from urllib.parse import quote
 from cirra.domain import (
     CirraError,
     ProviderAccessDenied,
+    ProviderIdentityMismatch,
     ProviderRateLimited,
+    ReadUnavailable,
     digest,
     number,
     sha,
@@ -74,7 +76,12 @@ def discover(route, token=None):
             # A PR without a usable merge ref still needs its independent head CI.
             try:
                 revision["merge"] = pull_merge_ref(client, change)
-            except (ProviderAccessDenied, ProviderRateLimited):
+            except (
+                ProviderAccessDenied,
+                ProviderRateLimited,
+                ReadUnavailable,
+                ProviderIdentityMismatch,
+            ):
                 raise
             except CirraError:
                 revision["merge"] = None
@@ -132,7 +139,7 @@ def sync(config, queue, credential, *, route_name=None, discover_changes=discove
                     queued.append(
                         queue.request_branch(route, branch, revision=data["change"]["head_sha"])
                     )
-                except (ProviderAccessDenied, ProviderRateLimited):
+                except (ProviderAccessDenied, ProviderRateLimited, ReadUnavailable):
                     raise
                 except (CirraError, OSError, ValueError) as exc:
                     branch_errors[branch] = (
@@ -141,7 +148,7 @@ def sync(config, queue, credential, *, route_name=None, discover_changes=discove
             if branch_errors:
                 entry["branch_errors"] = branch_errors
             results.append(entry)
-        except (ProviderAccessDenied, ProviderRateLimited) as exc:
+        except (ProviderAccessDenied, ProviderRateLimited, ReadUnavailable) as exc:
             results.append(
                 {"route": name, "error": str(exc), "deferred_until": queue.defer_reader(route, exc)}
             )
@@ -167,13 +174,13 @@ def capture_branch(route, branch, token=None):
     )
     repository, _ = client.get()
     if native_id(record(repository).get("id")) != route.repository_id:
-        raise CirraError("branch CI repository identity changed")
+        raise ProviderIdentityMismatch("branch CI repository identity changed")
     if route.provider == "github":
         head = target_revision(client, branch)
     else:
         target, _ = client.get("repository/branches/" + quote(branch, safe=""))
         if record(target).get("name") != branch:
-            raise CirraError("branch CI target changed identity")
+            raise ProviderIdentityMismatch("branch CI target changed identity")
         head = sha(record(target.get("commit")).get("id"))
     return {
         "change": {

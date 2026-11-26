@@ -203,11 +203,17 @@ repository baseline remained at `253ab19e7869`.
 | Request latency | The retained logs for the window contain four webhook POSTs, all on November 25. All returned 202 and took 63.85–186.48 ms in the handler. Journal retention was incomplete. Four observations cannot establish a representative p99. The optional audit reader was inactive and supplied no data-request timings. |
 | Backup recovery | The November 25 capture paused writers for 3.74 seconds. The restore and verification took 9.17 seconds, passed SQLite integrity and foreign-key checks, and verified 168 current and 247 historical witnesses. This measures state restoration. A whole-host rebuild also needs provisioning, credential recovery and service startup. |
 
-The installed service still had its earlier protected witness file. Its
-successful backup therefore did not settle fresh-host operation with BWS
-alone. Matt set a maximum data-loss window of 24 hours and asked for
-uninterrupted service after host loss. The installed receiver, state store
-and worker run on one host. A tested independent service path is still needed.
+On November 26 the recovery helper restored the November 25 snapshot using
+the BWS witness socket. It verified all 415 current and historical witnesses,
+passed both SQLite checks and finished in 9.25 seconds. The webhook and worker
+kept the same systemd invocation IDs throughout the drill. Restoring an older
+snapshot verifies recovery but does not advance the latest capture time.
+
+Matt set a maximum data-loss window of 24 hours and requires uninterrupted
+service after host loss. The installed receiver, state store and worker run
+on one machine. Meeting that availability target requires an independent
+ingress path, durable admission and a way to prevent both workers from
+publishing the same review during failover.
 
 The public webhook uses Tailscale Funnel. Tailscale documents relay routing
 and a fixed bandwidth limit, without publishing a numeric limit or a

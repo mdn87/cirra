@@ -348,7 +348,8 @@ check_schema "$PREV"
 
 if [ "$TESTS" = 1 ]; then
   IMG=$(sed -nE "s/^image: *'?(sha256:[0-9a-f]{64})'?.*/\1/p" "$CONFIG/observer.yaml" | head -1)
-  (cd "$R" && umask 077 && CIRRA_DOCKER_TEST_IMAGE="$IMG" "$PY" -m pytest -q -p no:cacheprovider </dev/null)
+  (cd "$R" && umask 077 && CIRRA_DOCKER_TEST_IMAGE="$IMG" \
+    timeout --kill-after=30s 10m "$PY" -m pytest -q -p no:cacheprovider 9>&- </dev/null)
 fi
 
 if [ -n "$FALLBACK" ]; then

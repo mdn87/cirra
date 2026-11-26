@@ -8,17 +8,20 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, build_opener
 
-from cirra.domain import CirraError, ProviderAccessDenied, ProviderRateLimited, canonical, number
+from cirra.domain import (
+    CirraError,
+    ProviderAccessDenied,
+    ProviderRateLimited,
+    ReadUnavailable,
+    canonical,
+    number,
+)
 from cirra.github import NoRedirect, rate_limit_reset
 from cirra.reviewer import unique_object
 
 
 class RemoteUncertain(CirraError):
     """A write may have succeeded. Reconcile before another write."""
-
-
-class ReadUnavailable(CirraError):
-    """A read exhausted its transport retries and may be retried later."""
 
 
 class RequestNotSent(ReadUnavailable):

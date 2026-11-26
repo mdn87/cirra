@@ -23,7 +23,14 @@ from cirra import audits
 from cirra.audit import select_tiers
 from cirra.audit_checkout import change_ref, prepare_checkout, remove_checkout
 from cirra.dispatch import stop_process, tool_environment
-from cirra.domain import CirraError, ProviderRateLimited, digest, sha, utc_now
+from cirra.domain import (
+    CirraError,
+    ProviderIdentityMismatch,
+    ProviderRateLimited,
+    digest,
+    sha,
+    utc_now,
+)
 from cirra.github import API_VERSION, native_id, record, repository_name
 from cirra.job_queue import AUDIT_PRIORITY, AuditQueue
 from cirra.publish import write_receipt
@@ -229,7 +236,7 @@ def default_branch_head(route, reader):
         client = GitHubClient(route.repository, token=reader)
         repo, _ = client.get()
         if native_id(record(repo).get("id")) != route.repository_id:
-            raise CirraError("audit repository identity changed")
+            raise ProviderIdentityMismatch("audit repository identity changed")
         branch = record(repo).get("default_branch")
         item, _ = client.get("branches/" + quote(str(branch), safe=""))
         return branch, sha(record(record(item).get("commit")).get("sha"))
@@ -238,7 +245,7 @@ def default_branch_head(route, reader):
     client = GitLabClient(route.repository, token=reader)
     project, _ = client.get()
     if native_id(record(project).get("id")) != route.repository_id:
-        raise CirraError("audit project identity changed")
+        raise ProviderIdentityMismatch("audit project identity changed")
     branch = record(project).get("default_branch")
     item, _ = client.get("repository/branches/" + quote(str(branch), safe=""))
     return branch, sha(record(record(item).get("commit")).get("id"))

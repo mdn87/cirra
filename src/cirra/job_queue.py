@@ -10,13 +10,27 @@ from datetime import UTC, datetime
 from itertools import islice
 from pathlib import Path
 
-from cirra.domain import CirraError, DeliveryConflict, digest, number, string, utc_now
+from cirra.domain import (
+    CirraError,
+    DeliveryConflict,
+    ReadUnavailable,
+    digest,
+    number,
+    string,
+    utc_now,
+)
 from cirra.locking import change_lock
 from cirra.publish import receipt_directory, sync_directory, write_receipt
 from cirra.queue_format import activate
 from cirra.queue_slots import Slots, hot_paths
 
 TERMINAL_REVIEW = ("done", "attention", "skipped")
+
+
+def provider_retry_time(exc, minimum_delay=1):
+    now = time.time()
+    default_delay = 60 if isinstance(exc, ReadUnavailable) else 900
+    return max(now + minimum_delay, getattr(exc, "retry_at", now + default_delay))
 
 
 class Queue:
@@ -450,7 +464,7 @@ class Queue:
             )
 
     def defer_reader(self, route, exc):
-        until = max(time.time() + 1, getattr(exc, "retry_at", time.time() + 900))
+        until = provider_retry_time(exc)
         self.defer_route(route, until, reader=True)
         return until
 

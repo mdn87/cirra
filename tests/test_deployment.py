@@ -352,8 +352,10 @@ def format_transition(deployment, monkeypatch):
     }.items():
         monkeypatch.setenv(key, str(value))
 
-    def deploy(activate=True, *, succeeds=False, keep=3, with_fallback=True):
-        args = ["--host", "fixture-host", "--repin", "--skip-tests", "--keep", str(keep)]
+    def deploy(activate=True, *, succeeds=False, keep=3, with_fallback=True, run_tests=False):
+        args = ["--host", "fixture-host", "--repin", "--keep", str(keep)]
+        if not run_tests:
+            args.append("--skip-tests")
         if with_fallback:
             args.extend(["--fallback", fallback.name])
         result = subprocess.run(
@@ -372,6 +374,27 @@ def format_transition(deployment, monkeypatch):
         return result
 
     return deploy, service, state, previous, candidate, fallback, policy, original
+
+
+def test_stalled_release_test_expires_before_switch_and_releases_deploy_lock(format_transition):
+    deploy, service, _, previous, candidate, _, policy, original = format_transition
+    # Run the real GNU timeout with a short test clock and check the production arguments.
+    stubs = Path(os.environ["BASH_ENV"])
+    with stubs.open("a") as stream:
+        stream.write(
+            "timeout() { [[ $1 == --kill-after=30s && $2 == 10m ]] || return 96; "
+            'shift 2; command timeout --kill-after=1s 1s "$@"; }\n'
+        )
+    (candidate / "pytest.py").write_text(
+        "import os, time\nfrom pathlib import Path\n"
+        "if Path('/proc/self/fd/9').exists(): raise SystemExit(97)\n"
+        "Path('started-test').touch()\ntime.sleep(60)\n"
+    )
+    result = deploy(run_tests=True)
+    assert result.returncode == 124 and (candidate / "started-test").exists(), result.stderr
+    assert (service / "current").resolve() == previous and policy.read_bytes() == original
+    assert not (service / "staging/restarts").exists()
+    subprocess.run(["flock", "-n", service / "staging/deploy.lock", "true"], check=True)
 
 
 @pytest.mark.parametrize("with_fallback", [False, True])
