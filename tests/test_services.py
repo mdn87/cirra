@@ -374,6 +374,8 @@ def test_receiver_closes_slow_requests_at_a_total_deadline(route, tmp_path):
             time.sleep(0.2)
         slow.close()
         assert closed and time.monotonic() - started < 3
+        # The follow-up request exercises normal admission, including durable writes on disk.
+        server.request_deadline = WebhookServer.request_deadline
         raw, headers = delivery()
         client = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         client.request("POST", "/hooks/test", raw, headers)
