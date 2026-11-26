@@ -1,6 +1,8 @@
 """A Cirra GLAS launch must not inherit ambient credential values."""
 
 import importlib.util
+import plistlib
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,6 +28,7 @@ def test_launcher_discards_parent_credentials_before_glas(tmp_path, monkeypatch)
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "untrusted-parent-access")
     monkeypatch.setenv("CIRRA_GITHUB_WEBHOOK_SECRET", "untrusted-parent-webhook")
     monkeypatch.setenv("CIRRA_GITHUB_APP_PRIVATE_KEY_PEM", "untrusted-parent-pem")
+    monkeypatch.setenv("CIRRA_ROUTING_KEY", "untrusted-parent-routing")
     monkeypatch.setenv("LUGOS_EVENT_AUTH_TOKEN", "untrusted-parent-event")
     monkeypatch.setattr(sys, "argv", [str(script), "--exec", sys.executable, "-c", "pass"])
     observed = {}
@@ -41,9 +44,51 @@ def test_launcher_discards_parent_credentials_before_glas(tmp_path, monkeypatch)
         "BWS_ACCESS_TOKEN",
         "CIRRA_GITHUB_WEBHOOK_SECRET",
         "CIRRA_GITHUB_APP_PRIVATE_KEY_PEM",
+        "CIRRA_ROUTING_KEY",
         "LUGOS_EVENT_AUTH_TOKEN",
     ):
         assert name not in observed["env"]
+
+
+@pytest.mark.parametrize(
+    ("role", "command"),
+    [
+        ("worker", "worker"),
+        ("webhook", "serve-webhooks"),
+        ("standby-refresh", "refresh-standby-snapshot"),
+    ],
+)
+def test_macos_jobs_launch_with_host_local_arguments_and_separate_manifests(role, command):
+    script = Path(__file__).resolve().parents[1] / "scripts/macos-service-plist.py"
+    expected = {
+        "home": "/Users/matt",
+        "release": "/private/Cirra release/current",
+        "python": "/private/py",
+        "service-config": "/private/config/service.yaml",
+        "state": "/private/data-current",
+        "manifest": f"/private/config/{role}.json",
+        "glas-root": "/private/glas",
+        "glas-home": f"/private/glas-{role}",
+        "logs": "/private/logs",
+    }
+    flags = [field for name, path in expected.items() for field in ("--" + name, path)]
+    job = plistlib.loads(subprocess.check_output([sys.executable, str(script), role, *flags]))
+    if role == "standby-refresh":
+        assert job["StartInterval"] == 3600 and job["RunAtLoad"] and "KeepAlive" not in job
+    assert job["ProgramArguments"][:3] == [
+        expected["python"],
+        expected["release"] + "/scripts/with-glas.py",
+        command,
+    ]
+    assert job["ProgramArguments"][3:7] == [
+        "--service-config",
+        expected["service-config"],
+        "--state-dir",
+        expected["state"],
+    ]
+    assert job["EnvironmentVariables"]["GLAS_MANIFEST"] == expected["manifest"]
+    assert job["EnvironmentVariables"]["GLAS_HOME"] == expected["glas-home"]
+    assert job["LimitLoadToSessionType"] == "Aqua" and job["Umask"] == 0o077
 
 
 def test_manifest_is_selected_relative_to_the_callers_directory(tmp_path, monkeypatch):
