@@ -238,3 +238,29 @@ probes returned 200 during takeover and the standby completed the recovered
 test job in 6.25 seconds. A physical host loss behind the public webhook still
 requires the three-host rollout and an end-to-end drill.
 [Service rehearsal](../coordinated-service.md#repeat-the-service-rehearsal)
+
+## November 26 physical failover and audit-reader rollout
+
+The two data hosts ran separate test receivers against persistent voters on
+the primary, the Intel Mac and Nodens. With the primary test receiver and its
+voter stopped, the Mac recovered a signed job in 7.15 seconds. All 61 health
+probes succeeded. The worker ran the job once and recovered a lost publication
+acknowledgement by reading the existing test-provider check. Both receivers
+returned 503 when only one voter remained. After the voters rejoined, neither
+receiver found a job from the refused request. The primary installed the
+Mac's verified return copy before resuming the rehearsal.
+
+At 21:56 UTC the restricted audit reader switched to the compatible SQLite
+audit counter on its original port. The old and new readers returned the same
+109 Taskmaster inputs. All nine complete client reads succeeded during the
+switch. The original business rows matched before and after installation.
+[Audit counter](https://github.com/mdn87/cirra/pull/64) · [Read-only startup](https://github.com/mdn87/cirra/pull/65)
+
+Both data hosts then restored the same 21:56 UTC backup from the dedicated
+encrypted repository on Nodens. The restored database contained 45 audits and
+169 reports. All 250 current and 339 historical witness files on the Mac
+matched those verified on the primary. The primary backs up to the dedicated
+repository every six hours. Production webhook deliveries still use the
+original primary address. Public failover requires the dedicated Cloudflare
+route, the Mac's scoped service credentials and a successful public check
+through each connector.
