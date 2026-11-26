@@ -55,7 +55,7 @@ python -m cirra.private_transfer backup --state-dir "$STATE" \
   --approval-file "$APPROVED_REPOSITORY" --witness-file "$WITNESS_ENV"
 ```
 
-A standby using automatic recovery has a private state-directory symlink, a cache on the local encrypted filesystem and its own approved read access to the backup repository. Schedule `cirra refresh-standby-snapshot --service-config "$CONFIG" --state-dir "$STATE"` hourly in that account's backup credential environment. It selects the donor through quorum, verifies the selected encrypted repository restore and atomically updates the local cache. A failed refresh preserves the previous usable archive.
+A standby using automatic recovery has a private state-directory symlink, a private cache on the approved local filesystem and its own approved read access to the backup repository. Schedule `cirra refresh-standby-snapshot --service-config "$CONFIG" --state-dir "$STATE"` hourly in that account's backup credential environment. It selects the donor through quorum, verifies the selected encrypted repository restore and atomically updates the local cache. A failed refresh preserves the previous usable archive.
 
 The Mac service renderer accepts `standby-refresh` as its role for this hourly job. Give the job a distinct Glas manifest with the routing and witness key references, approved repository location and read access to the selected backup. A healthy primary keeps publishing while the standby refreshes its cache.
 

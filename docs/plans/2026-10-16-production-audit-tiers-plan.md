@@ -402,3 +402,19 @@ run, output format, failure handling and evaluation. Stage 4 records how
 often the two report the same issue on the same lines; merging them into one
 run is reconsidered only if that overlap is high enough to justify losing
 the separate attribution.
+
+On November 26 the operator compared 28 completed PR audit snapshots against
+successful advisory reviews for the same repository, change, diff base and
+head. One snapshot had no matching successful review and one had incomplete
+diff coverage. The latest complete review for each of the other 26 snapshots
+contained 12 findings in total. The corresponding audits contained 17.
+
+Six audit findings intersected a review finding on the same path, diff side
+and line range. Four described the same failure. A fifth pair identified the
+same incorrectly written alert marker and described different consequences.
+The sixth concerned a journal timeout on lines covered by an alert-marker
+finding. This sample supports keeping the audit and review results separately
+attributed. [PR 25](https://github.com/mdn87/cirra/pull/25) ·
+[PR 28](https://github.com/mdn87/cirra/pull/28) ·
+[PR 42](https://github.com/mdn87/cirra/pull/42) ·
+[PR 43](https://github.com/mdn87/cirra/pull/43)

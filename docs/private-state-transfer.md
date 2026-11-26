@@ -1,6 +1,6 @@
 # Private backups on the two data hosts
 
-The elected Cirra worker can back up its complete private state to the approved encrypted restic repository on Nodens. The Intel Mac can use the same repository directly after losing the primary. Each data host needs its own authorized storage access, an independently recoverable repository password, the configured witness signing key and private local scratch. The hourly ZIP pull from the primary uses a different format and depends on the primary's export service. [Coordinated service configuration](coordinated-service.md) · [Existing recovery arrangements](state-recovery.md)
+With a dedicated encrypted restic repository on Nodens and separate access for each data host, the elected Cirra worker can protect its complete private state. Direct access lets the Intel Mac restore during a primary outage. As of November 26 the shared backup repository accepts connections from the primary. Dedicated two-host access awaits the operator’s decision. Each data host needs its own authorized storage access, an independently recoverable repository password, the configured witness signing key and private local scratch. The hourly ZIP pull from the primary uses a different format and depends on the primary's export service. [Coordinated service configuration](coordinated-service.md) · [Existing recovery arrangements](state-recovery.md)
 
 ## Run the backup
 
