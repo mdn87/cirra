@@ -8,9 +8,9 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-26T16:53:44Z",
+  "assessedAt": "2026-11-26T17:14:01Z",
   "confidence": "authoritative",
-  "currentMilestone": "Cirra matched 21 historical GitHub advisories, an audit and an observer check to their saved records. The Intel Mac has the primary's 12:30 UTC verified backup.",
+  "currentMilestone": "Cirra matched 23 GitHub checks to saved records. In a local three-voter drill, one of two clients took the last review slot and the audit budget stayed exhausted after failover.",
   "remainingSummary": "GitHub and the production publisher still use lugos-host. Shared ownership, daily limits across hosts and the live failover drill remain. Route and voting grants await verified review. The Mac reviewer is signed out.",
   "nextChipId": null,
   "source": {

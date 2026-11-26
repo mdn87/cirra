@@ -262,7 +262,14 @@ The drill checks that two voters can record an admission, a lone voter cannot
 acknowledge it, and a pending publication survives loss of its owner. A stale
 or empty provider response keeps the operation pending. The drill also checks
 that the exact response permits the next update and that a delayed reply from
-the old worker cannot settle it. Production still uses the single worker.
+the old worker cannot settle it.
+
+The same rehearsal seeds separate review and audit counts, then lets the primary
+reserve one more attempt before it loses its lease. The surviving voters race
+two clients for the final review slot. They also check ownership of refunds,
+retry an already returned reservation, and initialize a simulated next UTC day.
+All three members must retain the same admission records when they rejoin.
+Production workers still count admissions in their local state directories.
 
 The required GitHub review check records a unique marker before each write.
 It verifies the returned title, summary and marker before recording success.

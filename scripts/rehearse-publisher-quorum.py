@@ -13,7 +13,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -118,7 +118,7 @@ class Member:
         values = result.get("kvs")
         return base64.b64decode(values[0]["value"]).decode() if values else None
 
-    def txn(self, checks, key, value, *, lease=None, timeout=2):
+    def txn(self, checks, key=None, value=None, *, lease=None, timeout=2):
         compare = []
         for name, expected in checks:
             condition = {"key": encode(name), "result": "EQUAL"}
@@ -127,12 +127,13 @@ class Member:
             else:
                 condition.update(target="VALUE", value=encode(expected))
             compare.append(condition)
-        put = {"key": encode(key), "value": encode(value)}
-        if lease is not None:
-            put["lease"] = lease
-        result = self.api(
-            "kv/txn", {"compare": compare, "success": [{"request_put": put}]}, timeout
-        )
+        success = []
+        if key is not None:
+            put = {"key": encode(key), "value": encode(value)}
+            if lease is not None:
+                put["lease"] = lease
+            success.append({"request_put": put})
+        result = self.api("kv/txn", {"compare": compare, "success": success}, timeout)
         return result.get("succeeded", False)
 
     def grant(self, owner, seconds):
@@ -150,6 +151,134 @@ class Member:
 def fingerprint(document):
     content = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(content).hexdigest()
+
+
+class DailyBudget:
+    """A rehearsal of one UTC day's admissions. Voters receive only opaque identifiers."""
+
+    def __init__(self, namespace, kind, day, maximum):
+        self.key = "/budgets/" + fingerprint([namespace, kind, day.isoformat()])
+        self.limit = maximum
+        self.policy = fingerprint([self.key, maximum])
+
+    def seed(self, member, owner, count):
+        require(0 <= count <= self.limit, "invalid starting usage")
+        # Already spent before activation. These entries have no refundable owner.
+        used = {fingerprint([self.key, i]): None for i in range(count)}
+        record = {"policy": self.policy, "used": used, "returned": []}
+        return member.txn([(OWNER, owner), (self.key, None)], self.key, json.dumps(record))
+
+    def update(self, member, owner, operation, *, refund=False, first_read=None):
+        ticket = fingerprint([self.key, operation])
+        origin = fingerprint([owner, ticket])
+        for attempt in range(10):
+            prior = member.get(self.key)
+            if attempt == 0 and first_read is not None:
+                first_read.wait(timeout=5)
+            if prior is None:
+                return "unseeded"
+            record = json.loads(prior)
+            if record["policy"] != self.policy:
+                return "policy_changed"
+            used, returned = record["used"], record["returned"]
+            changed = False
+            if ticket in returned:
+                result = "already_returned"
+            elif refund:
+                result = "refused"
+                if used.get(ticket) == origin:
+                    del used[ticket]
+                    returned.append(ticket)
+                    result, changed = "returned", True
+            elif ticket in used:
+                result = "already_admitted"
+            elif len(used) >= self.limit:
+                result = "full"
+            else:
+                used[ticket] = origin
+                result, changed = "admitted", True
+            checks = [(OWNER, owner), (self.key, prior)]
+            # Even a reply to a duplicate must come from the current owner and quorum.
+            write = (self.key, json.dumps(record)) if changed else ()
+            if member.txn(checks, *write):
+                return result
+            if member.get(OWNER) != owner:
+                return "not_owner"
+        raise RuntimeError("budget contention exceeded the rehearsal limit")
+
+
+def exercise_budget_takeover(budgets, leader, survivor, primary, standby, active_attempt):
+    review, audit, tomorrow = budgets
+    snapshot_count = 1
+    require(not review.seed(leader, standby, snapshot_count), "a stale snapshot reset usage")
+    count_at_takeover = len(json.loads(leader.get(review.key))["used"])
+    require(count_at_takeover == snapshot_count + 1, "a post-snapshot reservation was lost")
+    require(
+        review.update(leader, primary, active_attempt, refund=True) == "not_owner",
+        "the expired owner refunded an admission",
+    )
+    require(
+        review.update(leader, standby, active_attempt, refund=True) == "refused",
+        "the new owner refunded work started by its predecessor",
+    )
+    require(
+        review.update(leader, standby, active_attempt) == "already_admitted",
+        "replayed admission consumed another slot",
+    )
+    # Both clients start with the same stale local budget. Exactly one can spend the last slot.
+    attempts = [uuid.uuid4().hex for _ in range(2)]
+    both_read = threading.Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = [
+            pool.submit(review.update, m, standby, a, first_read=both_read)
+            for m, a in zip((leader, survivor), attempts, strict=True)
+        ]
+        results = [f.result() for f in pending]
+    require(
+        sorted(results) == ["admitted", "full"], "concurrent workers overspent or lost capacity"
+    )
+    winner, other = attempts[results.index("admitted")], attempts[results.index("full")]
+    require(
+        review.update(leader, standby, winner, refund=True) == "returned",
+        "unused preflight reservation could not be returned",
+    )
+    require(review.update(survivor, standby, other) == "admitted", "returned capacity was lost")
+    require(
+        review.update(leader, standby, winner, refund=True) == "already_returned",
+        "a repeated refund released another attempt",
+    )
+    require(
+        review.update(leader, standby, winner) == "already_returned",
+        "a delayed retry revived a refunded attempt",
+    )
+    require(
+        audit.update(leader, standby, uuid.uuid4().hex) == "full",
+        "failover reset the separately exhausted audit budget",
+    )
+    require(
+        tomorrow.update(leader, standby, winner) == "unseeded",
+        "an uninitialized day silently opened capacity",
+    )
+    require(tomorrow.seed(leader, standby, 0), "the next day could not be initialized")
+    require(
+        tomorrow.update(survivor, standby, winner) == "admitted",
+        "a previous day's refund consumed the next day's capacity",
+    )
+    records = {b.key: leader.get(b.key) for b in budgets}
+    counts = [len(json.loads(records[b.key])["used"]) for b in budgets]
+    require(counts == [3, 2, 1], "unexpected committed admissions after takeover")
+    return records, {
+        "review_snapshot": snapshot_count,
+        "review_at_takeover": count_at_takeover,
+        "review_today": counts[0],
+        "review_limit": review.limit,
+        "audit_today": counts[1],
+        "audit_limit": audit.limit,
+        "review_next_day": counts[2],
+        "last_slot_race": sorted(results),
+        "duplicate_refund_released_capacity": False,
+        "production_queues_exercised": False,
+    }
 
 
 def reserve_post(member, provider, owner, document, previous=None):
@@ -229,6 +358,21 @@ def exercise(members, start, provider):
     original, following = fingerprint(document), fingerprint(next_document)
     require(first.grant(primary, 4), "initial owner could not acquire the lease")
     require(not first.grant(standby, 60), "a live owner was displaced")
+    day = datetime.now(UTC).date()
+    budgets = (
+        DailyBudget(cluster, "review", day, 3),
+        DailyBudget(cluster, "audit", day, 2),
+        DailyBudget(cluster, "review", day + timedelta(days=1), 3),
+    )
+    active_attempt = uuid.uuid4().hex
+    require(
+        budgets[0].seed(first, primary, 1) and budgets[1].seed(first, primary, 2),
+        "could not import initial review and audit reservations",
+    )
+    require(
+        budgets[0].update(first, primary, active_attempt) == "admitted",
+        "primary did not reserve work after the simulated snapshot",
+    )
     send_original = reserve_post(first, provider, primary, document)
     require(send_original is not None, "initial operation was not reserved")
     # Pause the old sender here. Its intent must outlive its owner lease.
@@ -243,6 +387,14 @@ def exercise(members, start, provider):
     require(leader.txn([(marker, None)], marker, opaque), "two voters could not admit metadata")
     until("the original etcd lease to expire", lambda: leader.get(OWNER) is None)
     require(leader.grant(standby, 90), "survivor could not acquire the expired lease")
+    wider = DailyBudget(cluster, "review", day, 4)
+    require(
+        wider.update(leader, standby, active_attempt) == "policy_changed",
+        "a standby with a wider daily limit could spend against the existing budget",
+    )
+    budget_records, budget_result = exercise_budget_takeover(
+        budgets, leader, survivor, primary, standby, active_attempt
+    )
     competing_post(leader, provider, primary, {**document, "slot": other_slot})
     require(leader.reserve(standby, other_slot, opaque), "new owner could not reserve a free slot")
     competing_post(leader, provider, standby, document)
@@ -291,6 +443,12 @@ def exercise(members, start, provider):
         acknowledged = False
     require(not acknowledged, "one voter acknowledged a new operation")
     require(survivor.get(minority, local=True) is None, "one voter applied a minority write")
+    try:
+        admission = budgets[2].update(survivor, standby, uuid.uuid4().hex)
+    except (ConnectionError, TimeoutError):
+        admission = "unavailable"
+    require(admission == "unavailable", "a minority answered a fresh budget request")
+    budget_result["single_voter_admitted"] = False
     start(first)
     start(leader)
     final = until("the original members to rejoin", lambda: healthy(members))
@@ -300,6 +458,7 @@ def exercise(members, start, provider):
         "rejoin replaced the original cluster or one of its members",
     )
     expected = {marker: opaque, slot: "pending/" + following, other_slot: "pending/" + opaque}
+    expected.update(budget_records)
     until(
         "all three local stores to reflect committed records",
         lambda: all(m.get(k, local=True) == v for m in members for k, v in expected.items()),
@@ -320,6 +479,7 @@ def exercise(members, start, provider):
         "provider_post_requests": len(provider.writes),
         "competing_post_attempts_refused": provider.refusals,
         "rejoined_voters_with_committed_records": len(members),
+        "daily_admissions": budget_result,
         "production_worker_and_provider_exercised": False,
     }
 
