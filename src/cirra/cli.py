@@ -184,7 +184,12 @@ def main(argv=None):
     try:
         from cirra.coordination import shared_state
 
-        enrolled = bool(getattr(args, "state_dir", None)) and shared_state(args.state_dir)
+        # The isolated HTTP reader can open audit records but cannot read worker metadata.
+        enrolled = (
+            args.command != "serve-audit-reads"
+            and bool(getattr(args, "state_dir", None))
+            and shared_state(args.state_dir)
+        )
         if enrolled and (
             args.command
             not in (
@@ -199,7 +204,6 @@ def main(argv=None):
                 "health",
                 "jobs",
                 "list-cold-evidence",
-                "serve-audit-reads",
                 "audit-generation",
                 "audit-jobs",
                 "show",

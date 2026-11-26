@@ -22,6 +22,7 @@ from test_audit_worker import AGENT, FakeGitHub, agent, request, store_baseline
 from cirra import audit_generation, audit_read_snapshot, audit_reads, audits
 from cirra.audit_reads import AuditReadServer
 from cirra.audit_worker import AuditCheckPublisher, AuditPublication, audit_once
+from cirra.cli import main as cli
 from cirra.domain import CirraError, canonical, digest
 from cirra.job_queue import AuditQueue
 from cirra.publish import write_receipt
@@ -382,6 +383,22 @@ def test_counter_maintenance_never_creates_a_missing_or_foreign_store(tmp_path):
         db.execute("ALTER TABLE audits RENAME COLUMN validator_output TO other")
     with pytest.raises(CirraError, match="schema 3 audit table"):
         audit_generation.maintain(tmp_path, "install")
+
+
+def test_isolated_reader_cli_opens_audits_without_access_to_worker_metadata(tmp_path, monkeypatch):
+    Store(tmp_path)
+
+    def private_metadata(_):
+        raise PermissionError("worker-queue-format.json")
+
+    def healthy(server, **kwargs):
+        status, response = server.read("/healthz")
+        assert status == 200 and response["record"]["audits"] == 0
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("cirra.coordination.shared_state", private_metadata)
+    monkeypatch.setattr(AuditReadServer, "serve_forever", healthy)
+    assert cli(["serve-audit-reads", "--state-dir", str(tmp_path), "--port", "0"]) == 0
 
 
 def test_generation_stays_v1_across_concurrent_replacement(served, monkeypatch):
