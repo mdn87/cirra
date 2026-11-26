@@ -249,7 +249,13 @@ try:
         sys.exit(1)
     same = data.get("invocation_id") == sys.argv[3] and belongs_to_unit(data.get("pid"), int(sys.argv[2]))
     legacy = "pid" not in data and "invocation_id" not in data and updated > int(sys.argv[4])
-    sys.exit(0 if data.get("state") == "running" and (same or legacy) else 1)
+    status = data.get("state")
+    # A restarted data host can see its authenticated peer still owning the lease.
+    # Only a current invocation joined to an enrolled directory can report ready this way.
+    if status == "standby" and same:
+        enrolled = Path(sys.argv[1]).parent / "coordination-state.json"
+        sys.exit(0 if enrolled.is_file() else 1)
+    sys.exit(0 if status == "running" and (same or legacy) else 1)
 except (OSError, ValueError, IndexError):
     sys.exit(1)
 PY

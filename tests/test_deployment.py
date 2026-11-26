@@ -67,11 +67,20 @@ def deployment(tmp_path):
     }
 
     def rollback(
-        up=True, invocation="new-worker", fail_restore=False, worker_pid=None, reader_port=None
+        up=True,
+        invocation="new-worker",
+        fail_restore=False,
+        worker_pid=None,
+        reader_port=None,
+        worker_state="running",
     ):
         (state / "worker-status.json").write_text(
             json.dumps(
-                {"state": "running", "pid": worker_pid or os.getpid(), "invocation_id": invocation}
+                {
+                    "state": worker_state,
+                    "pid": worker_pid or os.getpid(),
+                    "invocation_id": invocation,
+                }
             )
         )
         return subprocess.run(
@@ -240,6 +249,25 @@ def test_launcher_child_must_belong_to_the_current_worker_unit(deployment):
             assert result.returncode == 0, result.stderr
         finally:
             child.terminate()
+
+
+@pytest.mark.parametrize(
+    ("enrolled", "status", "invocation", "expected"),
+    [
+        (True, "standby", "new-worker", True),
+        (False, "standby", "new-worker", False),
+        (True, "standby", "old-worker", False),
+        (True, "waiting_for_quorum", "new-worker", False),
+    ],
+)
+def test_standby_readiness_requires_enrollment_and_current_invocation(
+    deployment, enrolled, status, invocation, expected
+):
+    rollback, _, state, _ = deployment
+    if enrolled:
+        (state / "coordination-state.json").write_text('{"cluster":"cluster","namespace":"cirra"}')
+    result = rollback(worker_state=status, invocation=invocation)
+    assert (result.returncode == 0) is expected, result.stderr
 
 
 def test_unrelated_process_cannot_satisfy_worker_readiness(deployment):
