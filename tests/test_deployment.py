@@ -21,7 +21,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/deploy-release.sh"
 
 @pytest.fixture
 def deployment(tmp_path):
-    service = tmp_path / "service"
+    service = tmp_path / "operator's service"
     releases, state = tmp_path / "installed releases", tmp_path / "state"
     for path in (service / "config", service / "staging", releases, state):
         path.mkdir(parents=True)
@@ -249,7 +249,7 @@ def test_unrelated_process_cannot_satisfy_worker_readiness(deployment):
 
 
 @pytest.fixture
-def format_transition(deployment):
+def format_transition(deployment, monkeypatch):
     """Prepare three distinct binaries for a first rollout, with real package and pin checks."""
     import yaml
 
@@ -257,7 +257,29 @@ def format_transition(deployment):
 
     _, service, state, previous = deployment
     releases = previous.parent
-    candidate = releases / ("a" * 40)
+    checkout = service.parent / "checkout"
+    subprocess.run(["git", "init", "--quiet", checkout], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Cirra",
+            "-c",
+            "user.email=test@example.org",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "candidate",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=checkout, text=True
+    ).strip()
+    candidate = (releases / ("a" * 40)).rename(releases / revision)
     fallback = releases / ("c" * 40)
     shutil.copytree(candidate, fallback, symlinks=True)
     project = SCRIPT.parents[1]
@@ -283,8 +305,12 @@ def format_transition(deployment):
     # systemctl activates the real candidate queue writer before it reports a startup failure.
     stubs = service.parent / "transition.bash"
     stubs.write_text(
+        # OpenSSH joins its command arguments before the remote login shell parses them.
+        'ssh() { [[ $1 == fixture-host ]] || return 1; shift; /bin/sh -c "$*"; }\n'
+        "scp() { [[ $1 == -q && ${3%%:*} == fixture-host ]] || return 1; "
+        'cp -- "$2" "${3#*:}"; }\n'
         'sudo() { shift; "$@"; }\n'
-        "curl() { echo -n 200; }\n"
+        'curl() { echo "${!#}" >> "$TEST_STAGING/health-urls"; echo -n 200; }\n'
         "systemctl() {\n"
         '  case "$1:$2" in\n'
         "    restart:*)\n"
@@ -307,39 +333,36 @@ def format_transition(deployment):
         '      case "$3" in --property=MainPID) echo "$TEST_PID";; '
         "--property=InvocationID) echo restored;; esac ;;\n"
         '    is-active:*) case "$3" in '
-        "cirra-audit-reads.service|cirra-health.timer) return 3;; esac ;;\n"
+        "cirra-audit-reads.service) [[ -n ${CIRRA_AUDIT_READ_PORT:-} ]]; return;; "
+        "cirra-health.timer) return 3;; esac ;;\n"
         "  esac\n}\n",
         encoding="utf-8",
     )
-    staging = service / "staging"
+    for key, value in {
+        "BASH_ENV": stubs,
+        "CIRRA_SERVICE_DIR": service,
+        "CIRRA_RELEASES": releases,
+        "CIRRA_STATE": state,
+        "CIRRA_READY_TIMEOUT": "2",
+        "TEST_SERVICE": service,
+        "TEST_STAGING": service / "staging",
+        "TEST_STATE": state,
+        "TEST_CANDIDATE": candidate,
+        "TEST_PID": os.getpid(),
+    }.items():
+        monkeypatch.setenv(key, str(value))
 
-    def deploy(activate=True, *, succeeds=False, keep=3):
+    def deploy(activate=True, *, succeeds=False, keep=3, with_fallback=True):
+        args = ["--host", "fixture-host", "--repin", "--skip-tests", "--keep", str(keep)]
+        if with_fallback:
+            args.extend(["--fallback", fallback.name])
         result = subprocess.run(
-            [
-                "bash",
-                str(service.parent / "deploy.sh"),
-                "deploy",
-                candidate.name,
-                "1",
-                "0",
-                str(keep),
-                str(service),
-                str(releases),
-                str(state),
-                "8796",
-                fallback.name,
-            ],
+            ["bash", SCRIPT, *args],
+            cwd=checkout,
             env={
                 **os.environ,
-                "BASH_ENV": str(stubs),
-                "TEST_SERVICE": str(service),
-                "TEST_STAGING": str(staging),
-                "TEST_STATE": str(state),
-                "TEST_CANDIDATE": str(candidate),
                 "TEST_ACTIVATE": "yes" if activate else "no",
                 "TEST_FAIL_CANDIDATE": "no" if succeeds else "yes",
-                "TEST_PID": str(os.getpid()),
-                "CIRRA_READY_TIMEOUT": "2",
             },
             capture_output=True,
             text=True,
@@ -349,6 +372,37 @@ def format_transition(deployment):
         return result
 
     return deploy, service, state, previous, candidate, fallback, policy, original
+
+
+@pytest.mark.parametrize("with_fallback", [False, True])
+def test_operator_deploy_and_printed_rollback(format_transition, monkeypatch, with_fallback):
+    deploy, service, _, previous, candidate, _, policy, original = format_transition
+    monkeypatch.setenv("CIRRA_AUDIT_READ_PORT", "9897")
+    result = deploy(activate=False, succeeds=True, with_fallback=with_fallback)
+    assert (service / "current").resolve() == candidate
+    assert policy.read_bytes() != original
+    checks = service / "staging/health-urls"
+    reader_url = "http://127.0.0.1:9897/healthz"
+    deploy_checks = checks.read_text().splitlines()
+    assert reader_url in deploy_checks
+
+    (command,) = [
+        line.removeprefix("rollback: ")
+        for line in result.stdout.splitlines()
+        if line.startswith("rollback: ")
+    ]
+    assert shlex.split(command) == [
+        "bash",
+        "scripts/deploy-release.sh",
+        "--rollback",
+        previous.name,
+        "--host",
+        "fixture-host",
+    ]
+    subprocess.run(shlex.split(command), cwd=SCRIPT.parents[1], check=True, timeout=25)
+    assert (service / "current").resolve() == previous
+    assert policy.read_bytes() == original
+    assert reader_url in checks.read_text().splitlines()[len(deploy_checks) :]
 
 
 def test_successful_deploy_keeps_fallback_when_pruning_every_other_release(format_transition):

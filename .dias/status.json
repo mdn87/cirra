@@ -8,13 +8,13 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-21T00:07:58Z",
+  "assessedAt": "2026-11-26T03:23:49Z",
   "confidence": "authoritative",
-  "currentMilestone": "Pull request 43 migrated the services to Bitwarden and cleared the two failed review jobs.",
-  "remainingSummary": "The storage encryption finding remains open by owner decision. Five audit controls still need operating evidence or owner targets.",
+  "currentMilestone": "The operator command deploys and restores an isolated release over the SSH command interface with or without an explicit fallback.",
+  "remainingSummary": "Audit packets await import. The storage encryption finding remains open by owner decision. Five audit controls still need operating evidence or owner targets.",
   "nextChipId": null,
   "source": {
-    "label": "Protected GitHub checks, signed host receipts and production service verification",
-    "updatedAt": "2026-11-21"
+    "label": "Service host argument check, audit queue and isolated deployment and rollback tests",
+    "updatedAt": "2026-11-26"
   }
 }
