@@ -139,6 +139,7 @@ def _decode(value):
 class Quorum:
     def __init__(self, config):
         self.config = config
+        self._first_endpoint = 0
         self.prefix = "/cirra/" + config.namespace + "/"
         self.context = ssl.create_default_context(cafile=str(config.ca))
         self.context.load_cert_chain(str(config.certificate), str(config.private_key))
@@ -162,7 +163,11 @@ class Quorum:
         return obj
 
     def call(self, path, data):
-        for host, port in self.config.endpoints:
+        endpoints = self.config.endpoints
+        start = self._first_endpoint
+        for offset in range(len(endpoints)):
+            index = (start + offset) % len(endpoints)
+            host, port = endpoints[index]
             connection = HTTPSConnection(host, port, context=self.context, timeout=1.5)
             try:
                 # Verify the cluster before each mutation on this same TLS connection.
@@ -170,7 +175,11 @@ class Quorum:
                     self._post(connection, "kv/range", {"key": self._key("identity")})
                     if connection.sock is None:
                         raise QuorumUnavailable("voter closed the verified TLS connection")
-                return self._post(connection, path, data)
+                result = self._post(connection, path, data)
+                # A timeout on the lost host should be paid once per origin, not
+                # on every read in an authenticated admission transaction.
+                self._first_endpoint = index
+                return result
             except (HTTPException, OSError, ValueError, TypeError, QuorumUnavailable):
                 # Every write below is a conditional transaction or an expiring lease grant.
                 continue

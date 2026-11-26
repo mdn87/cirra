@@ -308,3 +308,29 @@ def test_enrollment_checks_actual_recovery_credential_on_each_host():
             coordination.verify_transfer_key(voters, policy, b"y" * 32, initialize=initialize)
     assert len(voters.get(coordination.TRANSFER_KEY)) == 64
     assert original.decode() not in voters.get(coordination.TRANSFER_KEY)
+
+
+def test_admission_reuses_a_reachable_voter_during_primary_loss(monkeypatch):
+    contacts = []
+
+    class Connection:
+        def __init__(self, host, port, **kwargs):
+            self.host = host
+
+        def close(self):
+            pass
+
+    obj = object.__new__(Quorum)
+    obj.config = SimpleNamespace(endpoints=(("primary", 1), ("standby", 2), ("witness", 3)))
+    obj.context, obj._first_endpoint = None, 0
+    monkeypatch.setattr("cirra.quorum.HTTPSConnection", Connection)
+
+    def read(connection, path, data):
+        contacts.append(connection.host)
+        if connection.host == "primary":
+            raise TimeoutError
+        return {"header": {"cluster_id": "123"}}
+
+    obj._post = read
+    assert obj.call("kv/range", {}) == obj.call("kv/range", {})
+    assert contacts == ["primary", "standby", "standby"]
