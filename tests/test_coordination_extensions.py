@@ -10,8 +10,8 @@ import pytest
 from cirra import events, provenance, release
 from cirra.coordinator import review
 from cirra.dispatch import ClaudeReviewer, bounded_process, tool_environment
-from cirra.domain import CirraError, canonical
-from cirra.publish import publish, verify_gitlab_permission_receipt
+from cirra.domain import CirraError, canonical, digest
+from cirra.publish import publish, summary_text, verify_gitlab_permission_receipt
 from cirra.store import Store
 from cirra.transport import RemoteUncertain
 
@@ -116,7 +116,11 @@ class Publisher:
 
     def write(self, report, metadata, identifier):
         self.writes += 1
-        item = {"id": identifier or str(self.writes), "metadata": metadata}
+        item = {
+            "id": identifier or str(self.writes),
+            "metadata": metadata,
+            "body_digest": digest(summary_text(report, metadata)),
+        }
         self.objects = [item]
         if self.lose_ack:
             raise RemoteUncertain("lost acknowledgement")

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from cirra import provenance
 from cirra.domain import CirraError, canonical, digest, fields, number, string, timestamp, utc_now
-from cirra.github import API_VERSION, check_from, record
+from cirra.github import API_VERSION, check_from, check_summary_digest, record
 from cirra.locking import change_lock
 from cirra.observer_process import run_control
 from cirra.observer_source import export_source
@@ -20,6 +20,18 @@ from cirra.service_config import read_yaml
 from cirra.transport import JSONClient, RemoteUncertain, pages
 
 NAME = "cirra/isolated-tests"
+
+
+def observation_output(head, definition, operation_id):
+    output = {
+        "title": "Independently observed container tests",
+        "summary": f"Tested commit `{head}` in an isolated Linux container.\n\n"
+        f"Operator execution definition: `{definition}`.\n\n"
+        "The signed checkout receipt is retained by the observer.",
+    }
+    if operation_id is not None:
+        output["text"] = f"<!-- cirra-observation:{operation_id} -->"
+    return output
 
 
 def load_observer(path):
@@ -252,7 +264,7 @@ class ObserverCheck:
             and str(record(item.get("app")).get("id")) == self.app_id
         ]
 
-    def create(self, head, identifier, result, started_at, definition):
+    def create(self, head, identifier, result, started_at, definition, *, operation_id=None):
         item, _ = self.request(
             "POST",
             f"/repos/{self.repository}/check-runs",
@@ -264,12 +276,7 @@ class ObserverCheck:
                 "conclusion": result,
                 "started_at": started_at,
                 "completed_at": utc_now(),
-                "output": {
-                    "title": "Independently observed container tests",
-                    "summary": f"Tested commit `{head}` in an isolated Linux container.\n\n"
-                    f"Operator execution definition: `{definition}`.\n\n"
-                    "The signed checkout receipt is retained by the observer.",
-                },
+                "output": observation_output(head, definition, operation_id),
             },
         )
         return self.validate(item, head, identifier, result)
@@ -332,7 +339,8 @@ def observe(
                 provider=provider,
                 **({"branch": branch} if branch else {}),
             )
-            name = "cirra-observer-" + uuid.uuid4().hex
+            execution_id = uuid.uuid4().hex
+            name = "cirra-observer-" + execution_id
             saved = {
                 "state": "running",
                 "identity": identity,
@@ -341,6 +349,8 @@ def observe(
                 "parents": parents,
                 "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
             }
+            if provider == "github":
+                saved["publication_id"] = execution_id
             write_receipt(path, saved)
             execution = (executor or DockerExecutor()).run(policy, archive, directory, name)
             saved.update(state="executed", execution=execution)
@@ -437,7 +447,18 @@ def observe(
 
 
 def publish_observation(publisher, change, identifier, result, saved, path, policy):
-    matches = publisher.find(change["head_sha"], identifier, result)
+    head, definition = change["head_sha"], policy["definition_digest"]
+    operation_id = saved.get("publication_id")
+    try:
+        matches = publisher.find(head, identifier, result)
+    except RemoteUncertain:
+        saved["state"] = "publishing"
+        write_receipt(path, saved)
+        raise
+    if matches and saved["state"] not in ("publishing", "published"):
+        # A visible owned check rules out a fresh create even if a later GET is empty.
+        saved["state"] = "publishing"
+        write_receipt(path, saved)
     if len(matches) > 1:
         raise CirraError(
             "multiple native observer checks match this execution; inspect before proceeding"
@@ -452,13 +473,20 @@ def publish_observation(publisher, change, identifier, result, saved, path, poli
         saved["state"] = "publishing"
         write_receipt(path, saved)
         native = publisher.create(
-            change["head_sha"],
+            head,
             identifier,
             result,
             saved["started_at"],
-            policy["definition_digest"],
+            definition,
+            operation_id=operation_id,
         )
-    check = check_from(native, "check_run", change["head_sha"], utc_now())
-    if check["started_at"] != timestamp(saved["started_at"]):
-        raise CirraError("native observer check belongs to another execution attempt")
+    check = check_from(native, "check_run", head, utc_now())
+    output = observation_output(head, definition, operation_id)
+    if (
+        check["started_at"] != timestamp(saved["started_at"])
+        or (saved.get("native_id") is not None and check["native_id"] != saved["native_id"])
+        or check_summary_digest(native, output["title"], text=output.get("text"))
+        != digest(output["summary"])
+    ):
+        raise RemoteUncertain("native observer check does not match this execution attempt")
     return check

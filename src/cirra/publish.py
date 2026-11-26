@@ -8,12 +8,13 @@ import uuid
 from pathlib import Path
 
 from cirra.domain import CirraError, canonical, digest, fields, number, timestamp, utc_now
-from cirra.github import API_VERSION, native_id, record, repository_name
+from cirra.github import API_VERSION, check_summary_digest, native_id, record, repository_name
 from cirra.policy import assess_checks
 from cirra.report import make_report, render_markdown
 from cirra.transport import JSONClient, RemoteUncertain, pages
 
 NAME = "cirra/review"
+TITLE = "Cirra advisory review"
 
 
 def verify_gitlab_permission_receipt(path, token, repository_id, principal_id):
@@ -154,6 +155,9 @@ class GitHubPublisher:
         return {
             "id": native_id(item.get("id")),
             "metadata": metadata_from(record(item.get("output")).get("summary")),
+            "body_digest": check_summary_digest(item, TITLE)
+            if item.get("status") == "completed" and item.get("conclusion") == "neutral"
+            else None,
         }
 
     def write(self, report, metadata, identifier=None):
@@ -163,7 +167,7 @@ class GitHubPublisher:
             "status": "completed",
             "conclusion": "neutral",
             "external_id": metadata["slot"],
-            "output": {"title": "Cirra advisory review", "summary": summary},
+            "output": {"title": TITLE, "summary": summary},
         }
         route = self.prefix + "/check-runs"
         if identifier:
@@ -184,9 +188,13 @@ class GitHubPublisher:
             or item.get("name") != NAME
             or item.get("external_id") != metadata["slot"]
             or item.get("head_sha") != report["snapshot"]["head_sha"]
+            or (identifier is not None and str(item["id"]) != identifier)
         ):
             raise RemoteUncertain("GitHub write acknowledgement failed ownership validation")
-        return self.object(item)
+        result = self.object(item)
+        if result["body_digest"] != digest(summary):
+            raise RemoteUncertain("GitHub check output does not match the advisory write")
+        return result
 
 
 class GitLabPublisher:
@@ -197,7 +205,11 @@ class GitLabPublisher:
     def find(self, report, slot):
         found = pages(self.client.get, f"merge_requests/{report['snapshot']['change_id']}/notes")
         return [
-            {"id": native_id(item.get("id")), "metadata": metadata_from(item.get("body"))}
+            {
+                "id": native_id(item.get("id")),
+                "metadata": metadata_from(item.get("body")),
+                "body_digest": digest(item["body"]),
+            }
             for item in found
             if str(record(item.get("author")).get("id")) == self.principal_id
             and not item.get("system")
@@ -214,9 +226,15 @@ class GitLabPublisher:
             or not 1 <= item["id"] <= 2**63 - 1
         ):
             raise RemoteUncertain("GitLab returned a malformed write acknowledgement")
-        if str(item.get("author", {}).get("id")) != self.principal_id or item.get("system"):
+        if (
+            str(item.get("author", {}).get("id")) != self.principal_id
+            or item.get("system")
+            or (identifier is not None and str(item["id"]) != identifier)
+        ):
             raise RemoteUncertain("GitLab write acknowledgement failed ownership validation")
-        return {"id": native_id(item.get("id")), "metadata": metadata_from(item.get("body"))}
+        if item.get("body") != body:
+            raise RemoteUncertain("GitLab note body does not match the advisory write")
+        return {"id": native_id(item["id"]), "metadata": metadata, "body_digest": digest(body)}
 
 
 def sync_directory(path):
@@ -281,6 +299,37 @@ def summary_text(report, metadata):
     if len(body.encode()) > 60000:
         raise CirraError("native summary exceeds 60 KiB; reduce review limits")
     return body
+
+
+def matches_saved_body(store, remote, receipt, snapshot):
+    if not remote.get("body_digest"):
+        return False
+    metadata = remote["metadata"]
+    if receipt and metadata == receipt["metadata"] and receipt.get("body_digest"):
+        return remote["body_digest"] == receipt["body_digest"]
+    # Older receipts and restored directories may only identify the historical report.
+    # A later CI refresh can change the Markdown for the same run.
+    if not all(isinstance(metadata.get(key), str) for key in ("run_id", "report_digest")):
+        return False
+    historical = store.report_by_digest(metadata["run_id"], metadata["report_digest"])
+    if historical is None or historical["analysis_digest"] != metadata.get("analysis_digest"):
+        return False
+    saved_snapshot = historical["snapshot"]
+    identity = ("provider", "instance", "repository_id", "change_id")
+    if snapshot["provider"] != "gitlab":
+        identity += ("head_sha",)
+    if any(saved_snapshot[k] != snapshot[k] for k in identity) or any(
+        saved_snapshot[k] != metadata.get(k) for k in ("head_sha", "target_sha", "diff_base_sha")
+    ):
+        return False
+    # Receipts without a body digest can predate the "Next step" Markdown format.
+    # A check carrying a new operation marker was never written in that older format.
+    formats = (False,) if "operation_id" in metadata else (True, False)
+    prefix = marker(metadata) + "\n\n"
+    return any(
+        digest(prefix + render_markdown(historical, legacy_format=legacy)) == remote["body_digest"]
+        for legacy in formats
+    )
 
 
 def publish(
@@ -353,12 +402,39 @@ def publish(
                 number(metadata.get(field), "publication " + field, 1, 2**63 - 1, integral=True)
             if metadata["run_order"] > order:
                 raise CirraError("remote publication supersedes this local review")
+            if (
+                not retry_uncertain
+                and (not receipt or metadata["generation"] > receipt["metadata"]["generation"])
+                and not matches_saved_body(store, remote, receipt, snap)
+            ):
+                # A restore can see a later native write than the local snapshot. Keep
+                # its ID even if the next provider read temporarily returns no object.
+                if not receipt or receipt["state"] != "uncertain":
+                    receipt = {
+                        "state": "uncertain",
+                        "native_id": remote["id"],
+                        "canonical_id": selected_id,
+                        "metadata": {**metadata, "awaiting_ack": True},
+                        "reason": "The visible output does not match a saved report.",
+                    }
+                    checkpoint(store, claim, path, receipt)
+                return receipt
         if receipt and receipt["state"] == "uncertain":
-            if remote and remote["metadata"] == receipt["metadata"]:
+            expected = dict(receipt["metadata"])
+            expected.pop("awaiting_ack", None)
+            if (
+                remote
+                and remote["metadata"] == expected
+                and (receipt.get("native_id") is None or receipt["native_id"] == remote["id"])
+                and matches_saved_body(store, remote, {**receipt, "metadata": expected}, snap)
+            ):
+                receipt.pop("reason", None)
                 receipt.update(
                     state="published",
                     native_id=remote["id"],
                     canonical_id=selected_id,
+                    metadata=expected,
+                    body_digest=remote["body_digest"],
                     acknowledged_at=utc_now(),
                 )
                 checkpoint(store, claim, path, receipt)
@@ -371,28 +447,45 @@ def publish(
                     else "Create unconfirmed; reconcile or inspect before --retry-uncertain."
                 )
                 return {**receipt, "reason": reason}
-        if receipt and receipt["state"] == "published" and not remote:
+        if (
+            receipt
+            and receipt["state"] == "published"
+            and not canonical_id
+            and (
+                not remote
+                or receipt["native_id"] != remote["id"]
+                or (
+                    remote["metadata"]["generation"] <= receipt["metadata"]["generation"]
+                    and (
+                        remote["metadata"] != receipt["metadata"]
+                        or not matches_saved_body(store, remote, receipt, snap)
+                    )
+                )
+            )
+        ):
             receipt.update(
                 state="uncertain",
-                reason="Saved object not visible; inspect before --retry-uncertain replaces it.",
+                metadata={**receipt["metadata"], "awaiting_ack": True},
+                reason="The confirmed publication ID and output are not visible together.",
             )
             checkpoint(store, claim, path, receipt)
             if not retry_uncertain:
                 return receipt
         if reconcile and not retry_uncertain:
-            if remote:
+            if remote and matches_saved_body(store, remote, receipt, snap):
                 result = {
                     "state": "published",
                     "native_id": remote["id"],
                     "canonical_id": selected_id,
                     "metadata": remote["metadata"],
+                    "body_digest": remote["body_digest"],
                     "acknowledged_at": utc_now(),
                 }
                 checkpoint(store, claim, path, result)
                 return result
             return {
                 "state": "unresolved",
-                "reason": "No unique owned publication is visible; no write attempted.",
+                "reason": "No unique owned publication matches a saved report; no write attempted.",
             }
         generation = (
             max(
@@ -404,6 +497,7 @@ def publish(
         metadata = {
             "slot": slot,
             "generation": generation,
+            "operation_id": uuid.uuid4().hex,
             "run_order": order,
             "run_id": run_id,
             "head_sha": snap["head_sha"],
@@ -412,11 +506,14 @@ def publish(
             "analysis_digest": report["analysis_digest"],
             "report_digest": report["report_digest"],
         }
-        summary_text(report, metadata)  # A local size refusal is never an uncertain remote write.
+        body_digest = digest(summary_text(report, metadata))
         receipt = {
             "schema_version": 1,
             "state": "uncertain",
-            "metadata": metadata,
+            # Older workers compare this whole mapping. Until exact readback they must
+            # keep even a visible object parked when rolling back to their marker-only check.
+            "metadata": {**metadata, "awaiting_ack": True},
+            "body_digest": body_digest,
             "native_id": remote["id"] if remote else None,
             "canonical_id": selected_id if remote else None,
             "intent_at": utc_now(),
@@ -425,13 +522,23 @@ def publish(
         checkpoint(store, claim, path, receipt)
         try:
             result = publisher.write(report, metadata, receipt["native_id"])
-            if not isinstance(result, dict) or result.get("metadata") != metadata:
-                raise RemoteUncertain("native publication metadata does not match the intent")
+            if (
+                not isinstance(result, dict)
+                or result.get("metadata") != metadata
+                or result.get("body_digest") != body_digest
+                or (receipt["native_id"] is not None and result.get("id") != receipt["native_id"])
+            ):
+                raise RemoteUncertain("native publication does not match the saved write")
         except RemoteUncertain as exc:
             receipt["reason"] = str(exc)
         except CirraError as exc:
-            receipt.update(state="failed", reason=str(exc))
+            receipt.update(state="failed", metadata=metadata, reason=str(exc))
         else:
-            receipt.update(state="published", native_id=result["id"], acknowledged_at=utc_now())
+            receipt.update(
+                state="published",
+                native_id=result["id"],
+                metadata=metadata,
+                acknowledged_at=utc_now(),
+            )
         checkpoint(store, claim, path, receipt)
         return receipt

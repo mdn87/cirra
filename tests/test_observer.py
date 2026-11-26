@@ -9,7 +9,7 @@ import yaml
 from cirra import provenance
 from cirra.domain import CirraError
 from cirra.github import check_from
-from cirra.observer import NAME, DockerExecutor, load_observer, observe
+from cirra.observer import NAME, DockerExecutor, load_observer, observation_output, observe
 from cirra.observer_process import run_control
 from cirra.observer_source import export_source
 from cirra.transport import RemoteUncertain
@@ -38,7 +38,7 @@ class CheckPublisher:
     def find(self, head, identifier, result):
         return [] if self.hide else copy.deepcopy(self.items)
 
-    def create(self, head, identifier, result, started_at, definition):
+    def create(self, head, identifier, result, started_at, definition, *, operation_id=None):
         self.calls += 1
         item = {
             "id": 100,
@@ -49,6 +49,7 @@ class CheckPublisher:
             "status": "completed",
             "conclusion": result,
             "started_at": started_at,
+            "output": observation_output(head, definition, operation_id),
             "html_url": "https://github.com/example/repo/runs/100",
             "check_suite": {"id": 200},
         }
@@ -134,6 +135,43 @@ def test_lost_native_ack_reconciles_without_reexecuting_or_creating_duplicate(
         data, observer_policy, tmp_path, KEY, publisher, executor=executor, source=source
     ).exists()
     assert executor.calls == publisher.calls == 1
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_observer_only_attests_the_original_visible_execution(
+    fixture_data, observer_policy, tmp_path, legacy
+):
+    data = data_for_observer(fixture_data)
+    publisher, executor = CheckPublisher(), Executor()
+    publisher.lose_ack = True
+
+    def run():
+        return observe(
+            data, observer_policy, tmp_path, KEY, publisher, executor=executor, source=source
+        )
+
+    with pytest.raises(RemoteUncertain, match="lost"):
+        run()
+    expected = copy.deepcopy(publisher.items[0])
+    prefix = tmp_path / "observer" / expected["external_id"]
+    receipt = prefix.with_suffix(".json")
+    if legacy:
+        saved = json.loads(receipt.read_text())
+        saved.pop("publication_id")
+        receipt.write_text(json.dumps(saved))
+        expected["output"].pop("text")
+    for field in ("title", "summary", "text"):
+        publisher.items = [copy.deepcopy(expected)]
+        publisher.items[0]["output"][field] = "stale execution"
+        with pytest.raises(RemoteUncertain, match="execution attempt"):
+            run()
+        assert not (prefix.parent / (prefix.name + "-witness.json")).exists()
+    publisher.items = [copy.deepcopy(expected)]
+    assert run().exists()
+    publisher.items[0]["id"] += 1
+    with pytest.raises(RemoteUncertain, match="execution attempt"):
+        run()
+    assert publisher.calls == executor.calls == 1
 
 
 def test_interrupted_execution_does_not_fabricate_attestation(
