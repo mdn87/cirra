@@ -110,6 +110,15 @@ class DataAuthority:
         restored = _read(self.root / "data-restored.json")
         return isinstance(restored, dict) and restored.get("epoch") == current["epoch"]
 
+    def _original(self, current, local):
+        return bool(
+            current
+            and current["host"] == self.host
+            and current["target"] is None
+            and local == current
+            and not self._restored_own_tenure(current)
+        )
+
     def _candidate(self, current):
         if not current:
             return False
@@ -120,9 +129,7 @@ class DataAuthority:
         if current["target"] is None and current["host"] == self.host:
             # A restored copy of this host's own tenure cannot substitute for
             # the original state, even if it was captured in the middle of a pass.
-            if self._restored_own_tenure(current):
-                return False
-            return local == current and (
+            return self._original(current, local) and (
                 _fresh(current["floor"], now)
                 or self._receipt_time("data-backup.json", current, now, exact=False) is not None
             )
@@ -142,6 +149,21 @@ class DataAuthority:
 
     def eligible(self):
         return self._candidate(self._current(self.quorum))
+
+    def can_recover_backup(self):
+        """Allow a backup on the original current tree even after its recovery point expires."""
+        current = self._current(self.quorum)
+        return self._original(current, self._local(current))
+
+    def activate_backup(self, owner):
+        """Bind a backup pass to the original tenure without refreshing its deadline."""
+        current = self._current(owner)
+        if not self._original(current, self._local(current)):
+            raise QuorumUnavailable(
+                "backup requires the original unfrozen authoritative private state"
+            )
+        self._finish_local(current)
+        self._bind_session(owner, current)
 
     def accepts_restore(self):
         current = self._current(self.quorum)
@@ -225,7 +247,11 @@ class DataAuthority:
             if captured is None:
                 raise QuorumUnavailable("the restored private state expired during promotion")
             self._commit(owner, current, self._new(owner, captured))
-        elif current["session"] != digest(["private-session", owner.token]):
+        else:
+            self._bind_session(owner, current)
+
+    def _bind_session(self, owner, current):
+        if current["session"] != digest(["private-session", owner.token]):
             self._advance(owner, current)
         elif not owner.compare({AUTHORITY: canonical(current)}, {}):
             raise QuorumUnavailable("another host owns this private state")

@@ -149,3 +149,47 @@ def test_interrupted_promotion_and_freeze_recover_without_a_second_transition(tm
     frozen = cluster.values[AUTHORITY]
     mac.freeze(cluster, "linux")
     assert not mac.eligible() and cluster.values[AUTHORITY] == frozen
+
+
+def test_backup_only_recovery_checks_original_unfrozen_private_state_after_expiry(
+    tmp_path, monkeypatch
+):
+    now = 1_800_000_000
+    monkeypatch.setattr("cirra.data_authority._stamp", lambda: now)
+    cluster = Quorum()
+    primary = data_host(cluster, tmp_path / "primary", "linux")
+    mac = data_host(cluster, tmp_path / "mac", "mac")
+    rollback = data_host(cluster, tmp_path / "older-copy", "linux")
+    assert not primary.can_recover_backup()
+    primary.initialize(cluster)
+    snapshot(primary.root, rollback.root, now)
+    snapshot(primary.root, mac.root, now)
+    assert not rollback.can_recover_backup() and not mac.can_recover_backup()
+    # A committed private tip can be recovered after a crash during its local update.
+    cluster.lose_reply = True
+    with pytest.raises(QuorumUnavailable):
+        primary.checkpoint(cluster)
+    now += DAY + 1
+    assert not primary.eligible() and primary.can_recover_backup()
+    before = json.loads(cluster.get(AUTHORITY))
+    cluster.token = "new-backup-owner"
+    primary.activate_backup(cluster)
+    active = json.loads(cluster.get(AUTHORITY))
+    assert read(primary.root, "data-authority.json") == active
+    assert {key for key in before if before[key] != active[key]} == {"session", "tip"}
+    assert active["session"] == digest(["private-session", cluster.token])
+    primary.activate_backup(cluster)
+    assert json.loads(cluster.get(AUTHORITY)) == active
+    assert not primary.eligible()
+    (rollback.root / "data-restored.json").rename(rollback.root / "older-receipt.json")
+    assert not rollback.can_recover_backup()
+    snapshot(primary.root, primary.root, now, backup=True)
+    assert primary.eligible()
+    primary.freeze(cluster, "mac")
+    assert not primary.can_recover_backup()
+    with pytest.raises(QuorumUnavailable):
+        primary.activate_backup(cluster)
+    snapshot(primary.root, mac.root, now)
+    assert mac.accepts_restore() and not mac.can_recover_backup()
+    with pytest.raises(QuorumUnavailable):
+        mac.activate_backup(cluster)
