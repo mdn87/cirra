@@ -269,7 +269,11 @@ reserve one more attempt before it loses its lease. The surviving voters race
 two clients for the final review slot. They also check ownership of refunds,
 retry an already returned reservation, and initialize a simulated next UTC day.
 All three members must retain the same admission records when they rejoin.
-Production workers still count admissions in their local state directories.
+The current single-host installation counts admissions in its local state.
+Enrolled deployments share the counters and the publishing lease. The
+two-origin service rehearsal also exercises authenticated HTTP admission,
+private snapshot transfer and the native publication adapter.
+[Coordinated service configuration and rehearsal](coordinated-service.md)
 
 The required GitHub review check records a unique marker before each write.
 It verifies the returned title, summary and marker before recording success.
@@ -315,11 +319,12 @@ Title, description, and label edits that change neither the head nor the base
 are ignored as `metadata-only edit`. Run such a change by hand with
 `cirra review` after reading it.
 
-The receiver acknowledges after an atomic queue write, without waiting for a
-provider, test run, or model. It limits request bytes, connections, and time;
-rejects duplicate/framing headers; and accepts only configured repository
-identities and supported PR/MR actions. GitHub ping deliveries are acknowledged.
-`GET /healthz` checks the receiver, not worker/model readiness.
+The receiver acknowledges after an atomic queue write. Enrolled origins first
+confirm shared admission with a voting majority. The receiver limits request
+bytes, connections and time. It rejects duplicate or ambiguous framing headers
+and accepts configured repository identities and supported PR/MR actions.
+GitHub ping deliveries are acknowledged. `GET /healthz` checks the receiver
+and, on an enrolled origin, its ability to reach the admission quorum.
 
 ## What the observer verifies
 
@@ -679,9 +684,12 @@ Observed results:
 
 ### Audit read route rollout
 
-The read-only audit route (`serve-audit-reads`, above) was added on 2026-10-19
-and is not yet deployed; nothing on the host has changed. The host change, when
-the operator makes it, is:
+The read-only audit route went live on `lugos-host` on November 26, 2026.
+The Taskmaster client fetched all 45 audit attempts across 35 heads and found
+28 gate receipts. The reader uses the existing SQLite schema version 3 and
+listens on loopback. Both the webhook and worker kept their systemd invocations
+throughout activation. To set up another primary with the same layout, use
+the dedicated reader account and the scoped ACL helper.
 
 ```text
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin cirra-audit-reader

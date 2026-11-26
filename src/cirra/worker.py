@@ -99,6 +99,9 @@ class Processor:
             capture,
         )
 
+    def for_directory(self, directory):
+        return type(self)(directory, self.credential, self.capture)
+
     def app_token(self, route):
         settings = route.publisher
         pem = self.credential(settings["private_key_env"])
@@ -530,14 +533,137 @@ def work_once(config, queue, process):
 def run_worker(config, directory, process, *, once=False, stopped=None):
     import threading
 
+    from cirra.coordination import connect
+    from cirra.data_authority import DataAuthority
+    from cirra.private_transfer import capture_pending
+    from cirra.quorum import OWNER_KEY, QuorumUnavailable
+    from cirra.standby_install import install
+
     stopped = stopped or threading.Event()
-    queue = Queue(directory, config.max_jobs)
+    shared = connect(config, directory, getattr(process, "credential", None))
+    if shared is None:
+        return _work_as_owner(config, Queue(directory, config.max_jobs), process, once, stopped)
+    selector = Path(directory).absolute()
+    queue = shared.queue
+    queue.shared_inbox = shared
+    policy = shared.quorum.config
+    authority = DataAuthority(shared)
+    next_restore = 0
+    if policy.recovery_archive is not None and not selector.is_symlink():
+        raise CirraError("automatic private restore requires a managed state-directory symlink")
+    if not once and policy.node != policy.preferred_node:
+        stopped.wait(min(5, policy.lease_seconds / 3))
+    while not stopped.is_set():
+        try:
+            selected = selector.resolve(strict=True)
+            if selected != queue.directory.parent:
+                if not hasattr(process, "for_directory"):
+                    raise CirraError("this processor cannot follow an installed private restore")
+                process = process.for_directory(selected)
+                shared = connect(config, selected, process.credential)
+                queue = shared.queue
+                queue.shared_inbox = shared
+                authority = DataAuthority(shared)
+            shared.check()
+            owner = None
+            if shared.quorum.get(OWNER_KEY) is None:
+                if not authority.eligible():
+                    if capture_pending(selected) and authority.can_recover_backup():
+                        backup_owner = shared.quorum.acquire()
+                        if backup_owner is not None:
+                            with (
+                                backup_owner.maintaining(),
+                                change_lock(queue.directory / "locks", "worker", 0),
+                            ):
+                                if selector.resolve(strict=True) == selected:
+                                    authority.activate_backup(backup_owner)
+                                    _capture_backup(config, selected, process, backup_owner)
+                    if (
+                        policy.recovery_archive
+                        and time.monotonic() >= next_restore
+                        and authority.expected_donor() is not None
+                    ):
+                        next_restore = time.monotonic() + 30
+                        try:
+                            install(config, selector, process.credential, policy.recovery_archive)
+                            if selector.resolve(strict=True) != selected:
+                                continue
+                        except (CirraError, OSError, ValueError) as exc:
+                            print(
+                                json.dumps(
+                                    {
+                                        "level": "warning",
+                                        "operation": "install_private_restore",
+                                        "type": type(exc).__name__,
+                                        "observed_at": utc_now(),
+                                    }
+                                ),
+                                flush=True,
+                            )
+                    heartbeat(queue, state="waiting_for_private_state")
+                    if once:
+                        raise QuorumUnavailable(
+                            "this worker needs a verified current private state"
+                        )
+                    stopped.wait(config.poll_seconds)
+                    continue
+                owner = shared.quorum.acquire()
+            if owner is not None:
+                with owner.maintaining():
+                    return _work_as_owner(
+                        config, queue, process, once, stopped, shared, owner, authority, selector
+                    )
+            if once:
+                raise QuorumUnavailable("another worker owns this cluster")
+            heartbeat(queue, state="standby")
+        except QuorumUnavailable:
+            if once:
+                raise
+            heartbeat(queue, state="waiting_for_quorum")
+        stopped.wait(config.poll_seconds)
+    return None
+
+
+def _capture_backup(config, directory, process, owner):
+    from cirra.private_transfer import capture_requested, configured_witness
+    from cirra.quorum import QuorumUnavailable
+
+    try:
+        capture_requested(
+            directory, owner, witness_key=lambda: configured_witness(config, process.credential)
+        )
+    except QuorumUnavailable:
+        raise
+    except (CirraError, OSError, ValueError) as exc:
+        print(
+            json.dumps(
+                {
+                    "level": "error",
+                    "operation": "capture_private_backup",
+                    "type": type(exc).__name__,
+                    "observed_at": utc_now(),
+                }
+            ),
+            flush=True,
+        )
+
+
+def _work_as_owner(
+    config, queue, process, once, stopped, shared=None, owner=None, authority=None, selector=None
+):
     # The OS releases this lock after process death. An abandoned running job
     # resumes through the existing review/publisher recovery mechanisms.
     with change_lock(queue.directory / "locks", "worker", 0):
+        if selector is not None and selector.resolve(strict=True) != queue.directory.parent:
+            from cirra.quorum import QuorumUnavailable
+
+            raise QuorumUnavailable("the standby selected a newer verified private restore")
         activate(queue.directory.parent)
         next_reconcile = 0
         while not stopped.is_set():
+            if shared is not None:
+                owner.compare({}, {})
+                authority.activate(owner)
             try:
                 ready = queue.maintain()
             except (CirraError, OSError, ValueError) as exc:
@@ -557,6 +683,8 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                 heartbeat(queue)
                 stopped.wait(0.05)
                 continue
+            if shared is not None:
+                shared.materialize(owner)
             interval = getattr(config, "reconcile_seconds", 0)
             if interval and time.monotonic() >= next_reconcile:
                 from cirra.reconcile import sync
@@ -570,6 +698,8 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                 next_reconcile = time.monotonic() + interval
             heartbeat(queue)
             job = work_once(config, queue, process)
+            if shared is not None and job and job["state"] in ("done", "skipped", "attention"):
+                shared.settle(owner, job["id"], job["state"])
             if job:
                 print(
                     json.dumps(
@@ -645,6 +775,10 @@ def run_worker(config, directory, process, *, once=False, stopped=None):
                         ),
                         flush=True,
                     )
+            if authority is not None and (job or audit_job):
+                authority.checkpoint(owner)
+            if authority is not None:
+                _capture_backup(config, queue.directory.parent, process, owner)
             if once:
                 return job
             if not job and not audit_job:

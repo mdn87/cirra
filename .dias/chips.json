@@ -364,7 +364,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T11:04:43Z",
-        "updatedAt": "2026-11-26T06:53:42Z"
+        "updatedAt": "2026-11-26T18:54:23Z"
       },
       "evidence": [
         {
@@ -456,6 +456,18 @@
           "kind": "note",
           "at": "2026-11-26T08:23:49Z",
           "message": "Two signed GitHub deliveries recovered their original jobs. Three local voters fenced a delayed test publication. Both hosts passed the same observer policy."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:nov26-live-reader",
+          "kind": "note",
+          "at": "2026-11-26T18:54:23Z",
+          "message": "Taskmaster read 45 live attempts across 35 heads and matched 28 gate receipts. The schema-v3 loopback reader started without restarting the worker or receiver."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:nov26-dual-origins",
+          "kind": "note",
+          "at": "2026-11-26T18:54:23Z",
+          "message": "The Intel Mac ran three mTLS voters and two origins. The surviving receiver returned 200 in all 55 samples. The return transfer preserved private state and signed receipts."
         }
       ]
     },

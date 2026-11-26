@@ -50,7 +50,14 @@ def test_launcher_discards_parent_credentials_before_glas(tmp_path, monkeypatch)
         assert name not in observed["env"]
 
 
-@pytest.mark.parametrize(("role", "command"), [("worker", "worker"), ("webhook", "serve-webhooks")])
+@pytest.mark.parametrize(
+    ("role", "command"),
+    [
+        ("worker", "worker"),
+        ("webhook", "serve-webhooks"),
+        ("standby-refresh", "refresh-standby-snapshot"),
+    ],
+)
 def test_macos_jobs_launch_with_host_local_arguments_and_separate_manifests(role, command):
     script = Path(__file__).resolve().parents[1] / "scripts/macos-service-plist.py"
     expected = {
@@ -66,6 +73,8 @@ def test_macos_jobs_launch_with_host_local_arguments_and_separate_manifests(role
     }
     flags = [field for name, path in expected.items() for field in ("--" + name, path)]
     job = plistlib.loads(subprocess.check_output([sys.executable, str(script), role, *flags]))
+    if role == "standby-refresh":
+        assert job["StartInterval"] == 3600 and job["RunAtLoad"] and "KeepAlive" not in job
     assert job["ProgramArguments"][:3] == [
         expected["python"],
         expected["release"] + "/scripts/with-glas.py",

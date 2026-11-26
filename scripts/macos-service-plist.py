@@ -15,7 +15,12 @@ def absolute(value):
 
 def main(argv=None):
     args = argparse.ArgumentParser(description=__doc__)
-    args.add_argument("role", choices=("worker", "webhook"))
+    commands = {
+        "worker": "worker",
+        "webhook": "serve-webhooks",
+        "standby-refresh": "refresh-standby-snapshot",
+    }
+    args.add_argument("role", choices=commands)
     args.add_argument("--home", default=str(Path.home()), type=absolute)
     for name in (
         "release",
@@ -33,7 +38,7 @@ def main(argv=None):
     command = [
         paths.python,
         str(PurePosixPath(paths.release) / "scripts" / "with-glas.py"),
-        "worker" if role == "worker" else "serve-webhooks",
+        commands[role],
         "--service-config",
         paths.service_config,
         "--state-dir",
@@ -62,12 +67,14 @@ def main(argv=None):
             ),
         },
         "LimitLoadToSessionType": "Aqua",
-        "KeepAlive": True,
-        "ThrottleInterval": 20,
         "Umask": 0o077,
         "StandardOutPath": str(PurePosixPath(paths.logs) / (role + ".log")),
         "StandardErrorPath": str(PurePosixPath(paths.logs) / (role + ".log")),
     }
+    if role == "standby-refresh":
+        plist.update(RunAtLoad=True, StartInterval=3600)
+    else:
+        plist.update(KeepAlive=True, ThrottleInterval=20)
     plistlib.dump(plist, sys.stdout.buffer)
 
 
