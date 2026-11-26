@@ -295,3 +295,16 @@ def test_private_installer_preserves_a_real_state_directory(tmp_path):
     with pytest.raises(CirraError, match="managed state-directory symlink"):
         install(None, work, None, tmp_path / "absent")
     assert sentinel.read_text() == "original"
+
+
+def test_enrollment_checks_actual_recovery_credential_on_each_host():
+    policy = SimpleNamespace(cluster_id="123", namespace="lab")
+    voters = MemoryQuorum()
+    original = b"x" * 32
+    coordination.verify_transfer_key(voters, policy, original, initialize=True)
+    coordination.verify_transfer_key(voters, policy, original)
+    for initialize in (True, False):
+        with pytest.raises(CirraError, match="recovery credential differs"):
+            coordination.verify_transfer_key(voters, policy, b"y" * 32, initialize=initialize)
+    assert len(voters.get(coordination.TRANSFER_KEY)) == 64
+    assert original.decode() not in voters.get(coordination.TRANSFER_KEY)

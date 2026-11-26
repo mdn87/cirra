@@ -1,10 +1,11 @@
 """Enrollment and fail-closed startup for a quorum-backed state directory."""
 
+import hmac
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from cirra.domain import CirraError
+from cirra.domain import CirraError, canonical
 from cirra.job_queue import Queue
 from cirra.publish import write_receipt
 from cirra.queue_format import activate, live_format
@@ -13,6 +14,16 @@ from cirra.shared_inbox import SharedInbox
 
 MARKER = "coordination-state.json"
 INTENT = "coordination-enrollment.json"
+TRANSFER_KEY = "data/transfer-key"
+
+
+def verify_transfer_key(client, policy, key, *, initialize=False):
+    context = canonical(["cirra.private-transfer", policy.cluster_id, policy.namespace]).encode()
+    proof = hmac.digest(key, context, "sha256").hex()
+    if initialize and client.compare({TRANSFER_KEY: None}, {TRANSFER_KEY: proof}):
+        return
+    if client.get(TRANSFER_KEY) != proof:
+        raise CirraError("the private recovery credential differs from the enrolled primary")
 
 
 def shared_state(directory):
@@ -83,7 +94,7 @@ def enroll(config, directory, credential, *, initialize):
     root = Path(directory).resolve()
     if not root.is_dir():
         raise CirraError("the primary or restored standby state directory must already exist")
-    configured_witness(config, credential)
+    witness = configured_witness(config, credential)
     marker = root / MARKER
     desired = {"cluster": policy.cluster_id, "namespace": policy.namespace}
     for anchor in (root / INTENT, marker):
@@ -96,6 +107,7 @@ def enroll(config, directory, credential, *, initialize):
         if live_format(root) != 2:
             raise CirraError("completed coordination enrollment requires queue format 2")
         inbox.check()
+        verify_transfer_key(quorum, policy, witness)
         return {"enrolled": policy.node, "namespace": policy.namespace, "daily_usage": usage}
 
     def preflight():
@@ -120,6 +132,7 @@ def enroll(config, directory, credential, *, initialize):
         with owner.maintaining():
 
             def finish_primary():
+                verify_transfer_key(owner, policy, witness, initialize=True)
                 DataAuthority(inbox).initialize(owner)
                 inbox.initialize(owner)
                 finish()
@@ -136,6 +149,7 @@ def enroll(config, directory, credential, *, initialize):
     else:
         with enrollment_locks(root):
             inbox.check()
+            verify_transfer_key(quorum, policy, witness)
             preflight()
             finish()
     return {"enrolled": policy.node, "namespace": policy.namespace, "daily_usage": usage}
