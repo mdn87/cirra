@@ -355,6 +355,33 @@ def test_required_gate_cannot_send_over_an_unconfirmed_completion(tmp_path):
         assert survivor.identifier == "11" and api.writes == ["POST", "PATCH"]
 
 
+def test_required_gate_can_retry_after_a_failed_local_checkpoint(tmp_path, monkeypatch):
+    cluster, api = Cluster(), Provider()
+    route = SimpleNamespace(
+        repository="example/repo",
+        repository_id="42",
+        publisher={"app_id": 42},
+        policy=SimpleNamespace(digest="policy"),
+    )
+
+    def gate(root):
+        return RequiredReviewCheck(
+            root, route, {"head_sha": "a" * 40}, lambda: api, lambda: "b" * 40
+        )
+
+    def unavailable(*_args):
+        raise OSError("checkpoint unavailable")
+
+    with monkeypatch.context() as patch, bind_owner(cluster.elect()):
+        patch.setattr("cirra.review_gate.write_receipt", unavailable)
+        with pytest.raises(OSError, match="checkpoint unavailable"):
+            gate(tmp_path / "primary").start()
+        assert api.writes == []
+    with bind_owner(cluster.elect()):
+        gate(tmp_path / "standby").start()
+        assert api.writes == ["POST"]
+
+
 def test_audit_uses_its_original_creation_marker_after_host_loss():
     api, cluster = Provider(), Cluster()
     publisher = AuditCheckPublisher("example/repo", 42, "fixture", http=api)

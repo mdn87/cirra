@@ -1,0 +1,29 @@
+[Unit]
+Description=Back up and verify Cirra private state for version %i
+Wants=network-online.target
+Requires=cirra-backup-witness.socket
+After=network-online.target cirra-backup-witness.socket
+
+[Service]
+Type=oneshot
+User=matt
+Group=matt
+UMask=0077
+Environment=HOME=/home/matt
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/cirra-ha/private/data-host.env
+LoadCredential=witness:/run/cirra-backup-witness.sock
+LoadCredential=repository:/etc/cirra-ha/private/backup-repository.env
+LoadCredential=approval:/etc/cirra-ha/private/approved-repository.env
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=-/etc/cirra-ha/private/backup-ssh:/home/matt/.ssh
+ReadWritePaths=/srv/lugos/state/cirra-ha/current.restores/%i.private-transfer
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TimeoutStartSec=25min
+ExecCondition=/usr/bin/test /srv/lugos/state/cirra-ha/current -ef /srv/lugos/state/cirra-ha/current.restores/%i
+ExecStart=/srv/lugos/services/cirra/current/.venv/bin/python -I -B -m cirra.private_transfer backup \
+    --state-dir /srv/lugos/state/cirra-ha/current.restores/%i --expected-host ${CIRRA_LOCAL_DATA_HOST} \
+    --witness-credential %d/witness --repository-env %d/repository --approval-file %d/approval

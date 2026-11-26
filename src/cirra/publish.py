@@ -639,8 +639,11 @@ def publish(
         }
         staged = False
         try:
-            with fence.writing(body_digest, receipt["native_id"]):
-                checkpoint(store, claim, path, receipt)
+            with fence.writing(
+                body_digest,
+                receipt["native_id"],
+                prepare=lambda: checkpoint(store, claim, path, receipt),
+            ):
                 staged = True
                 result = publisher.write(report, metadata, receipt["native_id"])
                 if (

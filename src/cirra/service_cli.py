@@ -17,6 +17,14 @@ from cirra.worker import Processor, run_worker
 
 def register(commands):
     for name, help_text in (
+        ("enroll-coordination", "enroll the primary or a restored standby with its quorum"),
+        ("coordination-status", "show shared admission and this host's private-state readiness"),
+        ("install-standby-snapshot", "install a verified private archive for a data-host transfer"),
+        ("refresh-standby-snapshot", "cache the approved donor's latest verified private archive"),
+        (
+            "freeze-coordination",
+            "stop private writes for a verified transfer to the other data host",
+        ),
         ("serve-webhooks", "accept authenticated events on loopback HTTP"),
         ("worker", "process durable review jobs until stopped"),
         ("enqueue", "queue current PR/MR CI and optional review without a webhook"),
@@ -29,6 +37,17 @@ def register(commands):
         parser.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
         if name == "serve-webhooks":
             parser.add_argument("--port", type=int, default=8787)
+        elif name == "enroll-coordination":
+            parser.add_argument("--mode", choices=("initialize", "join"), required=True)
+            parser.add_argument(
+                "--source-state",
+                type=Path,
+                help="compare a replacement root with its quiesced legacy primary",
+            )
+        elif name == "freeze-coordination":
+            parser.add_argument("--target-node", required=True)
+        elif name == "install-standby-snapshot":
+            parser.add_argument("--archive", required=True, type=Path)
         elif name == "worker":
             parser.add_argument("--once", action="store_true")
         elif name == "enqueue":
@@ -139,6 +158,11 @@ def run(args, credential, capture):
                 pass
         return 0
     if args.command not in (
+        "enroll-coordination",
+        "coordination-status",
+        "install-standby-snapshot",
+        "refresh-standby-snapshot",
+        "freeze-coordination",
         "serve-webhooks",
         "worker",
         "enqueue",
@@ -148,6 +172,39 @@ def run(args, credential, capture):
     ):
         return None
     config = load_service(args.service_config)
+    if args.command == "refresh-standby-snapshot":
+        from cirra.standby_install import refresh
+
+        print(json.dumps(refresh(config, args.state_dir, credential)))
+        return 0
+    if args.command == "install-standby-snapshot":
+        from cirra.standby_install import install
+
+        print(json.dumps(install(config, args.state_dir, credential, args.archive)))
+        return 0
+    if args.command in ("coordination-status", "freeze-coordination"):
+        from cirra.coordination import coordination_control
+
+        result = coordination_control(
+            config, args.state_dir, credential, getattr(args, "target_node", None)
+        )
+        print(json.dumps(result))
+        return 0
+    if args.command == "enroll-coordination":
+        from cirra.coordination import enroll
+
+        print(
+            json.dumps(
+                enroll(
+                    config,
+                    args.state_dir,
+                    credential,
+                    initialize=args.mode == "initialize",
+                    source=args.source_state,
+                )
+            )
+        )
+        return 0
     if args.command == "recover-webhooks":
         from cirra.webhook_recovery import recover
 

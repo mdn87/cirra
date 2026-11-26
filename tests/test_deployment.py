@@ -67,11 +67,20 @@ def deployment(tmp_path):
     }
 
     def rollback(
-        up=True, invocation="new-worker", fail_restore=False, worker_pid=None, reader_port=None
+        up=True,
+        invocation="new-worker",
+        fail_restore=False,
+        worker_pid=None,
+        reader_port=None,
+        worker_state="running",
     ):
         (state / "worker-status.json").write_text(
             json.dumps(
-                {"state": "running", "pid": worker_pid or os.getpid(), "invocation_id": invocation}
+                {
+                    "state": worker_state,
+                    "pid": worker_pid or os.getpid(),
+                    "invocation_id": invocation,
+                }
             )
         )
         return subprocess.run(
@@ -110,6 +119,14 @@ def test_rollback_refuses_incompatible_schema_before_switch(deployment):
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
     result = rollback()
     assert result.returncode and "Preserve the database" in result.stderr
+    assert (service / "current").resolve() == current
+
+
+def test_rollback_refuses_a_state_path_outside_the_managed_selection(deployment):
+    rollback, service, state, current = deployment
+    (service / "deployment-state-path").write_text(str(state / "different") + "\n")
+    result = rollback()
+    assert result.returncode and "configured deployment state path" in result.stderr
     assert (service / "current").resolve() == current
 
 
@@ -240,6 +257,25 @@ def test_launcher_child_must_belong_to_the_current_worker_unit(deployment):
             assert result.returncode == 0, result.stderr
         finally:
             child.terminate()
+
+
+@pytest.mark.parametrize(
+    ("enrolled", "status", "invocation", "expected"),
+    [
+        (True, "standby", "new-worker", True),
+        (False, "standby", "new-worker", False),
+        (True, "standby", "old-worker", False),
+        (True, "waiting_for_quorum", "new-worker", False),
+    ],
+)
+def test_standby_readiness_requires_enrollment_and_current_invocation(
+    deployment, enrolled, status, invocation, expected
+):
+    rollback, _, state, _ = deployment
+    if enrolled:
+        (state / "coordination-state.json").write_text('{"cluster":"cluster","namespace":"cirra"}')
+    result = rollback(worker_state=status, invocation=invocation)
+    assert (result.returncode == 0) is expected, result.stderr
 
 
 def test_unrelated_process_cannot_satisfy_worker_readiness(deployment):
@@ -414,7 +450,12 @@ def test_operator_deploy_and_printed_rollback(format_transition, monkeypatch, wi
         for line in result.stdout.splitlines()
         if line.startswith("rollback: ")
     ]
-    assert shlex.split(command) == [
+    argv = shlex.split(command)
+    env_args = argv[1 : argv.index("bash")]
+    assert argv[0] == "env"
+    assert f"CIRRA_STATE={os.environ['CIRRA_STATE']}" in env_args
+    assert "CIRRA_AUDIT_READ_PORT=9897" in env_args
+    assert argv[argv.index("bash") :] == [
         "bash",
         "scripts/deploy-release.sh",
         "--rollback",
@@ -422,7 +463,9 @@ def test_operator_deploy_and_printed_rollback(format_transition, monkeypatch, wi
         "--host",
         "fixture-host",
     ]
-    subprocess.run(shlex.split(command), cwd=SCRIPT.parents[1], check=True, timeout=25)
+    for entry in env_args:
+        monkeypatch.delenv(entry.split("=", 1)[0])
+    subprocess.run(argv, cwd=SCRIPT.parents[1], check=True, timeout=25)
     assert (service / "current").resolve() == previous
     assert policy.read_bytes() == original
     assert reader_url in checks.read_text().splitlines()[len(deploy_checks) :]

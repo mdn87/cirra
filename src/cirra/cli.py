@@ -182,6 +182,32 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
+        from cirra.coordination import shared_state
+
+        enrolled = bool(getattr(args, "state_dir", None)) and shared_state(args.state_dir)
+        if enrolled and (
+            args.command
+            not in (
+                "enroll-coordination",
+                "coordination-status",
+                "install-standby-snapshot",
+                "refresh-standby-snapshot",
+                "freeze-coordination",
+                "worker",
+                "serve-webhooks",
+                "recover-webhooks",
+                "health",
+                "jobs",
+                "list-cold-evidence",
+                "serve-audit-reads",
+                "audit-jobs",
+                "show",
+            )
+            or (args.command == "show" and args.export)
+        ):
+            raise CirraError(
+                "this state directory is enrolled; use its coordinated service for writes"
+            )
         service_result = service_cli.run(
             args, token_from, partial(capture_change, strict_ci_reads=True)
         )
@@ -317,7 +343,7 @@ def main(argv=None):
             return 0 if args.command == "prepare-review" or report["status"] == "complete" else 1
         if not (args.state_dir / "cirra.sqlite3").is_file():
             raise CirraError("state database does not exist; run review first")
-        report = Store(args.state_dir).latest_report(args.run)
+        report = Store(args.state_dir, readonly=enrolled).latest_report(args.run)
         if args.export:
             export_report(report, args.state_dir)
         print(json.dumps(report, indent=2) if args.format == "json" else render_markdown(report))

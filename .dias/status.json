@@ -8,10 +8,10 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-26T18:05:41Z",
+  "assessedAt": "2026-11-26T19:56:31Z",
   "confidence": "authoritative",
-  "currentMilestone": "The Intel Mac ran a fresh subscription-backed Cirra review, found the seeded defect and read back its saved report. Three local voters also preserved daily limits through a simulated primary failure.",
-  "remainingSummary": "GitHub and the production publisher still use lugos-host. Durable admission, shared publishing ownership, daily limits across hosts and the live failover drill remain. The public route and physical voting grants await verified review.",
+  "currentMilestone": "Both service origins passed a three-voter failover and private-state return on the Intel Mac. The live audit reader served all 45 attempts and 28 gate receipts to Taskmaster.",
+  "remainingSummary": "The public webhook still uses lugos-host. Voter connectivity, Mac backup access and a live cutover need verification. Nine audits await the next UTC window. The fork test needs a second GitHub owner.",
   "nextChipId": null,
   "source": {
     "label": "Worker receipts, GitHub checks, host measurements and off-host restore verification",

@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from cirra import events
 from cirra.domain import CirraError, DeliveryConflict, canonical, utc_now
@@ -80,15 +81,34 @@ class WebhookServer(ThreadingHTTPServer):
     request_deadline = 10
 
     def __init__(self, address, config, directory, credential):
+        from cirra.coordination import connect
+
         if address[0] != "127.0.0.1":
             raise CirraError("webhook listener must bind to 127.0.0.1 behind an HTTPS proxy")
         self.config, self.queue = config, Queue(directory, config.max_jobs)
+        self.shared_inbox = connect(config, directory, credential)
+        self.selector, self.credential = Path(directory).absolute(), credential
+        self.selection_lock = threading.Lock()
         self.secrets = {name: credential(route.secret_env) for name, route in config.routes.items()}
         if any(not isinstance(secret, str) or len(secret) < 32 for secret in self.secrets.values()):
             raise CirraError("service webhook secrets must contain at least 32 characters")
         self.slots = threading.BoundedSemaphore(16)
         activate(self.queue.directory.parent)
         super().__init__(address, Handler)
+
+    def intake(self):
+        from cirra.coordination import connect
+
+        if self.shared_inbox is None:
+            return self.queue
+        with self.selection_lock:
+            selected = self.selector.resolve(strict=True)
+            if selected != self.shared_inbox.queue.directory.parent:
+                self.shared_inbox = connect(self.config, selected, self.credential)
+            return self.shared_inbox
+
+    def enqueue(self, route, hint):
+        return self.intake().enqueue(route, hint)
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -219,6 +239,11 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_GET(self):
+        if self.path == "/healthz" and self.server.shared_inbox is not None:
+            try:
+                self.server.intake().check()
+            except (CirraError, OSError):
+                return self.respond(503, {"status": "admission unavailable"})
         self.respond(
             200 if self.path == "/healthz" else 404,
             {"status": "ok"} if self.path == "/healthz" else {"error": "not found"},
@@ -255,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
                 raw,
                 dict(self.headers),
                 self.server.secrets[route.name],
-                self.server.queue,
+                self.server,
                 self.record_eligible,
             )
         except DeliveryConflict:

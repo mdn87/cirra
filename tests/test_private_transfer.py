@@ -402,6 +402,17 @@ def test_mac_schedule_keeps_credentials_and_primary_out_of_program_arguments():
     assert set(job["EnvironmentVariables"]) == {"PATH"}
 
 
+def test_transfer_credential_must_be_the_file_that_was_checked(tmp_path, monkeypatch):
+    credential = tmp_path / "witness"
+    other = tmp_path / "other"
+    for path in (credential, other):
+        path.write_bytes(KEY)
+        path.chmod(0o600)
+    monkeypatch.setattr(transfer, "read_locked_file", lambda path: other.open("rb"))
+    with pytest.raises(CirraError, match="changed while opening"):
+        transfer._credential_bytes(credential)
+
+
 def test_offline_cli_uses_separate_raw_credential_and_requires_frozen_native_donor(tmp_path):
     state, _ = fixture(tmp_path)
     credential = tmp_path / "witness"

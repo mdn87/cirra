@@ -142,7 +142,9 @@ def recover(config, args, credential):
         ids = list(dict.fromkeys(int(native_id(value)) for value in args.delivery_id))
     else:
         ids = recent_ids(http, path, number(args.max_pages, "page limit", 1, 100, integral=True))
-    queue = Queue(args.state_dir, config.max_jobs)
+    from cirra.coordination import connect
+
+    queue = connect(config, args.state_dir, credential) or Queue(args.state_dir, config.max_jobs)
     result = {"seen": len(ids), "accepted": 0, "duplicate": 0, "ignored": 0, "unresolved": []}
     for index, identifier in enumerate(ids):
         try:

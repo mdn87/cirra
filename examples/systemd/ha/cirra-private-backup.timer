@@ -1,0 +1,11 @@
+[Unit]
+Description=Check whether the authoritative Cirra host needs a new verified recovery point
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Persistent=true
+AccuracySec=1min
+Unit=cirra-private-backup.service
+
+[Install]
+WantedBy=timers.target

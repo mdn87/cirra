@@ -10,6 +10,7 @@ import yaml
 from cirra.config import UniqueLoader, load_config
 from cirra.domain import CirraError, digest, fields, number, string
 from cirra.github import repository_name
+from cirra.quorum import QuorumConfig
 
 
 def read_yaml(path):
@@ -79,12 +80,13 @@ class ServiceConfig:
     max_jobs_per_day: int = 30
     max_retry_seconds: float = 3600
     reconcile_seconds: float = 0
+    coordination: QuorumConfig | None = None
 
 
 def load_service(path):
     path = Path(path).resolve()
     data, _ = read_yaml(path)
-    fields(data, ["version", "routes"], ["worker"], label="service configuration")
+    fields(data, ["version", "routes"], ["worker", "coordination"], label="service configuration")
     if type(data["version"]) is not int or data["version"] != 1:
         raise CirraError("unsupported service configuration version")
     if not isinstance(data["routes"], list) or not 1 <= len(data["routes"]) <= 32:
@@ -223,4 +225,7 @@ def load_service(path):
             review_enabled,
             branches,
         )
-    return ServiceConfig(routes=routes, **settings)
+    coordination = (
+        QuorumConfig.load(path.parent, data["coordination"]) if "coordination" in data else None
+    )
+    return ServiceConfig(routes=routes, coordination=coordination, **settings)

@@ -1,0 +1,25 @@
+[Unit]
+Description=Fetch and verify the eligible donor's private Cirra snapshot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=matt
+Group=matt
+UMask=0077
+Environment=HOME=/home/matt
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/cirra-ha/private/standby-repository.env
+LoadCredential=restic-password:/etc/cirra-ha/private/standby-restic-password
+Environment=RESTIC_PASSWORD_FILE=%d/restic-password
+LoadCredentialEncrypted=glas-bws-token:/etc/credstore.encrypted/glas-lugos-host-runtime
+ExecStart=/usr/bin/python3 /srv/lugos/runtimes/glas/host-runtime.py /srv/lugos/runtimes/glas/config/cirra-standby-refresh.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=-/etc/cirra-ha/private/standby-ssh:/home/matt/.ssh
+ReadWritePaths=/srv/lugos/state/cirra-ha-cache /srv/lugos/state/glas/cirra-standby-refresh
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TimeoutStartSec=15min

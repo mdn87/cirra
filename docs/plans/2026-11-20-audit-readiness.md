@@ -220,3 +220,21 @@ and a fixed bandwidth limit, without publishing a numeric limit or a
 Funnel-specific denial-of-service commitment there. Cirra's local admission
 limits protect the receiver. Upstream capacity remains unverified.
 [Tailscale Funnel limitations](https://tailscale.com/docs/features/tailscale-funnel#requirements-and-limitations)
+
+## November 26 reader and recovery measurements
+
+At 18:27 UTC the live, unprivileged audit reader served 45 attempts across
+35 heads and 28 gate receipts to the Taskmaster client. It used schema 3.
+The retained seven-day sample ending at 19:06 UTC contained 129 reader GETs.
+The median took 1.00 ms and p95 took 4.63 ms. Seventeen returned 404 for
+heads without a gate receipt. All 25 webhook POSTs in the sample returned
+202. Their median took 73.84 ms and the slowest took 544.94 ms.
+
+Both data hosts verified the 18:30 UTC recovery point. SQLite integrity and
+foreign-key checks passed, and the signed evidence included 220 current and
+299 historical witnesses. In a second rehearsal at 19:21 UTC, the Intel Mac
+ran the two service origins against three independent voters on that machine. All 45 health
+probes returned 200 during takeover and the standby completed the recovered
+test job in 6.25 seconds. A physical host loss behind the public webhook still
+requires the three-host rollout and an end-to-end drill.
+[Service rehearsal](../coordinated-service.md#repeat-the-service-rehearsal)

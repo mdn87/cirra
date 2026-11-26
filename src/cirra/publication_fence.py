@@ -83,10 +83,12 @@ class PublicationFence:
         return known
 
     @contextmanager
-    def writing(self, proof, identifier):
-        """Grant this invocation one send. A crash or ambiguous reply leaves its slot held."""
+    def writing(self, proof, identifier, *, prepare=None):
+        """Run the local checkpoint, then grant one send. An uncertain send keeps its slot."""
         self.check_binding()
         if self.owner is None:
+            if prepare is not None:
+                prepare()
             yield
             return
         if not self.checked or not proof:
@@ -94,6 +96,14 @@ class PublicationFence:
         pending = digest(["pending", identifier, proof])
         self.compare(self.previous, pending)
         self.checked = False
+        if prepare is not None:
+            try:
+                prepare()
+            except Exception:
+                # The adapter has not received its send permit. Release only by
+                # comparing both this reservation and the original owner's lease.
+                self.compare(pending, self.previous or VACANT)
+                raise
         token = _SEND.set((self.owner, self.key, proof, identifier))
         try:
             yield

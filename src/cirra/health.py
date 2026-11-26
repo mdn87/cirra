@@ -137,7 +137,19 @@ def check(
     heartbeat = None
     if status_path.exists():
         try:
-            heartbeat = _parse(_record(queue, status_path).get("heartbeat_at"))
+            status = _record(queue, status_path)
+            heartbeat = _parse(status.get("heartbeat_at"))
+            if status.get("state") == "waiting_for_quorum":
+                problems.append(
+                    {"kind": "coordination", "detail": "worker cannot confirm quorum ownership"}
+                )
+            if status.get("state") == "waiting_for_private_state":
+                problems.append(
+                    {
+                        "kind": "coordination",
+                        "detail": "no worker owns a verified current private state",
+                    }
+                )
         except (CirraError, OSError, ValueError):
             heartbeat = None
     if heartbeat is None:
