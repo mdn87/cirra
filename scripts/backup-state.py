@@ -131,11 +131,19 @@ def exclusive(path, *, shared=False):
 
 def require_idle(state):
     for queue in ("queue", "audit-queue"):
+        root = state / queue
         try:
-            entries = os.scandir(state / queue)
+            info = root.lstat()
         except FileNotFoundError:
             continue
-        with entries:
+        if not stat.S_ISDIR(info.st_mode):
+            raise RecoveryError("the queue directory must be a real directory in the snapshot")
+        for parent, dirs, files in os.walk(root, followlinks=False, onerror=raise_io_error):
+            if any((Path(parent) / name).is_symlink() for name in (*dirs, *files)):
+                raise RecoveryError(
+                    "a queue directory or record points outside its stored location"
+                )
+        with os.scandir(root) as entries:
             for entry in entries:
                 if not entry.name.endswith(".json"):
                     continue
@@ -227,6 +235,7 @@ def verify_state(state, key):
     for path in (state, observer, history):
         if not stat.S_ISDIR(path.lstat().st_mode) or path.resolve() != path:
             raise RecoveryError("unexpected restored state or observer directory")
+    require_idle(state)
     if not stat.S_ISREG(db.lstat().st_mode) or any(
         Path(str(db) + suffix).exists() for suffix in ("-journal", "-wal")
     ):
@@ -303,6 +312,10 @@ def socket_witness(path):
     return key
 
 
+def raise_io_error(error):
+    raise error
+
+
 @contextmanager
 def watch_state(state):
     """Watch the local Linux state tree before listing or copying its durable entries."""
@@ -323,14 +336,11 @@ def watch_state(state):
             raise RecoveryError("could not watch every directory in the online backup")
         return wd
 
-    def unreadable(error):
-        raise error
-
     try:
         root_watch = add(state)
         device = state.stat().st_dev
         hard_links = {}
-        for parent, names, files in os.walk(state, followlinks=False, onerror=unreadable):
+        for parent, names, files in os.walk(state, followlinks=False, onerror=raise_io_error):
             # Watch each child before os.walk can enumerate that child's contents.
             for name in names.copy():
                 path = Path(parent) / name

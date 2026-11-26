@@ -364,7 +364,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T11:04:43Z",
-        "updatedAt": "2026-11-26T05:49:13Z"
+        "updatedAt": "2026-11-26T06:53:42Z"
       },
       "evidence": [
         {
@@ -438,6 +438,18 @@
           "kind": "note",
           "at": "2026-11-26T05:49:13Z",
           "message": "The BWS-only restore verified 415 signed witnesses and SQLite in 9.25 seconds. The webhook and worker kept serving throughout the drill."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:nov26-online",
+          "kind": "note",
+          "at": "2026-11-26T06:53:42Z",
+          "message": "A scheduled six-hour backup recorded zero pause. The 9.70-second restore verified SQLite and 467 witness signatures. PR 55 passed both audits."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:nov26-intelmac",
+          "kind": "note",
+          "at": "2026-11-26T06:53:42Z",
+          "message": "The Intel Mac refreshed the verified snapshot and recovered 44 audits and 130 reports offline. Its pinned observer image passed 12 tests. Public failover remains open."
         }
       ]
     },

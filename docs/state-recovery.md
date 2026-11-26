@@ -2,7 +2,7 @@
 
 The recovery job takes a consistent off-host copy of the service database, durable queues, audit history, observer evidence and publication receipts. It then restores the entire snapshot to new private scratch and checks the recovered data. The restic repository must already exist on a separate host and have credentials available independently of the Cirra host.
 
-Matt allows up to 24 hours of data loss and requires Cirra to keep serving through loss of its primary host. The six-hour online backup leaves time to recover from a missed capture. During a live drill on November 26, the worker and webhook kept their systemd invocation IDs. A fresh off-host snapshot restored in 9.33 seconds, passed SQLite integrity and foreign-key checks, and verified 190 current and 269 historical witnesses. Serving webhooks and publishing reviews through host loss still requires a tested standby.
+Matt allows up to 24 hours of data loss and requires Cirra to keep serving through loss of its primary host. The six-hour online backup leaves time to recover from a missed capture. The scheduled November 26 06:30 UTC capture recorded zero seconds of service pause. Restoration took 9.70 seconds, passed SQLite integrity and foreign-key checks, and verified 194 current and 273 historical witness signatures. The Intel Mac recovered the same database independently. Public admission and review publication still depend on the primary host.
 
 ## Install the recovery job
 
@@ -75,6 +75,29 @@ The scheduled job keeps its tagged Cirra snapshots on Nodens. Monthly maintenanc
 ## Restoring service after host loss
 
 Matt approved `intelmac` as the first standby for `lugos-host`. It has local FileVault storage, an amd64 Linux Docker engine and a running Cloudflare connector. Private standby state belongs on its local disk. Nodens holds the encrypted restic repository and also provides LAN DNS. The 4070 PC has no standby assignment.
+
+The Intel Mac checks the primary's verified recovery point every hour while the operator's macOS login session is active. Its sole transfer key is restricted to the Mac's inventoried source address and a fixed export command. The primary reads its own root-owned verification receipt and streams only that snapshot's Cirra directory from the approved restic repository. The client supplies its last snapshot ID so a successful check can skip an unchanged transfer. The transfer credentials cannot select an arbitrary backup, path or shell command.
+
+The local file `~/.local/share/cirra-standby/current.zip` contains `state.tar` and `verified.json`. A complete transfer, valid archive checksums, a successful source restore and a capture within 24 hours are required to replace it. A failed transfer preserves the previous file. The transfer keeps 2 GiB of disk space in reserve. The encrypted history remains on Nodens. To check freshness while the primary is unreachable, run this on the Mac.
+
+```sh
+root="$HOME/.local/share/cirra-standby"
+/usr/local/bin/python3.13 -I "$root/standby-snapshot.py" status
+launchctl print "gui/$(id -u)/foo.newman.cirra-standby-refresh"
+```
+
+For recovery, inspect `verified.json` and unpack the tar into new private scratch. The tar includes the logical path `srv/lugos/state/cirra`. On November 26 the Mac checked the scheduled copy with outbound networking disabled. SQLite reported 44 audits, 130 saved reports, a clean integrity check and no broken foreign keys. The Mac checked the current and historical witness counts and historical content hashes. The primary had verified the signatures with its separate BWS credential. On the Mac, the dedicated `colima-cirra-standby` VM also ran an offline fixture review, read back the saved report and passed 12 workflow and audit-queue tests using the image ID pinned by production policy.
+
+To rebuild the transfer, install `scripts/standby-snapshot.py` as a root-owned file at `/usr/local/libexec/cirra-standby-snapshot.py` on the primary and in the Mac's mode-0700 standby directory. Create a dedicated Ed25519 key in that directory. Authorize its public key on the primary with OpenSSH `restrict`, `from="<standby LAN address>"`, and the following fixed `command`. The existing operator account must be allowed to start this command.
+
+```sh
+/usr/bin/sudo -n /usr/bin/systemd-run --quiet --pipe --wait --collect \
+  -p EnvironmentFile=/etc/lugos/restic-lugos-host.env -p EnvironmentFile=/etc/cirra-state-backup.conf \
+  -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=read-only -p PrivateTmp=yes \
+  -p UMask=0077 -p RuntimeMaxSec=10min /usr/bin/python3 -I /usr/local/libexec/cirra-standby-snapshot.py export
+```
+
+Create the private SSH config `source.ssh` in the Mac's standby directory. Define `Host cirra-standby-source` with the inventoried primary destination, operator user, `BindAddress` set to the approved Mac address, and the dedicated `IdentityFile`. Pin the primary's independently authenticated host key in a dedicated `UserKnownHostsFile`. Set `StrictHostKeyChecking yes`, `IdentitiesOnly yes`, `IdentityAgent none`, `BatchMode yes` and `ClearAllForwardings yes`. Configure the user's LaunchAgent to run the helper's `refresh` action on load and at a 3,600-second interval. Check its last exit status and compare the local snapshot ID to the primary's `last-verified.json`. FileVault unlock and the operator's login are required after a Mac reboot with this configuration.
 
 The current public Tailscale Funnel terminates on `lugos-host`. A candidate public route is a dedicated Cirra hostname with a Cloudflare Tunnel connector on each serving machine. Both origins would acknowledge a delivery only after durable admission. A successful test must cover a primary failure during admission, a network partition and primary rejoin, with a single externally visible review per delivery. GitHub records failed webhooks and requires explicit redelivery. [Cloudflare Tunnel failover](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-availability/) · [GitHub delivery failures](https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries)
 

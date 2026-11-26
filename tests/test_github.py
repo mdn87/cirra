@@ -14,9 +14,9 @@ import pytest
 from cirra import provenance, release
 from cirra.cli import main
 from cirra.config import MergeGate
-from cirra.domain import CirraError, digest
+from cirra.domain import CirraError, ProviderIdentityMismatch, digest
 from cirra.fixture import FixtureProvider
-from cirra.github import GitHubClient, GitHubError, NoRedirect, collect, export_capture
+from cirra.github import GitHubClient, GitHubError, NoRedirect, checks_from, collect, export_capture
 from cirra.policy import assess_checks
 from cirra.session import import_response, prepare
 from cirra.store import Store
@@ -611,6 +611,14 @@ def test_redirect_does_not_forward_credentials():
     with pytest.raises(GitHubError, match="redirect") as error:
         client_with(transport, token="canary-secret").get("pulls/9")
     assert "canary-secret" not in str(error.value)
+    assert len(transport.requests) == 1
+    assert isinstance(error.value, ProviderIdentityMismatch)
+
+
+def test_worker_stops_strict_ci_collection_on_a_canonical_redirect():
+    transport = Transport([(301, b"", {"Location": "https://api.github.com/repos/example/new"})])
+    with pytest.raises(ProviderIdentityMismatch):
+        checks_from(client_with(transport), HEAD, 2, strict_ci_reads=True)
     assert len(transport.requests) == 1
 
 

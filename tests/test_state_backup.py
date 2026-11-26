@@ -339,7 +339,34 @@ def test_quiescence_refuses_an_unreadable_queue_entry(tmp_path):
         backup.require_idle(tmp_path)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Linux service queue directory semantics")
+@pytest.mark.parametrize("directory", ["queue", "audit-queue"])
+@pytest.mark.parametrize("exists", [True, False])
+def test_capture_and_restore_require_real_queue_directories(tmp_path, directory, exists):
+    state, key, _, _ = example(tmp_path)
+    target = tmp_path / "separate-queue"
+    if exists:
+        target.mkdir()
+    (state / directory).symlink_to(target, target_is_directory=True)
+    with pytest.raises(backup.RecoveryError, match="queue directory"):
+        backup.require_idle(state)
+    with pytest.raises(backup.RecoveryError, match="queue directory"):
+        backup.verify_state(state, key)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux service queue directory semantics")
+def test_restore_preserves_the_boundary_of_archived_queue_records(tmp_path):
+    state, key, _, _ = example(tmp_path)
+    archive = state / "queue" / "archive"
+    archive.mkdir(parents=True)
+    (archive / "record.json").symlink_to(tmp_path / "outside.json")
+    with pytest.raises(backup.RecoveryError, match="stored location"):
+        backup.verify_state(state, key)
+
+
 def test_quiescence_propagates_queue_directory_io_error(tmp_path, monkeypatch):
+    (tmp_path / "queue").mkdir()
+
     def denied(directory):
         raise PermissionError("unreadable queue")
 

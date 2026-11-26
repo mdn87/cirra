@@ -8,10 +8,10 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-26T05:49:13Z",
+  "assessedAt": "2026-11-26T06:53:42Z",
   "confidence": "authoritative",
-  "currentMilestone": "A BWS-only restore verified all 415 signed witnesses and passed SQLite checks while the webhook and worker stayed online.",
-  "remainingSummary": "Matt accepts up to 24 hours of data loss and requires continuous service through host loss. Cirra has one serving host. Live storage encryption remains open by decision.",
+  "currentMilestone": "The six-hour backup ran without pausing Cirra. The Intel Mac restored 44 audits and 130 reports and checks hourly for a newer verified copy.",
+  "remainingSummary": "The live webhook and review publisher still depend on lugos-host. The Intel Mac needs reviewer sign-in, independent admission and tested publisher fencing.",
   "nextChipId": null,
   "source": {
     "label": "Worker receipts, GitHub checks, host measurements and off-host restore verification",
