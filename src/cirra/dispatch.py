@@ -5,6 +5,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -47,6 +48,12 @@ ENVIRONMENT = frozenset(
 def tool_environment(source=None):
     source = os.environ if source is None else source
     env = {k: v for k, v in source.items() if k.upper() in ENVIRONMENT}
+    if sys.platform == "darwin":
+        import pwd
+
+        # Claude selects its login Keychain account by USER. Derive it from the
+        # process identity even when the launching shell supplies another name.
+        env["USER"] = pwd.getpwuid(os.geteuid()).pw_name
     env.update(CLAUDE_CODE_SAFE_MODE="1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
     return env
 

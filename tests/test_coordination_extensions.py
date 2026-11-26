@@ -2,6 +2,7 @@ import copy
 import hashlib
 import hmac
 import json
+import os
 import sys
 from dataclasses import replace
 
@@ -26,9 +27,17 @@ def test_reviewer_environment_excludes_credentials_and_runtime_injection():
         "NODE_OPTIONS": "malicious",
         "HTTP_PROXY": "credentials",
         "CLAUDE_CONFIG_DIR": "evil",
+        "USER": "spoofed-account",
+        "SSH_AUTH_SOCK": "secret",
     }
     env = tool_environment(source)
     assert env["HOME"] == "login-location"
+    if sys.platform == "darwin":
+        import pwd
+
+        assert env["USER"] == pwd.getpwuid(os.geteuid()).pw_name
+    else:
+        assert "USER" not in env
     assert all(
         value != "secret" and value != "malicious" and value != "evil" for value in env.values()
     )
