@@ -8,6 +8,7 @@ import sys
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,11 +54,13 @@ def sender(data, code=0, expected="-"):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="standby uses POSIX file locks and permissions")
-def test_refresh_keeps_last_good_copy_and_recovers(standby, tmp_path):
+def test_refresh_keeps_last_good_copy_and_recovers(standby, tmp_path, monkeypatch):
     root = tmp_path / "standby"
     root.mkdir(mode=0o700)
     first = receipt(hours=2)
     data = package(first)
+    space = SimpleNamespace(free=standby.RESERVE + 2 * len(data))
+    monkeypatch.setattr(standby.shutil, "disk_usage", lambda path: space)
     assert standby.refresh(root, sender(data)) == first
     current = root / "current.zip"
     inode = current.stat().st_ino
@@ -75,6 +78,11 @@ def test_refresh_keeps_last_good_copy_and_recovers(standby, tmp_path):
             standby.refresh(root, sender(body, code, previous))
         assert current.read_bytes() == data
     second = receipt("d")
+    space.free = standby.RESERVE + 1
+    with pytest.raises(OSError, match="insufficient disk space"):
+        standby.refresh(root, sender(package(second), expected=previous))
+    assert current.read_bytes() == data
+    space.free += 2 * len(data)
     assert standby.refresh(root, sender(package(second), expected=previous)) == second
     assert standby.read_bundle(current) == second
     assert current.stat().st_mode & 0o077 == 0
