@@ -55,6 +55,7 @@ class QuorumConfig:
     standby_node: str
     lease_seconds: int
     recovery_archive: Path | None = None
+    transfer_witness_env: str | None = None
 
     @classmethod
     def load(cls, root, data):
@@ -74,7 +75,7 @@ class QuorumConfig:
                 "preferred_node",
                 "standby_node",
             ],
-            ["lease_seconds", "recovery_archive"],
+            ["lease_seconds", "recovery_archive", "transfer_witness_env"],
             label="coordination",
         )
         urls = data["endpoints"]
@@ -123,6 +124,7 @@ class QuorumConfig:
             data["standby_node"],
             number(data.get("lease_seconds", 15), "ownership TTL", 5, 120, integral=True),
             local_path(root, data["recovery_archive"]) if "recovery_archive" in data else None,
+            env_name(data["transfer_witness_env"]) if "transfer_witness_env" in data else None,
         )
 
 

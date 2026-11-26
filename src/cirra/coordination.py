@@ -74,6 +74,7 @@ def check_legacy_work(root):
 
 def enroll(config, directory, credential, *, initialize):
     from cirra.data_authority import DataAuthority
+    from cirra.private_transfer import configured_witness
     from cirra.quorum_budget import enrollment_locks, seed_budgets
 
     policy = getattr(config, "coordination", None)
@@ -82,6 +83,7 @@ def enroll(config, directory, credential, *, initialize):
     root = Path(directory).resolve()
     if not root.is_dir():
         raise CirraError("the primary or restored standby state directory must already exist")
+    configured_witness(config, credential)
     marker = root / MARKER
     desired = {"cluster": policy.cluster_id, "namespace": policy.namespace}
     for anchor in (root / INTENT, marker):

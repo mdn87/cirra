@@ -27,7 +27,9 @@ coordination:
   recovery_archive: /private/cirra-cache/latest.zip
 ```
 
-The two origins need the same high-entropy routing key. The receiver uses it to commit opaque route, change and delivery identifiers. An admission transaction binds the provider delivery to one job and increments the outstanding count. HTTP 202 follows a confirmed transaction. A replay gets the original job ID. Reusing a delivery ID with different content returns HTTP 400. Insufficient voters or exhausted capacity returns HTTP 503 to the eligible request. The private locator cache speeds recovery. If the receiving host disappears before it transfers the locator, the worker lists changes in the approved provider repository and recomputes the identifiers locally. This includes closed GitHub pull requests and GitLab merge requests.
+The two origins need the same high-entropy routing key. Existing observer routes share a separate witness key for private backup verification. A review-only deployment supplies its witness reference with `coordination.transfer_witness_env`. Enrollment verifies that the worker can load it before activating coordination.
+
+The receiver uses the routing key to commit opaque route, change and delivery identifiers. An admission transaction binds the provider delivery to one job and increments the outstanding count. HTTP 202 follows a confirmed transaction. A replay gets the original job ID. Reusing a delivery ID with different content returns HTTP 400. Insufficient voters or exhausted capacity returns HTTP 503 to the eligible request. The private locator cache speeds recovery. If the receiving host disappears before it transfers the locator, the worker lists changes in the approved provider repository and recomputes the identifiers locally. This includes closed GitHub pull requests and GitLab merge requests.
 
 The voting log holds opaque identifiers, digests, counts, ownership and terminal states. Provider contents, PR numbers, repository names, tokens, model output and private receipts stay on the data hosts. Daily limits and pending publication evidence survive expiry of a worker lease. A worker with an ambiguous prior submission must read back the exact native output before sending another update. A missing private execution receipt can leave a job awaiting reconciliation. The receiver can continue admitting other work.
 
@@ -45,7 +47,7 @@ A worker can take over automatically after lease expiry if two voters can commun
 
 Run the private backup job on the authoritative host with independent access to the approved encrypted repository. A capture request reaches the worker at the end of a pass. The worker keeps its publishing lease as it captures consistent private state. A backup extends the recovery horizon only after a restore from the off-host repository passes SQLite, signed witness and complete archive checks. An Intel Mac operating independently needs this path even when the primary is unreachable.
 
-Use the `local_data_host` value from `cirra coordination-status` for the backup service's `--expected-host` argument. The backup command accepts private repository and approval files and either a protected witness file or the existing witness socket. Run it under a separate backup identity on each participating host. On the Mac, `scripts/macos-private-backup-plist.py` renders the scheduled job. Linux can invoke the same module from its backup timer.
+Use the `local_data_host` value from `cirra coordination-status` for the backup service's `--expected-host` argument. The backup command accepts private repository and approval files and an independently delivered witness credential. Give each host's separate backup process its scoped repository credentials. On the Mac, `scripts/macos-private-backup-plist.py` renders the scheduled job. [Private state capture, restore and credential setup](private-state-transfer.md)
 
 ```sh
 python -m cirra.private_transfer backup --state-dir "$STATE" \

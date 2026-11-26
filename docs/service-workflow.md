@@ -691,6 +691,13 @@ listens on loopback. Both the webhook and worker kept their systemd invocations
 throughout activation. To set up another primary with the same layout, use
 the dedicated reader account and the scoped ACL helper.
 
+By 19:06 UTC the service journal had recorded 129 reader GETs. Median
+handler time was 1.00 ms, p95 was 4.63 ms and p99 was 6.52 ms. Seventeen
+requests returned 404 for audit attempts with no gate receipt. All 25
+webhook POSTs in the retained seven-day window returned 202. Their median was
+73.84 ms and the slowest took 544.94 ms. These measurements cover the
+observed traffic, including the Taskmaster verification read.
+
 ```text
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin cirra-audit-reader
 bash scripts/grant-audit-read-access.sh /srv/lugos/state/cirra

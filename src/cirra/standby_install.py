@@ -123,7 +123,7 @@ def install(config, directory, credential, archive):
                 ):
                     return {"installed": False, "snapshot_id": old["snapshot_id"]}
             temporary = selector.with_name("." + selector.name + "-" + uuid.uuid4().hex)
-            temporary.symlink_to(final, target_is_directory=True)
+            temporary.symlink_to(final.relative_to(selector.parent), target_is_directory=True)
             os.replace(temporary, selector)
             sync_directory(selector.parent)
     return {"installed": True, "snapshot_id": receipt["snapshot_id"]}
