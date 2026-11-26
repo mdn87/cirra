@@ -39,6 +39,11 @@ def register(commands):
             parser.add_argument("--port", type=int, default=8787)
         elif name == "enroll-coordination":
             parser.add_argument("--mode", choices=("initialize", "join"), required=True)
+            parser.add_argument(
+                "--source-state",
+                type=Path,
+                help="compare a replacement root with its quiesced legacy primary",
+            )
         elif name == "freeze-coordination":
             parser.add_argument("--target-node", required=True)
         elif name == "install-standby-snapshot":
@@ -190,7 +195,13 @@ def run(args, credential, capture):
 
         print(
             json.dumps(
-                enroll(config, args.state_dir, credential, initialize=args.mode == "initialize")
+                enroll(
+                    config,
+                    args.state_dir,
+                    credential,
+                    initialize=args.mode == "initialize",
+                    source=args.source_state,
+                )
             )
         )
         return 0

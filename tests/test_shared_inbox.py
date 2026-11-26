@@ -144,6 +144,34 @@ def test_shared_admission_continues_while_a_private_backup_holds_local_intake(sy
     assert voters.get(COUNT) == "1"
 
 
+def test_hitless_primary_seeding_compares_legacy_spending_and_native_evidence(tmp_path):
+    import shutil
+    from datetime import UTC, datetime
+
+    from cirra.locking import change_lock
+
+    source, restored = tmp_path / "current", tmp_path / "replacement"
+    Store(source)
+    day = datetime.now(UTC).date().isoformat() + ".json"
+    usage = source / "audit-usage" / day
+    write_receipt(usage, {"attempts": 8}, history=False)
+    shutil.copytree(source, restored)
+    with (
+        coordination.primary_source(restored, source),
+        change_lock(source / "queue" / "locks", "enqueue", 0),
+    ):
+        pass  # The existing receiver can still acknowledge under its enqueue lock.
+    write_receipt(usage, {"attempts": 9}, history=False)
+    with pytest.raises(CirraError, match="legacy primary"):
+        with coordination.primary_source(restored, source):
+            pytest.fail("stale quota accepted")
+    shutil.copyfile(usage, restored / "audit-usage" / day)
+    write_receipt(source / "publication" / "slot.json", {"state": "uncertain"}, history=False)
+    with pytest.raises(CirraError, match="legacy primary"):
+        with coordination.primary_source(restored, source):
+            pytest.fail("missing provider receipt accepted")
+
+
 def test_policy_and_cache_mismatches(systems):
     a, b, voters, owner, route = systems
     original = hint("one")

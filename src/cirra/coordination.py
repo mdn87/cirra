@@ -1,16 +1,20 @@
 """Enrollment and fail-closed startup for a quorum-backed state directory."""
 
+import hashlib
 import hmac
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from cirra.domain import CirraError, canonical
 from cirra.job_queue import Queue
+from cirra.locking import change_lock
 from cirra.publish import write_receipt
 from cirra.queue_format import activate, live_format
 from cirra.quorum import Quorum
 from cirra.shared_inbox import SharedInbox
+from cirra.store import Store
 
 MARKER = "coordination-state.json"
 INTENT = "coordination-enrollment.json"
@@ -83,7 +87,62 @@ def check_legacy_work(root):
                 )
 
 
-def enroll(config, directory, credential, *, initialize):
+def _private_history(root, day):
+    """Compare logical SQLite rows, current publication proofs and today's spending on cutover."""
+    fingerprint = hashlib.sha256()
+
+    def add(value):
+        fingerprint.update(canonical(value).encode() + b"\n")
+
+    with Store(root, readonly=True).connection() as connection:
+        connection.execute("BEGIN")
+        for table in ("claims", "attempts", "reports", "audits", "sqlite_sequence"):
+            add(table)
+            for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid"):
+                add(list(row))
+    for folder in (
+        "publication",
+        "review-gates",
+        "observer",
+        "audit-publication",
+        "audit-waivers",
+        "releases",
+    ):
+        for receipt in sorted((root / folder).glob("*.json")):
+            add([folder, receipt.name, hashlib.sha256(receipt.read_bytes()).hexdigest()])
+    for folder in ("worker-usage", "audit-usage"):
+        path = root / folder / (day + ".json")
+        add([folder, json.loads(path.read_bytes()) if path.exists() else None])
+    return fingerprint.digest()
+
+
+@contextmanager
+def primary_source(root, source):
+    if not (root / "cirra.sqlite3").is_file():
+        raise CirraError("primary initialization requires an existing verified Cirra database")
+    if source is None:
+        # Initializing a previously used namespace from an empty directory could
+        # silently refill its limits. Require an existing compatible Cirra database.
+        Store(root, readonly=True)
+        yield
+        return
+    source = Path(source).resolve(strict=True)
+    if source == root or root.is_relative_to(source) or source.is_relative_to(root):
+        raise CirraError("the legacy source and replacement must be independent state directories")
+    # Leave the old HTTP receiver's enqueue lock free throughout this comparison.
+    with (
+        change_lock(source / "queue" / "locks", "worker", 0),
+        change_lock(source / "audit-queue" / "locks", "audit-queue", 0),
+    ):
+        day = datetime.now(UTC).date().isoformat()
+        if _private_history(root, day) != _private_history(source, day):
+            raise CirraError(
+                "the replacement differs from the legacy primary's history or spending"
+            )
+        yield
+
+
+def enroll(config, directory, credential, *, initialize, source=None):
     from cirra.data_authority import DataAuthority
     from cirra.private_transfer import configured_witness
     from cirra.quorum_budget import enrollment_locks, seed_budgets
@@ -91,6 +150,8 @@ def enroll(config, directory, credential, *, initialize):
     policy = getattr(config, "coordination", None)
     if not policy:
         raise CirraError("enrollment requires an explicit coordination configuration")
+    if source is not None and not initialize:
+        raise CirraError("only primary initialization can compare a legacy source")
     root = Path(directory).resolve()
     if not root.is_dir():
         raise CirraError("the primary or restored standby state directory must already exist")
@@ -129,7 +190,7 @@ def enroll(config, directory, credential, *, initialize):
             for r in config.routes.values()
             if getattr(r.policy, "audit", None) is not None
         ]
-        with owner.maintaining():
+        with owner.maintaining(), primary_source(root, source):
 
             def finish_primary():
                 verify_transfer_key(owner, policy, witness, initialize=True)
