@@ -8,10 +8,10 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-26T17:14:01Z",
+  "assessedAt": "2026-11-26T18:05:41Z",
   "confidence": "authoritative",
-  "currentMilestone": "Cirra matched 23 GitHub checks to saved records. In a local three-voter drill, one of two clients took the last review slot and the audit budget stayed exhausted after failover.",
-  "remainingSummary": "GitHub and the production publisher still use lugos-host. Shared ownership, daily limits across hosts and the live failover drill remain. Route and voting grants await verified review. The Mac reviewer is signed out.",
+  "currentMilestone": "The Intel Mac ran a fresh subscription-backed Cirra review, found the seeded defect and read back its saved report. Three local voters also preserved daily limits through a simulated primary failure.",
+  "remainingSummary": "GitHub and the production publisher still use lugos-host. Durable admission, shared publishing ownership, daily limits across hosts and the live failover drill remain. The public route and physical voting grants await verified review.",
   "nextChipId": null,
   "source": {
     "label": "Worker receipts, GitHub checks, host measurements and off-host restore verification",
