@@ -100,9 +100,19 @@ def register(commands):
     )
     reads.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
     reads.add_argument("--port", type=int, default=DEFAULT_PORT)
+    generation = commands.add_parser(
+        "audit-generation", help="inspect, install, or remove the optional v3 audit counter"
+    )
+    generation.add_argument("action", choices=("status", "install", "remove"))
+    generation.add_argument("--state-dir", type=Path, required=True)
 
 
 def run(args, credential, capture):
+    if args.command == "audit-generation":
+        from cirra.audit_generation import maintain
+
+        print(json.dumps(maintain(args.state_dir, args.action)))
+        return 0
     if args.command == "list-cold-evidence":
         from cirra.retention import manifest
 

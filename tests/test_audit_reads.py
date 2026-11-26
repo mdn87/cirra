@@ -3,6 +3,7 @@ import json
 import os
 import select
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -18,7 +19,7 @@ import pytest
 from audit_fixtures import build_report
 from test_audit_worker import AGENT, FakeGitHub, agent, request, store_baseline
 
-from cirra import audit_read_snapshot, audit_reads, audits
+from cirra import audit_generation, audit_read_snapshot, audit_reads, audits
 from cirra.audit_reads import AuditReadServer
 from cirra.audit_worker import AuditCheckPublisher, AuditPublication, audit_once
 from cirra.domain import CirraError, canonical, digest
@@ -231,6 +232,156 @@ def persisted_v1_generation(site):
             receipts.append([name, path.name, hashlib.sha256(path.read_bytes()).hexdigest()])
     raw = json.dumps([rows, receipts], sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
+
+
+def test_counter_skips_unrelated_commits_and_preserves_v1_generations(served, monkeypatch):
+    state = served.server.state_dir
+    scans = []
+    scan = served.server.snapshot.rows
+
+    def counted(db):
+        scans.append(True)
+        return scan(db)
+
+    monkeypatch.setattr(served.server.snapshot, "rows", counted)
+
+    def read():
+        response, body = get(served.server, "/healthz")
+        assert response.status == 200 and body["generation"] == persisted_v1_generation(served)
+        return body["generation"]
+
+    original = read()
+    claim = served.store.acquire("counter-test", 60)
+    assert read() == original and len(scans) == 2  # A plain v3 database still works.
+    audit_generation.maintain(state, "install")
+    assert read() == original and len(scans) == 3
+    served.store.heartbeat(claim, 90)
+    with served.store.transaction() as db:
+        db.execute("UPDATE audits SET state=state")
+    assert read() == original and len(scans) == 3
+    attempt = begin_pr(served)
+    prepared = read()
+    assert prepared != original and len(scans) == 4
+    complete(served, attempt)
+    assert read() not in (prepared, original) and len(scans) == 5
+    with pytest.raises(RuntimeError), served.store.transaction() as db:
+        db.execute("DELETE FROM audits")
+        raise RuntimeError
+    read()
+    assert len(scans) == 5
+    with served.store.transaction() as db:
+        db.execute("DELETE FROM audits WHERE attempt_id=?", (attempt["attempt_id"],))
+    assert read() == original and len(scans) == 6
+    audit_generation.maintain(state, "remove")
+    assert read() == original and len(scans) == 7
+    served.store.release(claim)
+    assert read() == original and len(scans) == 8
+
+
+def test_counter_reinstall_and_partial_metadata_never_reuse_stale_rows(served):
+    state = served.server.state_dir
+    audit_generation.maintain(state, "install")
+    generation = get(served.server, "/healthz")[1]["generation"]
+    audit_generation.maintain(state, "remove")
+    begin_pr(served)
+    audit_generation.maintain(state, "install")  # Both installations started at zero.
+    current = get(served.server, "/healthz")[1]["generation"]
+    assert current == persisted_v1_generation(served) != generation
+
+    with served.store.transaction() as db:
+        db.execute(f"DROP TRIGGER {audit_generation.TABLE}_insert")
+    begin_pr(served)
+    assert get(served.server, "/healthz")[1]["generation"] == persisted_v1_generation(served)
+    for action in ("status", "install", "remove"):
+        with pytest.raises(CirraError, match="incomplete or incompatible"):
+            audit_generation.maintain(state, action)
+
+
+def test_counter_detects_concurrent_commit_before_returning_a_record(served, monkeypatch):
+    state = served.server.state_dir
+    audit_generation.maintain(state, "install")
+    original = get(served.server, "/healthz")[1]["generation"]
+    index = served.server.index
+
+    def mutate_after_query(connection, parsed):
+        answer = index(connection, parsed)
+        monkeypatch.setattr(served.server, "index", index)
+        begin_pr(served)
+        return answer
+
+    monkeypatch.setattr(served.server, "index", mutate_after_query)
+    response, body = get(served.server, "/audits?limit=200")
+    assert response.status == 200 and len(body["record"]["audits"]) == 2
+    assert body["generation"] == persisted_v1_generation(served) != original
+
+
+def test_restored_copies_with_different_audits_at_the_same_count(served, tmp_path):
+    state, original_path = served.server.state_dir, served.store.path
+    audit_generation.maintain(state, "install")
+    copy_path = tmp_path / "copy.sqlite3"
+    with sqlite3.connect(original_path) as original, sqlite3.connect(copy_path) as copy:
+        original.backup(copy)
+        original.execute("UPDATE audits SET validator_output='first branch'")
+        original.commit()
+        before = get(served.server, "/healthz")[1]["generation"]
+        copy.execute("UPDATE audits SET validator_output='restored branch'")
+        copy.commit()
+        assert audit_generation.counter(copy)[1] == audit_generation.counter(original)[1] == 1
+        copy.backup(original)  # Restore in place while the same reader remains open.
+    assert (
+        get(served.server, "/healthz")[1]["generation"] == persisted_v1_generation(served) != before
+    )
+
+
+def test_read_and_status_do_not_install_or_write_the_counter(served):
+    state, dbpath = served.server.state_dir, served.store.path
+    for installed in (False, True):
+        if installed:
+            audit_generation.maintain(state, "install")
+        source = dbpath.read_bytes()
+        modified = dbpath.stat().st_mtime_ns
+        response, _ = get(served.server, "/healthz")
+        assert response.status == 200
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "cirra",
+                "audit-generation",
+                "status",
+                "--state-dir",
+                str(state),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(result.stdout) == {
+            "schema_version": 3,
+            "audit_generation_installed": installed,
+        }
+        assert dbpath.read_bytes() == source and dbpath.stat().st_mtime_ns == modified
+
+
+def test_counter_maintenance_never_creates_a_missing_or_foreign_store(tmp_path):
+    for action in ("status", "install", "remove"):
+        with pytest.raises(sqlite3.OperationalError):
+            audit_generation.maintain(tmp_path, action)
+    path = tmp_path / "cirra.sqlite3"
+    assert not path.exists()
+    store = Store(tmp_path)
+    with store.transaction() as db:
+        db.execute("PRAGMA user_version=4")
+    source = path.read_bytes()
+    for action in ("status", "install", "remove"):
+        with pytest.raises(CirraError, match="existing v3"):
+            audit_generation.maintain(tmp_path, action)
+    assert path.read_bytes() == source
+    with store.transaction() as db:
+        db.execute("PRAGMA user_version=3")
+        db.execute("ALTER TABLE audits RENAME COLUMN validator_output TO other")
+    with pytest.raises(CirraError, match="schema 3 audit table"):
+        audit_generation.maintain(tmp_path, "install")
 
 
 def test_generation_stays_v1_across_concurrent_replacement(served, monkeypatch):

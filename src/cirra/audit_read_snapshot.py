@@ -1,8 +1,8 @@
 """Cache the v1 content digest with a private, disposable index of receipt metadata.
 
 Only Cirra's atomic receipt replacements change the two published directories. Check
-their revisions and SQLite's data_version on both sides of each read. No SQLite
-transaction on the service database spans a directory walk or receipt read.
+their revisions and the audit counter (or SQLite's data_version) on both sides
+of each read. No SQLite transaction spans a directory walk or receipt read.
 """
 
 import hashlib
@@ -13,6 +13,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from cirra.audit_generation import RowRevision
 from cirra.domain import CirraError, canonical
 
 DIRECTORIES = ("audit-publication", "audit-waivers")
@@ -83,6 +84,7 @@ class Snapshot:
                 self.database.close()
                 self.database = None
             self.database = self.connect()
+            self.row_revision = RowRevision()
             self.database_file, self.row_version = identity, None
         if self.index is None:
             # An unnamed SQLite file is private and automatically removed on close.
@@ -205,7 +207,7 @@ class Snapshot:
 
     def versions(self, connection):
         return (
-            connection.execute("PRAGMA data_version").fetchone()[0],
+            self.row_revision.read(connection),
             {name: directory_version(self.root / name) for name in DIRECTORIES},
         )
 
