@@ -140,8 +140,10 @@ def seed_budgets(
             puts[EPOCH] = canonical(
                 {"seed": seed, "midnights": (day - ORIGIN).days, "limits": limits}
             )
-            # A committed seed may lose its acknowledgement. Seal local spending first.
+            # A committed seed may lose its acknowledgement or all its voters. Record its
+            # identity before sending the first transaction so neither failure can authorize refill.
             activate(root, 2)
+            write_receipt(marker, {"seed": seed, "limits": limits}, history=False)
             if not owner.compare(checks, puts):
                 raise CirraError("shared budget initialization was not confirmed; verify and retry")
         activate(root, 2)

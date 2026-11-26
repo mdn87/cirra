@@ -25,6 +25,7 @@ class Voters:
         self.lock = threading.Lock()
         self.config = SimpleNamespace(node="primary", preferred_node="primary")
         self.lose_admission_reply = False
+        self.lose_seed_reply = False
 
     def owner(self):
         owner = Owner(self)
@@ -40,6 +41,9 @@ class Voters:
             if any(self.state.get(k) != v for k, v in checks.items()):
                 return False
             self.state.update(puts)
+            if self.lose_seed_reply and quorum_budget.EPOCH in puts:
+                self.lose_seed_reply = False
+                raise QuorumUnavailable("initial seed reply lost")
             if self.lose_admission_reply and any('"phase":"charged"' in v for v in puts.values()):
                 self.lose_admission_reply = False
                 raise QuorumUnavailable("admission reply lost")
@@ -356,3 +360,36 @@ def test_enrollment_preflight_and_completion_run_under_both_admission_locks(prim
     assert voters.get(quorum_budget.EPOCH) is None
     quorum_budget.seed_budgets(owner, root, day, 1, 1, after_seed=after)
     assert calls == ["before", "after"]
+
+
+def test_unacknowledged_seed_resumes_next_day_without_refilling_either_budget(primary, monkeypatch):
+    voters, owner, root = primary
+    day = quorum_budget.utc_day()
+    tomorrow = day + timedelta(days=1)
+    write_receipt(root / "worker-usage" / f"{day}.json", {"attempts": 1})
+    write_receipt(root / "audit-usage" / f"{day}.json", {"attempts": 2})
+    voters.lose_seed_reply = True
+    with pytest.raises(QuorumUnavailable, match="initial seed reply lost"):
+        quorum_budget.seed_budgets(owner, root, day, 2, 2)
+    original = json.loads(voters.get(quorum_budget.EPOCH))["seed"]
+    assert json.loads((root / "quorum-budget-seed.json").read_text())["seed"] == original
+    with bind_owner(owner):
+        late, settings = review_queue(root, "before-midnight")
+        settings.max_jobs_per_day = 2
+        assert work_once(settings, late, lambda *_: {"state": "done"})
+        monkeypatch.setattr(quorum_budget, "utc_day", lambda: tomorrow)
+        today, settings = review_queue(root / "restored", "after-midnight")
+        settings.max_jobs_per_day = 2
+        assert work_once(settings, today, lambda *_: {"state": "done"})
+    assert usage(root, "review", day) == usage(root, "audit", day) == 2
+    with pytest.raises(CirraError, match="policy"):
+        quorum_budget.seed_budgets(owner, root, tomorrow, 4, 2)
+    for candidate in (root, root / "restored"):
+        totals = quorum_budget.seed_budgets(owner, candidate, tomorrow, 2, 2)
+        assert totals == {
+            "review": {"attempts": 1, "maximum": 2},
+            "audit": {"attempts": 0, "maximum": 2},
+        }
+        assert json.loads((candidate / "quorum-budget-seed.json").read_text())["seed"] == original
+    assert json.loads(voters.get(quorum_budget._bucket("review", day)))["attempts"] == 2
+    assert json.loads(voters.get(quorum_budget._bucket("audit", day)))["attempts"] == 2
