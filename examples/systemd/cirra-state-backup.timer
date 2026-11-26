@@ -1,8 +1,8 @@
 [Unit]
-Description=Verify a daily off-host Cirra recovery point
+Description=Verify an off-host Cirra recovery point every six hours
 
 [Timer]
-OnCalendar=*-*-* 06:30:00 UTC
+OnCalendar=*-*-* 00,06,12,18:30:00 UTC
 Persistent=true
 AccuracySec=1min
 Unit=cirra-state-backup.service

@@ -2,7 +2,7 @@
 
 The recovery job takes a consistent off-host copy of the service database, durable queues, audit history, observer evidence and publication receipts. It then restores the entire snapshot to new private scratch and checks the recovered data. The restic repository must already exist on a separate host and have credentials available independently of the Cirra host.
 
-Matt set two requirements on November 26, 2026. Losing the service host may cost at most 24 hours of state, and Cirra should keep serving through that loss. The daily verified snapshot supports data recovery. At a 24-hour interval it has no margin for a delayed or failed capture. The current single-host deployment still interrupts service during backup and host loss. Continuous service requires an independent ingress path, durable admission on another host and a single authoritative writer for review and publication.
+Matt allows up to 24 hours of data loss and requires Cirra to keep serving through loss of its primary host. The six-hour online backup leaves time to recover from a missed capture. During a live drill on November 26, the worker and webhook kept their systemd invocation IDs. A fresh off-host snapshot restored in 9.33 seconds, passed SQLite integrity and foreign-key checks, and verified 190 current and 269 historical witnesses. Serving webhooks and publishing reviews through host loss still requires a tested standby.
 
 ## Install the recovery job
 
@@ -22,9 +22,9 @@ jq -e '
 sudo install -o root -g root -m 0644 examples/glas/cirra-backup.json /etc/cirra/
 ```
 
-The recovery unit runs as root. It opens a root-owned, mode-0600 local Unix socket before pausing any service. Systemd starts the BWS lookup under the service account for that connection. The witness helper checks the client's kernel-reported UID and sends the key over the socket. The root process holds it in memory for verification. Restic and systemctl receive their usual environment. The independent stop hook can resume services even when BWS is unavailable.
+The recovery unit runs as root. It opens a root-owned, mode-0600 local Unix socket. Systemd starts the BWS lookup under the service account for that connection. The witness helper checks the client's kernel-reported UID and sends the key over the socket. The root process holds it in memory for verification. Restic and systemctl receive their usual environment. The independent stop hook can still resume services from an interrupted legacy backup.
 
-Install the helpers and unit files before starting the first backup. The Python helpers use the system standard library. Keep the installed recovery and health helpers in a root-owned directory.
+Install the helpers and unit files before starting the first backup. Online capture uses Linux inotify, rsync, SQLite's backup API and restic. Keep the installed recovery and health helpers in a root-owned directory.
 
 ```sh
 sudo install -o root -g root -m 0755 scripts/backup-state.py /usr/local/libexec/cirra-backup-state.py
@@ -53,7 +53,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cirra-state-backup.timer
 ```
 
-The timer runs daily at 06:30 UTC and catches a missed scheduled run after boot. A failed run retries after 15 minutes, up to the configured start limit. An encrypted restic snapshot on a separate LAN host protects against loss of the service disk. A site disaster requires an independently approved off-site copy.
+The timer runs at 00:30, 06:30, 12:30 and 18:30 UTC and catches a missed run after boot. A failed run retries after 15 minutes, up to the configured start limit. An encrypted restic snapshot on a separate LAN host protects against loss of the service disk. A site disaster requires an independent off-site copy.
 
 The five-minute health check alerts if verification evidence is missing or unreadable, the backup service reports failure, or the last verified capture exceeds the 24-hour data-loss limit. A failed run records a private timestamp under `/var/lib/cirra-recovery`. Starting a retry or verifying an older snapshot leaves the alert active. A newly captured and successfully restored backup clears the backup problem. The normal alert resolves once the worker and backup checks both pass.
 
@@ -61,8 +61,8 @@ Only the root-owned health helper reads the recovery receipt. The health journal
 
 ## Snapshot and verification
 
-1. The helper checks both queues for running jobs before and after stopping writers. Malformed records that the scheduler cannot run remain in the snapshot for diagnosis. A filesystem read error prevents the backup from proceeding. The helper pauses the timer, receiver, optional audit-read service and worker only when originally active and waits for health notifications to finish. Avoid CLI writes against the same state during this short window.
-2. Restic snapshots the configured state directory with the `cirra-state` tag. The helper restarts the originally active units before beginning restoration. After an interruption, the backup and systemd's `ExecStopPost` take the shared deployment lock before restarting any unit from the saved journal. An active deployment keeps exclusive control. The journal stays intact until the next service retry can resume those units, even if the backup repository is unavailable.
+1. The scheduled `online` action watches the local Linux state tree while rsync copies durable files to private scratch. SQLite supplies a consistent copy of committed transactions. A changed durable file, a lost watch or an overflow invalidates the capture. The helper checks files with hard links separately and retries a concurrent change up to twice. The recovered queues must have no running job. Malformed queue records remain available for diagnosis.
+2. The helper excludes acceptance scratch, operator recovery files, transient heartbeat data, unpublished temporary receipts and raw SQLite journals. It verifies the private copy and uploads it with its original logical path and a source-specific tag. Production services continue running throughout. The explicit legacy `backup` action still quiesces the original active units and uses the recovery journal to resume them.
 3. The helper verifies the full snapshot ID, tag and source path, then calls `restic restore --verify` into a new directory. It runs SQLite's integrity and foreign-key checks using a read-only connection, verifies the expected Cirra tables, and checks all current and historical observer signatures using the separate witness credential. Historical receipts must also match their content-addressed filenames. Restored code and provider actions are never executed.
 4. Root-only receipts under `/var/lib/cirra-recovery/` contain the backup identity, quiescence time, verification time, schema version and witness counts. `pause_seconds` covers the backup and return of the service units. `restore_verify_seconds` measures restoration and validation from Nodens or the configured repository. `restore_point_age_seconds` measures the age of the captured state at the end of that drill. The interval since the last verified capture determines exposure at a later failure.
 
@@ -70,9 +70,15 @@ Only the root-owned health helper reads the recovery receipt. The health journal
 
 The verified receipt records total and free bytes on the restore filesystem while the restored copy is still present. The five-minute health check raises a capacity alert when that copy leaves less than 5% free, capped at a 1 GiB reserve. On lugos-host the service uses a 1 GiB private tmpfs. If it approaches the reserve, check host memory headroom and increase the `size=` setting in the backup unit's `TemporaryFileSystem` mount. Reload systemd and confirm the next verified receipt shows the new capacity. Preserve the `noswap` mount option when resizing.
 
-The daily job keeps its tagged Cirra snapshots in Nodens. During monthly maintenance, Matt can list the oldest and newest recovery points with `restic snapshots --tag cirra-state` and check free space with the storage owner. Record the latest successful restore alongside those figures. The host archive's 14-copy rotation applies to a separate set of local archives. The Cirra job preserves the off-host snapshots. Any later expiration of those snapshots requires a retention decision for Nodens.
+The scheduled job keeps its tagged Cirra snapshots on Nodens. Monthly maintenance includes checking the oldest and newest recovery points with `restic snapshots --tag cirra-state` and checking free space on Nodens. Record the latest successful restore alongside those figures. The host archive's 14-copy rotation applies to separate local archives. Expiration of Cirra's off-host snapshots requires a retention decision for Nodens.
 
 ## Restoring service after host loss
+
+Matt approved `intelmac` as the first standby for `lugos-host`. It has local FileVault storage, an amd64 Linux Docker engine and a running Cloudflare connector. Private standby state belongs on its local disk. Nodens holds the encrypted restic repository and also provides LAN DNS. The 4070 PC has no standby assignment.
+
+The current public Tailscale Funnel terminates on `lugos-host`. A candidate public route is a dedicated Cirra hostname with a Cloudflare Tunnel connector on each serving machine. Both origins would acknowledge a delivery only after durable admission. A successful test must cover a primary failure during admission, a network partition and primary rejoin, with a single externally visible review per delivery. GitHub records failed webhooks and requires explicit redelivery. [Cloudflare Tunnel failover](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-availability/) · [GitHub delivery failures](https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries)
+
+The preferred worker order is `lugos-host`, then `intelmac`. Before enabling automatic promotion, the survivor must fence the old publisher or arbitrate ownership through an independent authority. Two machines alone cannot distinguish a partition from host loss. Both share the lab's network, so continued public admission during a site outage also needs an endpoint outside that failure domain.
 
 Provision a clean isolated target and retrieve the restic and witness credentials from their independent escrow. Select the exact ID of a Cirra snapshot from before the loss. Create private, operator-owned scratch and receipt directories, load the approved repository environment into the recovery process, and run the following command. The original host and its local receipt files are unnecessary.
 

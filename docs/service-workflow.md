@@ -667,7 +667,7 @@ Checked on lugos-host on 2026-10-17 for the production audit:
 The November 20 recovery drill restored a Cirra-only snapshot from encrypted
 off-host storage, passed SQLite integrity and foreign-key checks, and verified
 the current and historical observer signatures with the separately escrowed key.
-The daily backup timer now repeats the isolated restore. The [state recovery
+The six-hour online backup timer repeats the isolated restore. The [state recovery
 guide](state-recovery.md) covers installation, restore commands and live-storage
 encryption. Production SQLite and the local host archives still use plaintext
 storage.
