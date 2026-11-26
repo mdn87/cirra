@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 CONTROL = Path("/var/lib/cirra-recovery")
-MAX_CAPTURE_AGE = timedelta(hours=26)
+MAX_CAPTURE_AGE = timedelta(days=1)
 
 
 def backup_unit_failed():
@@ -53,8 +53,6 @@ def problem(control, now):
         verified = datetime.fromisoformat(proof["verified_at"])
         if captured.tzinfo is None or verified.tzinfo is None or not captured <= verified <= now:
             raise ValueError
-        if now - captured > MAX_CAPTURE_AGE:
-            return "last verified backup captured state over 26 hours ago"
         try:
             failed_at = (control / "last-failure").stat().st_mtime
         except FileNotFoundError:
@@ -62,8 +60,22 @@ def problem(control, now):
         else:
             if captured.timestamp() <= failed_at:
                 return "backup failed and no newer capture has passed restore verification"
+        if now - captured > MAX_CAPTURE_AGE:
+            return "last verified backup captured state over 24 hours ago"
         if backup_unit_failed():
             return "backup service is unavailable or its last run failed"
+        if "restore_space" in proof:
+            space = proof["restore_space"]
+            total, free = space["total_bytes"], space["free_bytes"]
+            if (
+                type(total) is not int
+                or type(free) is not int
+                or not 0 <= free <= total
+                or not total
+            ):
+                raise ValueError
+            if free < min(total // 20, 1024**3):
+                return "the verified restore left little scratch space. Increase recovery capacity"
     except (
         OSError,
         ValueError,

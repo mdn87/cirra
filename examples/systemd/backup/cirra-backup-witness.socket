@@ -1,0 +1,9 @@
+[Unit]
+Description=Supply the Cirra backup witness to the local recovery operator
+
+[Socket]
+ListenStream=/run/cirra-backup-witness.sock
+SocketMode=0600
+SocketUser=root
+Accept=yes
+MaxConnections=2

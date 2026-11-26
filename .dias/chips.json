@@ -364,7 +364,7 @@
       "confidence": "reported",
       "timestamps": {
         "createdAt": "2026-11-20T11:04:43Z",
-        "updatedAt": "2026-11-20T13:45:26Z"
+        "updatedAt": "2026-11-26T05:28:03Z"
       },
       "evidence": [
         {
@@ -414,6 +414,24 @@
           "kind": "stage-change",
           "at": "2026-11-20T13:45:26Z",
           "message": "The deployed release passed 494 host tests. An isolated restore verified all 369 signed receipts. The full audit closed 31 findings and records the storage decision."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:nov26-audits",
+          "kind": "note",
+          "at": "2026-11-26T05:28:03Z",
+          "message": "Eight historical audits completed. Seven GitHub checks matched their receipts. The full audit of PR 43 preserved the repository baseline at 253ab19e."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:nov26-ruff",
+          "kind": "note",
+          "at": "2026-11-26T05:28:03Z",
+          "message": "PR 50 merged after seven checks passed. Its PR and full audits completed, and the GitHub audit check matched the saved receipt."
+        },
+        {
+          "entryId": "cirra:resolve-production-audit:nov26-headroom",
+          "kind": "note",
+          "at": "2026-11-26T05:28:03Z",
+          "message": "Across 1,007 host samples, available memory stayed above 16 GiB. Four logged webhook submissions were too few to establish p99 latency."
         }
       ]
     },

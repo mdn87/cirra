@@ -72,6 +72,16 @@ Relative paths resolve against the service configuration file.
    units' `User` and `Group`, the Cirra state path, and each GLAS configuration's
    `home` path.
 
+When upgrading a version 1 service configuration that uses
+`publisher.private_key_file`, first map the existing App key to
+`CIRRA_GITHUB_APP_PRIVATE_KEY_PEM` in the worker's GLAS manifest. Replace
+the file setting with `private_key_env: CIRRA_GITHUB_APP_PRIVATE_KEY_PEM`
+in each affected GitHub route. Keep the existing witness key so previously
+signed receipts still verify. Run the candidate's `cirra observer-pins
+--service-config <service.yaml>` before switching releases. Hosts with the
+scheduled backup also need its witness-only manifest.
+[Backup setup](state-recovery.md#install-the-recovery-job)
+
 Each service process has a separate GLAS manifest. For an interactive launch,
 `GLAS_MANIFEST` selects the manifest for `scripts/with-glas.py`. `GLAS_HOME`
 selects the GLAS state directory. The launcher uses the default native credential

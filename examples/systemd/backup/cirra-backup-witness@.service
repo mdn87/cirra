@@ -1,0 +1,20 @@
+[Unit]
+Description=Read the Cirra backup witness from BWS
+
+[Service]
+User=matt
+Group=matt
+LoadCredentialEncrypted=glas-bws-token:/etc/credstore.encrypted/glas-lugos-host-runtime
+ExecStart=/usr/bin/python3 -I /srv/lugos/runtimes/glas/host-runtime.py /etc/cirra/cirra-backup.json
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+StateDirectory=cirra-backup-glas
+StateDirectoryMode=0700
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RuntimeMaxSec=25s

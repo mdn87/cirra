@@ -365,8 +365,9 @@ MR !2 is merged and its main pipeline passed. The
 [service acceptance record](service-workflow.md#gitlab-observer-rollout) explains
 the provider delivery, explicit recovery and operator-generated replay test.
 
-Human usefulness assessment of the frozen reviewer cases and the GitHub fork
-case above remain open.
+The operator recorded the usefulness assessment for the frozen reviewer cases
+on October 19. The live GitHub fork case still needs a second controlled owner.
+[Reviewer assessment](../eval/README.md)
 
 ## References
 

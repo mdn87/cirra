@@ -8,13 +8,13 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-26T03:23:49Z",
+  "assessedAt": "2026-11-26T05:28:03Z",
   "confidence": "authoritative",
-  "currentMilestone": "The operator command deploys and restores an isolated release over the SSH command interface with or without an explicit fallback.",
-  "remainingSummary": "Audit packets await import. The storage encryption finding remains open by owner decision. Five audit controls still need operating evidence or owner targets.",
+  "currentMilestone": "The historical audit queue and Ruff PR 50 have settled. The repository baseline stayed at 253ab19e.",
+  "remainingSummary": "Matt accepts up to 24 hours of data loss and requires continuous service through host loss. Cirra has one serving host. Live storage encryption remains open by decision.",
   "nextChipId": null,
   "source": {
-    "label": "Service host argument check, audit queue and isolated deployment and rollback tests",
+    "label": "Worker receipts, GitHub checks, host measurements and off-host restore verification",
     "updatedAt": "2026-11-26"
   }
 }

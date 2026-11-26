@@ -6,6 +6,8 @@ import hmac
 import json
 import os
 import re
+import shutil
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -257,15 +259,31 @@ def check_target(args):
         raise RecoveryError("the Cirra state path must be an absolute service directory")
     if args.action != "verify" and not (args.state / "cirra.sqlite3").is_file():
         raise RecoveryError("the source Cirra database does not exist")
-    if any(
-        path == args.state or path.is_relative_to(args.state)
-        for path in (args.admin.resolve(), args.scratch.resolve(), args.witness_file.resolve())
-    ):
+    protected_paths = [args.admin, args.scratch, args.witness_socket or args.witness_file]
+    if any(path.resolve().is_relative_to(args.state) for path in protected_paths):
         raise RecoveryError(
             "credentials, recovery control files and restore scratch must be outside live state"
         )
+    args.witness_key = (
+        socket_witness(args.witness_socket)
+        if args.witness_socket
+        else credentials(args.witness_file, args.witness_name)
+    )
     restic(["snapshots", "--tag", TAG, "--latest", "1"])
-    credentials(args.witness_file, args.witness_name)
+
+
+def socket_witness(path):
+    info = path.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise RecoveryError("the witness socket must be private and owned by the recovery operator")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(30)
+        channel.connect(str(path))
+        with channel.makefile("rb") as stream:
+            key = stream.read(65537)
+    if not 32 <= len(key) <= 65536:
+        raise RecoveryError("the witness provider returned a missing or invalid key")
+    return key
 
 
 def backup(args):
@@ -319,13 +337,13 @@ def verify(args, captured):
     restic(
         ["restore", snapshot, "--verify", "--target", str(restored)], timeout=args.restore_timeout
     )
-    checks = verify_state(
-        restored / args.state.relative_to("/"), credentials(args.witness_file, args.witness_name)
-    )
+    checks = verify_state(restored / args.state.relative_to("/"), args.witness_key)
+    scratch = shutil.disk_usage(restored)
     verified = datetime.now(UTC)
     result = {
         **captured,
         **checks,
+        "restore_space": {"total_bytes": scratch.total, "free_bytes": scratch.free},
         "verified_at": verified.isoformat(),
         "restore_verify_seconds": round(time.monotonic() - begin, 2),
         "restore_point_age_seconds": round(
@@ -347,9 +365,11 @@ def main(argv=None):
     parser.add_argument(
         "--deploy-lock", type=Path, default=Path("/srv/lugos/services/cirra/staging/deploy.lock")
     )
-    parser.add_argument(
+    witness = parser.add_mutually_exclusive_group()
+    witness.add_argument(
         "--witness-file", type=Path, default=Path("/srv/lugos/services/cirra/config/worker.env")
     )
+    witness.add_argument("--witness-socket", type=Path, help="private local BWS witness socket")
     parser.add_argument("--witness-name", default="CIRRA_WITNESS_KEY")
     parser.add_argument("--snapshot", help="exact restic snapshot to verify on a replacement host")
     parser.add_argument("--repository", default=os.environ.get("CIRRA_APPROVED_BACKUP_REPOSITORY"))
