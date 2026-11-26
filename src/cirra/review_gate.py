@@ -1,6 +1,7 @@
 """An operator-enabled GitHub check for a live worker review of one target branch."""
 
 import json
+import uuid
 
 from cirra.audit import SEVERITIES
 from cirra.domain import CirraError, digest
@@ -124,6 +125,49 @@ class RequiredReviewCheck:
             )
         return native_id(item.get("id"))
 
+    def confirm(self, item, intent):
+        settled = intent["settled"]
+        identifier = self.verify(
+            item, intent["expected_status"], settled.get("conclusion"), settled.get("native_id")
+        )
+        output = item.get("output")
+        if (
+            not isinstance(output, dict)
+            or digest({field: output.get(field) for field in ("title", "summary", "text")})
+            != intent["output_digest"]
+        ):
+            raise RemoteUncertain("required review acknowledgement belongs to a different write")
+        result = {**settled, "native_id": identifier}
+        write_receipt(self.path, result)
+        return result
+
+    def send(self, http, method, path, body, settled):
+        prior = json.loads(self.path.read_text()) if self.path.exists() else {}
+        if prior.get("state") == "awaiting_ack":
+            raise RemoteUncertain("previous required review write still needs provider readback")
+        # Identical verdicts can recur. Only this marker identifies this particular request.
+        operation = uuid.uuid4().hex
+        body["output"]["text"] = f"<!-- cirra-operation:{operation} -->"
+        intent = {
+            "state": "awaiting_ack",
+            # Until readback, identity includes the write as well as the object. Legacy
+            # workers only accept a matching scalar GitHub ID, so they park this slot
+            # on rollback even if GitHub is already showing a previous generation.
+            "native_id": {"last_known_id": settled.get("native_id"), "operation_id": operation},
+            "expected_status": body["status"],
+            "output_digest": digest(body["output"]),
+            "settled": {**settled, "operation_id": operation},
+        }
+        write_receipt(self.path, intent)
+        try:
+            item, _ = http.request(method, path, body=body)
+        except RemoteUncertain:
+            raise
+        except CirraError:
+            write_receipt(self.path, prior or {"state": "refused", "native_id": None})
+            raise
+        return self.confirm(item, intent)
+
     def start(self):
         http = self.transport()
 
@@ -147,6 +191,9 @@ class RequiredReviewCheck:
         if len(matches) > 1 or (prior and prior["state"] != "refused" and not matches):
             raise CirraError("required review check has no unique visible owner after a write")
         identifier = native_id(matches[0]["id"]) if matches else None
+        if prior.get("state") == "awaiting_ack":
+            self.identifier = self.confirm(matches[0], prior)["native_id"]
+            return
         if prior.get("native_id") and prior["native_id"] != identifier:
             raise CirraError("required review check changed its native identity")
         if matches and matches[0].get("status") == "completed":
@@ -171,17 +218,14 @@ class RequiredReviewCheck:
             path += "/" + identifier
         else:
             body["head_sha"] = self.head
-        write_receipt(self.path, {"state": "starting", "native_id": identifier}, history=False)
-        try:
-            item, _ = http.request("PATCH" if identifier else "POST", path, body=body)
-        except RemoteUncertain:
-            raise
-        except CirraError:
-            if not identifier:
-                write_receipt(self.path, {"state": "refused", "native_id": None})
-            raise
-        self.identifier = self.verify(item, "in_progress", identifier=identifier)
-        write_receipt(self.path, {"state": "in_progress", "native_id": self.identifier})
+        result = self.send(
+            http,
+            "PATCH" if identifier else "POST",
+            path,
+            body,
+            {"state": "in_progress", "native_id": identifier},
+        )
+        self.identifier = result["native_id"]
 
     def finish(self, store, saved, refresh):
         config = self.route.policy
@@ -253,10 +297,6 @@ class RequiredReviewCheck:
             http = self.transport()
             if self.current_merge() != self.merge:
                 raise CirraError("GitHub replaced the test merge during code review")
-            item, _ = http.request(
-                "PATCH", f"{self.prefix}/check-runs/{self.identifier}", body=body
-            )
-            self.verify(item, "completed", conclusion, self.identifier)
             result = {
                 "state": "published",
                 "conclusion": conclusion,
@@ -267,5 +307,6 @@ class RequiredReviewCheck:
                 "run_id": saved["run_id"],
                 "report_digest": report["report_digest"],
             }
-            write_receipt(self.path, result)
-            return result
+            return self.send(
+                http, "PATCH", f"{self.prefix}/check-runs/{self.identifier}", body, result
+            )

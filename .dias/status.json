@@ -8,10 +8,10 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-26T06:53:42Z",
+  "assessedAt": "2026-11-26T08:23:49Z",
   "confidence": "authoritative",
-  "currentMilestone": "The six-hour backup ran without pausing Cirra. The Intel Mac restored 44 audits and 130 reports and checks hourly for a newer verified copy.",
-  "remainingSummary": "The live webhook and review publisher still depend on lugos-host. The Intel Mac needs reviewer sign-in, independent admission and tested publisher fencing.",
+  "currentMilestone": "Cirra recovered two real GitHub jobs from their original signatures. Both service hosts passed the same isolated CI policy. A local three-voter drill retained one in-flight publication.",
+  "remainingSummary": "GitHub and the production publisher still use lugos-host. Live voting and routing await verified grants. The Intel Mac reviewer still reports signed out in its desktop session.",
   "nextChipId": null,
   "source": {
     "label": "Worker receipts, GitHub checks, host measurements and off-host restore verification",
