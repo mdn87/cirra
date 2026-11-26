@@ -1,0 +1,5 @@
+{
+  "home": "/var/lib/cirra-backup-glas",
+  "manifest": "/etc/cirra/cirra-backup.manifest.json",
+  "command": ["/usr/bin/python3", "-I", "/usr/local/libexec/cirra-backup-witness.py"]
+}

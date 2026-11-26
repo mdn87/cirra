@@ -3,7 +3,11 @@ import hmac
 import importlib.util
 import json
 import os
+import socket
 import sqlite3
+import subprocess
+import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,6 +123,7 @@ def test_replacement_host_verification_without_a_live_database(tmp_path, monkeyp
         admin=tmp_path / "control",
         scratch=tmp_path / "isolated",
         witness_file=tmp_path / "escrow.env",
+        witness_socket=None,
         witness_name="WITNESS",
         repository="approved",
         action="verify",
@@ -131,6 +136,124 @@ def test_replacement_host_verification_without_a_live_database(tmp_path, monkeyp
     args.action = "backup"
     with pytest.raises(backup.RecoveryError, match="source Cirra database"):
         backup.check_target(args)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux recovery directory and lock semantics")
+def test_bws_only_restore_checks_witness_without_leaking_it(tmp_path, monkeypatch, backup_cli):
+    admin, scratch = tmp_path / "admin", tmp_path / "scratch"
+    admin.mkdir(mode=0o700)
+    scratch.mkdir(mode=0o700)
+    snapshot = "1" * 64
+    state = tmp_path / "lost"
+    key = b"test-key" * 5
+    monkeypatch.setenv("RESTIC_REPOSITORY", "approved")
+
+    def restic(argv, **kwargs):
+        assert "CIRRA_WITNESS_KEY" not in os.environ
+        if argv == ["snapshots", snapshot]:
+            return json.dumps(
+                [
+                    {
+                        "id": snapshot,
+                        "tags": [backup.TAG],
+                        "paths": [str(state)],
+                        "time": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            ).encode()
+        if argv[0] == "restore":
+            target = Path(argv[-1]) / state.relative_to("/")
+            target.parent.mkdir(parents=True)
+            fixture, _, _, _ = example(target.parent)
+            fixture.rename(target)
+        return b"[]"
+
+    monkeypatch.setattr(backup, "restic", restic)
+    args = [
+        "verify",
+        "--state",
+        str(state),
+        "--scratch",
+        str(scratch),
+        "--admin",
+        str(admin),
+        "--repository",
+        "approved",
+        "--snapshot",
+        snapshot,
+        "--witness-socket",
+        str(tmp_path / "w.sock"),
+    ]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(tmp_path / "w.sock"))
+        (tmp_path / "w.sock").chmod(0o600)
+        listener.listen()
+        listener.settimeout(5)
+
+        def send_key():
+            for value in (key, b""):
+                conn, _ = listener.accept()
+                with conn:
+                    conn.sendall(value)
+
+        provider = threading.Thread(target=send_key, daemon=True)
+        provider.start()
+        assert backup_cli(args) == 0
+        assert backup_cli(args) == 1
+        provider.join(5)
+        assert not provider.is_alive()
+    proof = json.loads((admin / "last-drill.json").read_text())
+    assert proof["sqlite_integrity"] == "ok"
+    assert proof["current_witnesses"] == proof["historical_witnesses"] == 1
+    assert 0 < proof["restore_space"]["free_bytes"] <= proof["restore_space"]["total_bytes"]
+    assert key.decode() not in json.dumps(proof)
+
+
+def test_backup_unit_uses_dedicated_witness_runtime():
+    root = SCRIPT.parents[1]
+    service = (root / "examples/systemd/cirra-state-backup.service").read_text()
+    units = root / "examples/systemd"
+    binding = (units / "cirra-state-backup.service.d/bws-witness.conf").read_text()
+    provider = (units / "backup/cirra-backup-witness@.service").read_text()
+    listener = (units / "backup/cirra-backup-witness.socket").read_text()
+    runtime = json.loads((root / "examples/glas/cirra-backup.json").read_text())
+    assert "Requires=cirra-backup-witness.socket" in binding
+    assert "--witness-socket /run/cirra-backup-witness.sock" in binding
+    assert "LoadCredentialEncrypted=" not in service
+    assert "ListenStream=/run/cirra-backup-witness.sock" in listener
+    assert "SocketMode=0600" in listener and "SocketUser=root" in listener
+    assert "User=matt" in provider and "StandardInput=socket" in provider
+    assert "LoadCredentialEncrypted=glas-bws-token:" in provider
+    assert "/etc/cirra/cirra-backup.json" in provider
+    assert runtime["home"] == "/var/lib/cirra-backup-glas"
+    assert runtime["manifest"].endswith("/cirra-backup.manifest.json")
+    assert runtime["command"] == [
+        "/usr/bin/python3",
+        "-I",
+        "/usr/local/libexec/cirra-backup-witness.py",
+    ]
+    assert (
+        "ExecStopPost=/usr/bin/python3 -I /usr/local/libexec/cirra-backup-state.py resume"
+        in service
+    )
+
+
+@pytest.mark.skipif(not hasattr(socket, "SO_PEERCRED"), reason="Linux Unix socket credentials")
+def test_witness_provider_checks_the_actual_peer_and_keeps_stdout_empty():
+    key = "fixture-signing-key" * 3
+    client, server = socket.socketpair()
+    with client, server:
+        result = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT.with_name("backup-witness.py"))],
+            stdin=server,
+            capture_output=True,
+            env={**os.environ, "CIRRA_WITNESS_KEY": key},
+            timeout=10,
+        )
+        server.close()
+        assert result.stdout == b"" and key.encode() not in result.stderr
+        assert result.returncode == (0 if os.geteuid() == 0 else 1)
+        assert client.recv(100) == (key.encode() if os.geteuid() == 0 else b"")
 
 
 @pytest.fixture

@@ -13,7 +13,7 @@ The [review record](2026-10-15-planning-review.md) explains the original decisio
 | Local foundation and manual session handoff | Implemented and previously landed. |
 | Automatic reviewer | Claude subscription dispatch with tools disabled, bounded execution, durable reuse and transport attribution. |
 | Trusted checkout provenance | Signed witness statements and exact check/attempt binding implemented. The independent Docker observer on lugos-host tested PR #7 and published a verified native check; other hosted CI retains its original provenance. |
-| Review-quality evaluation | Ten frozen labelled cases, two runs; 6/6 defects and 0/4 clean-case findings each. Human usefulness adjudication remains open. |
+| Review-quality evaluation | Both frozen runs found all six defects and produced no findings on the four clean cases. The operator recorded the usefulness assessment on October 19. [Evaluation results](../../eval/README.md) |
 | GitHub advisory publication | PR #5 is merged after live neutral-check publication, repeat/re-review, process-exit recovery, and base-only/new-head cases. The live base-only case exposed stale PR metadata; the collector now resolves the target branch independently. All 134 tests passed in the four native CI jobs. |
 | GitLab portability | Sandbox MR !1 demonstrated collection, review, maintained-note publication and unchanged native merge rules. PR #9 adds independent Docker execution and signed standalone evidence, deployed on lugos-host. With the replacement reader, MR !2 completed isolated tests, verified checkout evidence, Claude review and one maintained note. A repeat event reused execution and review; native pipeline and merge state were unchanged by publication. MR !2 is merged and its main pipeline passed. |
 | Forgejo | Explicit HTTPS-instance read adapter implemented; public Codeberg capture exercised. Missing status creator identities remain unverified. Publication is not enabled. |
@@ -373,14 +373,13 @@ the implementation; the product choices above are Cirra design decisions.
   requiring a new PR-code execution environment.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
-The remaining work is live setup and acceptance:
-
-- Exercise a controlled GitHub fork under another owner. The authenticated
-  account currently exposes no organizations or existing forks for this case.
-- Obtain the operator's usefulness assessment of the frozen reviewer cases.
-- Configure the native release demonstration's protected target and separate
-  Actions-only credential. `main` is currently unprotected, so the release
-  coordinator correctly refuses dispatch under the existing contract.
+The remaining live acceptance case requires a controlled GitHub fork under
+another owner. On November 26 the authenticated account had no accessible
+organizations and the repository had no forks. The operator completed the
+reviewer assessment on October 19. The Cirra App dispatched and reconciled
+the evidence workflow on protected main on November 20.
+[Reviewer assessment](../../eval/README.md) ·
+[Release workflow verification](../automation-workflow.md#github-release-evidence)
 
 Automatic dispatch, both publishers, GitLab/Forgejo collection, evaluation,
 authenticated event intake and native release requests are implemented.

@@ -46,15 +46,30 @@ def test_missing_stale_and_fresh_verified_capture(tmp_path, manager):
     proof(tmp_path, now, now, filename="last-drill.json")
     proof(tmp_path, now, now, filename="last-backup.json")
     assert "missing" in monitor.problem(tmp_path, now)
-    boundary = now - timedelta(hours=26)
+    boundary = now - timedelta(days=1)
     proof(tmp_path, boundary - timedelta(seconds=1), now)
-    assert "over 26 hours" in monitor.problem(tmp_path, now)
+    assert "over 24 hours" in monitor.problem(tmp_path, now)
     proof(tmp_path, boundary, now)
     assert monitor.problem(tmp_path, now) is None
     manager["Result"] = "exit-code"
     assert "service" in monitor.problem(tmp_path, now)
     manager.update(LoadState="not-found", Result="success")
     assert "service" in monitor.problem(tmp_path, now)
+
+
+def test_verified_restore_reports_its_remaining_scratch_capacity(tmp_path, manager):
+    now = datetime.now(UTC)
+    proof(tmp_path, now, now)
+    path = tmp_path / "last-verified.json"
+    receipt = json.loads(path.read_bytes())
+    for free, expected in [(50, None), (49, "scratch space"), (-1, "cannot validate")]:
+        receipt["restore_space"] = {"total_bytes": 1000, "free_bytes": free}
+        path.write_text(json.dumps(receipt))
+        problem = monitor.problem(tmp_path, now)
+        if expected:
+            assert expected in problem
+        else:
+            assert problem is None
 
 
 def test_failed_backup_stays_visible_until_a_new_capture_is_verified(

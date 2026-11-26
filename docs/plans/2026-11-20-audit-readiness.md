@@ -187,3 +187,30 @@ delivery counted against service availability. Regression tests reproduced
 both findings. The release candidate closes the database between manifest pages
 and excludes conflicting delivery IDs from the admission indicator.
 [PR 42](https://github.com/mdn87/cirra/pull/42)
+
+## November 26 audit settlement and operating measurements
+
+The worker completed the eight historical audit requests for PRs 43, 46, 47,
+48, 49, 51 and 52. The operator matched each of the seven GitHub check IDs,
+head commits, conclusions and summary digests to its publication receipt.
+PR 43 also received a 117-control full audit scoped to that change. The
+repository baseline remained at `253ab19e7869`.
+
+| Measurement | What the records show |
+| --- | --- |
+| Host CPU and memory | Across November 19–25 UTC, 1,007 roughly ten-minute sysstat samples covered 167.8 hours on six CPUs. The lowest interval-average idle CPU was 44.13%. Available memory stayed at or above 16.38 GiB of 31.09 GiB. These host-wide intervals can hide brief spikes. |
+| Cirra service memory | At inspection on November 26, the receiver had peaked at 29.5 MiB against 256 MiB. The worker had peaked at 93.3 MiB against 1.5 GiB. These cgroup peaks cover the service activations that began at 03:39 UTC. |
+| Request latency | The retained logs for the window contain four webhook POSTs, all on November 25. All returned 202 and took 63.85–186.48 ms in the handler. Journal retention was incomplete. Four observations cannot establish a representative p99. The optional audit reader was inactive and supplied no data-request timings. |
+| Backup recovery | The November 25 capture paused writers for 3.74 seconds. The restore and verification took 9.17 seconds, passed SQLite integrity and foreign-key checks, and verified 168 current and 247 historical witnesses. This measures state restoration. A whole-host rebuild also needs provisioning, credential recovery and service startup. |
+
+The installed service still had its earlier protected witness file. Its
+successful backup therefore did not settle fresh-host operation with BWS
+alone. Matt set a maximum data-loss window of 24 hours and asked for
+uninterrupted service after host loss. The installed receiver, state store
+and worker run on one host. A tested independent service path is still needed.
+
+The public webhook uses Tailscale Funnel. Tailscale documents relay routing
+and a fixed bandwidth limit, without publishing a numeric limit or a
+Funnel-specific denial-of-service commitment there. Cirra's local admission
+limits protect the receiver. Upstream capacity remains unverified.
+[Tailscale Funnel limitations](https://tailscale.com/docs/features/tailscale-funnel#requirements-and-limitations)

@@ -169,6 +169,11 @@ def load_service(path):
             raise CirraError("publisher configuration must be an object")
         publisher = dict(item["publisher"])
         if provider == "github":
+            if "private_key_file" in publisher and "private_key_env" not in publisher:
+                raise CirraError(
+                    "Migrate the GitHub publisher's private_key_file to private_key_env. "
+                    "Map the existing App key in the worker's GLAS manifest before deployment."
+                )
             fields(
                 publisher,
                 ["app_id", "installation_id"],

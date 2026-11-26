@@ -490,6 +490,10 @@ def test_service_configuration_is_explicit_and_pins_policy(tmp_path, policy_data
         path.write_text(yaml.safe_dump(env_config))
         with pytest.raises(CirraError, match="unknown keys"):
             load_service(path)
+        del env_config["routes"][0]["publisher"]["private_key_env"]
+        path.write_text(yaml.safe_dump(env_config))
+        with pytest.raises(CirraError, match="private_key_file to private_key_env"):
+            load_service(path)
     else:
         assert route.publisher["permission_receipt"] == str(tmp_path / "permissions.json")
     assert route.observer == tmp_path / "observer.yaml"
