@@ -41,7 +41,8 @@ SCHEMA = [
 
 # SCHEMA creates version 1. MIGRATIONS[n] holds the statements that take a
 # version-n database to n + 1; append an entry and bump SCHEMA_VERSION for
-# every schema change so existing state (reviews, attempts) carries over.
+# each required layout change so existing reviews and attempts carry over.
+# The optional audit-generation extension is independent of this version.
 SCHEMA_VERSION = 3
 MIGRATIONS = {
     # Production audits: one row per attempt; audit_id is the identity digest.

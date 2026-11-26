@@ -142,7 +142,8 @@ Every 200 response is `{"protocol": "cirra.audit-reads.v1", "schema_version":
 ..., "generation": ..., "record": ..., "sha256": ...}`. `sha256` is the SHA-256
 of the canonical JSON of `record` (sorted keys, no spaces, ASCII), and
 `generation` digests every served audit row and receipt. The reader checks
-SQLite's data version and the receipt directories before and after each read.
+the optional audit generation counter and the receipt directories before and
+after each read. On plain schema 3 it uses SQLite's data version.
 It verifies the returned gate against the same receipt hashes. Its private,
 temporary lookup index contains filenames, hashes and audit IDs. Warm health
 and summary reads reuse the verified generation. A cold index keeps building
@@ -711,6 +712,57 @@ The unit listens on loopback port 8797 beside the receiver on port 8796.
 Taskmaster reads the route on the same host. The deployment script restarts
 the audit reader when it is active and checks its systemd status during
 readiness verification. See `taskmaster/docs/work-view-concept.md`, section 11.
+
+#### Install the optional audit counter
+
+Use a recent verified private backup of the selected state on the active data
+host. On a restored copy, check SQLite integrity and foreign keys, run both
+the serving and candidate readers on separate loopback ports, and compare
+Taskmaster's attempt count, gates and response digests. Retain the old
+release and both ports through the change. The maintenance command can run
+from the candidate release while existing processes continue serving.
+
+```sh
+cirra audit-generation status --state-dir "$CIRRA_STATE"
+cirra audit-generation install --state-dir "$CIRRA_STATE"
+cirra audit-generation status --state-dir "$CIRRA_STATE"
+```
+
+Run installation as the database owner against the existing state directory.
+One SQLite transaction adds the `cirra_audit_generation_v1` singleton and
+three triggers on `audits`. Both old and new writers advance the counter when
+they insert, change or delete audit rows. The counter starts at zero. A fresh
+revision ID on installation and on each audit change distinguishes divergent
+restores that reach the same count. Worker claims, review checkpoints and
+assignments of an audit field to its existing value leave the counter alone.
+Receipt changes still invalidate the applicable directory. Each reader
+computes the original content digest and serves the same v1 envelopes.
+Cold starts and actual audit changes still require hashing audit history.
+
+The database stays at `PRAGMA user_version=3`. Plain schema 3, including
+restores made before installation, uses the existing database-wide
+invalidation. Readers and ordinary service startup never install or remove the
+extension. A compatible old reader can keep serving the primary loopback port
+through the transaction. For a continuous reader upgrade, warm the candidate
+under the same unprivileged account, ACLs and read-only mounts on another
+loopback port, verify the live Taskmaster client there and switch that client
+while both listeners remain available. Keep public webhook receivers running.
+
+For binary rollback, select the retained v3 reader or writer against the
+current database. All work committed since installation remains available.
+If the previous database layout is also required, use the candidate binary:
+
+```sh
+cirra audit-generation remove --state-dir "$CIRRA_STATE"
+cirra audit-generation status --state-dir "$CIRRA_STATE"
+```
+
+Removal drops only the three recognized triggers and their derivative table
+in one transaction. Audit rows, reports and receipts survive. Reinstallation
+uses a new revision ID so an already running reader detects changes made
+while the counter was absent. An unexpected definition or missing singleton
+stops maintenance for inspection. Readers use SQLite's data version when the
+expected complete extension is unavailable.
 
 ### Host recovery facts
 

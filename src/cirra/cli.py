@@ -200,6 +200,7 @@ def main(argv=None):
                 "jobs",
                 "list-cold-evidence",
                 "serve-audit-reads",
+                "audit-generation",
                 "audit-jobs",
                 "show",
             )
