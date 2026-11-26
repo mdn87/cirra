@@ -9,6 +9,7 @@ not served: they hold repository content a derived view has no use for.
 """
 
 import json
+import os
 import re
 import socket
 import sqlite3
@@ -126,6 +127,7 @@ class AuditReadServer(ThreadingHTTPServer):
         if address[0] != "127.0.0.1":
             raise CirraError("audit read listener must bind to 127.0.0.1")
         self.state_dir = Path(state_dir).resolve()
+        self.state_selector = os.environ.get("CIRRA_AUDIT_STATE_SELECTOR")
         self.store_path = self.state_dir / "cirra.sqlite3"
         self.slots = threading.BoundedSemaphore(16)
         self.snapshot = Snapshot(self.state_dir, self.connect)
@@ -234,7 +236,9 @@ class AuditReadServer(ThreadingHTTPServer):
                 return self.audit(connection, key)
             return snapshot.gate(key, deadline)
 
+        self.check_selected_state()
         status, record, generation = self.snapshot.read(SCHEMA_VERSION, query)
+        self.check_selected_state()
         if status != 200:
             return status, record
         return 200, {
@@ -244,6 +248,12 @@ class AuditReadServer(ThreadingHTTPServer):
             "record": record,
             "sha256": digest(record),
         }
+
+    def check_selected_state(self):
+        # A read-only bind mount retains its original inode after the host switches
+        # the managed symlink. Withhold records until systemd rebinds the new root.
+        if self.state_selector and not self.state_dir.samefile(self.state_selector):
+            raise CirraError("the current audit state changed")
 
     def index(self, connection, parsed):
         limit, after, filters = parsed

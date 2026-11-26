@@ -122,6 +122,14 @@ def test_rollback_refuses_incompatible_schema_before_switch(deployment):
     assert (service / "current").resolve() == current
 
 
+def test_rollback_refuses_a_state_path_outside_the_managed_selection(deployment):
+    rollback, service, state, current = deployment
+    (service / "deployment-state-path").write_text(str(state / "different") + "\n")
+    result = rollback()
+    assert result.returncode and "configured deployment state path" in result.stderr
+    assert (service / "current").resolve() == current
+
+
 @pytest.mark.parametrize("live", ["marker", "archived", "awaiting_publication"])
 def test_rollback_refuses_older_queue_readers_before_switch(deployment, live):
     from cirra.queue_format import activate
@@ -442,7 +450,12 @@ def test_operator_deploy_and_printed_rollback(format_transition, monkeypatch, wi
         for line in result.stdout.splitlines()
         if line.startswith("rollback: ")
     ]
-    assert shlex.split(command) == [
+    argv = shlex.split(command)
+    env_args = argv[1 : argv.index("bash")]
+    assert argv[0] == "env"
+    assert f"CIRRA_STATE={os.environ['CIRRA_STATE']}" in env_args
+    assert "CIRRA_AUDIT_READ_PORT=9897" in env_args
+    assert argv[argv.index("bash") :] == [
         "bash",
         "scripts/deploy-release.sh",
         "--rollback",
@@ -450,7 +463,9 @@ def test_operator_deploy_and_printed_rollback(format_transition, monkeypatch, wi
         "--host",
         "fixture-host",
     ]
-    subprocess.run(shlex.split(command), cwd=SCRIPT.parents[1], check=True, timeout=25)
+    for entry in env_args:
+        monkeypatch.delenv(entry.split("=", 1)[0])
+    subprocess.run(argv, cwd=SCRIPT.parents[1], check=True, timeout=25)
     assert (service / "current").resolve() == previous
     assert policy.read_bytes() == original
     assert reader_url in checks.read_text().splitlines()[len(deploy_checks) :]

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the managed Cirra selector for an atomic replacement
+
+[Path]
+PathChanged=/srv/lugos/state/cirra-ha
+Unit=cirra-audit-rebind.service
+
+[Install]
+WantedBy=multi-user.target

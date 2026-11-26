@@ -1,0 +1,22 @@
+[Unit]
+Description=Grant the selected private root read-only audit access and rebind its reader
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Restart=on-failure
+RestartSec=2s
+User=matt
+Group=matt
+StateDirectory=cirra-ha-audit-rebind
+StateDirectoryMode=0700
+UMask=0077
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/lugos/state/cirra-ha/current.restores
+ExecStart=/bin/bash /usr/local/libexec/cirra-ha/managed-linux-state.sh reader /srv/lugos/state/cirra-ha /var/lib/cirra-ha-audit-rebind/selected
+ExecStartPost=+/usr/bin/systemctl --no-block try-restart cirra-audit-reads.service
+
+[Install]
+WantedBy=multi-user.target

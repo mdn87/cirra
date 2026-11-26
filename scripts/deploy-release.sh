@@ -67,6 +67,13 @@ for optional in cirra-audit-reads.service cirra-health.timer; do
   fi
 done
 R=$RELEASES/$SHA
+if [ -e "$SERVICE/deployment-state-path" ]; then
+  expected_state=$(cat -- "$SERVICE/deployment-state-path")
+  if [[ "$expected_state" != /* || "$STATE" != "$expected_state" ]]; then
+    echo "CIRRA_STATE differs from the configured deployment state path; check the managed selector." >&2
+    exit 1
+  fi
+fi
 
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release id" >&2; exit 2; }
 [[ "$KEEP" =~ ^[0-9]+$ ]] || { echo "invalid release retention count" >&2; exit 2; }
@@ -420,7 +427,15 @@ for _, name in candidates[:max(0, len(candidates) - keep)]:
 PY
 rollback=$PREV
 if [ -n "$FALLBACK" ] && ! check_release_state "$PREV"; then rollback=$FALLBACK; fi
-printf 'rollback: bash scripts/deploy-release.sh --rollback %q --host %q\n' "${rollback##*/}" "$OPERATOR_HOST"
+rollback_env=()
+[[ "$SERVICE" == /srv/lugos/services/cirra ]] || rollback_env+=("CIRRA_SERVICE_DIR=$SERVICE")
+[[ "$RELEASES" == /srv/lugos/releases/cirra ]] || rollback_env+=("CIRRA_RELEASES=$RELEASES")
+[[ "$STATE" == /srv/lugos/state/cirra ]] || rollback_env+=("CIRRA_STATE=$STATE")
+[[ "$PORT" == 8796 ]] || rollback_env+=("CIRRA_PORT=$PORT")
+[[ "$READ_PORT" == 8797 ]] || rollback_env+=("CIRRA_AUDIT_READ_PORT=$READ_PORT")
+printf 'rollback: '
+if (( ${#rollback_env[@]} )); then printf 'env '; printf '%q ' "${rollback_env[@]}"; fi
+printf 'bash scripts/deploy-release.sh --rollback %q --host %q\n' "${rollback##*/}" "$OPERATOR_HOST"
 REMOTE
 }
 

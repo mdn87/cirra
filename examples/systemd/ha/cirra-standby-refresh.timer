@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep the authorized private Cirra donor archive available to the Linux worker
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1min
+Unit=cirra-standby-refresh.service
+
+[Install]
+WantedBy=timers.target

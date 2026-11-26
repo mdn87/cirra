@@ -1,0 +1,13 @@
+[Unit]
+Description=Select the physical Cirra private-state version for encrypted backup
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/lugos/state/cirra-ha/current.restores
+RestrictAddressFamilies=AF_UNIX
+ExecStart=/bin/bash /usr/local/libexec/cirra-ha/managed-linux-state.sh backup /srv/lugos/state/cirra-ha
