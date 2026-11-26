@@ -232,8 +232,8 @@ heads without a gate receipt. All 25 webhook POSTs in the sample returned
 
 Both data hosts verified the 18:30 UTC recovery point. SQLite integrity and
 foreign-key checks passed, and the signed evidence included 220 current and
-299 historical witnesses. The Intel Mac also ran the two service origins
-against three independent voter processes on that machine. All 45 health
+299 historical witnesses. In a second rehearsal at 19:21 UTC, the Intel Mac
+ran the two service origins against three independent voters on that machine. All 45 health
 probes returned 200 during takeover and the standby completed the recovered
 test job in 6.25 seconds. A physical host loss behind the public webhook still
 requires the three-host rollout and an end-to-end drill.
