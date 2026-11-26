@@ -523,6 +523,36 @@
           "message": "Pull request 43 merged and deployed at 844179b. Four services use Bitwarden. Both retried jobs finished successfully. The original failures are preserved."
         }
       ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:deploy-ssh-arguments",
+      "projectId": "cirra",
+      "title": "Repair the deployment and rollback commands",
+      "summary": "Preserve optional arguments across SSH and verify that the printed rollback command restores the previous release and configuration.",
+      "stage": "done",
+      "sequence": 11,
+      "prereqs": [],
+      "linkedRunIds": [],
+      "confidence": "authoritative",
+      "timestamps": {
+        "createdAt": "2026-11-26T03:10:51Z",
+        "updatedAt": "2026-11-26T03:23:49Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:deploy-ssh-arguments:created",
+          "kind": "created",
+          "at": "2026-11-26T03:10:51Z",
+          "message": "On the service host, SSH dropped the empty fallback and both commands rejected the audit reader port as a release identifier."
+        },
+        {
+          "entryId": "cirra:deploy-ssh-arguments:isolated",
+          "kind": "stage-change",
+          "at": "2026-11-26T03:23:49Z",
+          "message": "With and without a fallback, the operator command deployed a candidate, checked a custom reader port and restored the previous release and configuration using its printed command."
+        }
+      ]
     }
   ]
 }

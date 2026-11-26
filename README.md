@@ -53,6 +53,11 @@ Use the same `.cirra/` state directory for concurrent invocations; `--state-dir`
 selects an explicit location. A complete report may contain defects or failed CI:
 **complete describes available evidence, not approval to merge**.
 
+The Markdown report includes one **Next step** based on the saved review and CI evidence.
+The required GitHub check shows an action for the first rule that determines its verdict.
+For example, a passing build with an unavailable patch points you to the file to inspect
+before requesting another review.
+
 ## Use an existing agent session
 
 Prepare a fixed packet for a live Codex, Claude, or other agent session:

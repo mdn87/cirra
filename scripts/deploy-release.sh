@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
     --repin) REPIN=1; shift ;;
     --skip-tests) TESTS=0; shift ;;
     --keep) [[ ${2:-} =~ ^[0-9]+$ ]] || usage; KEEP=$2; shift 2 ;;
-    --rollback) MODE=rollback TARGET=$2; shift 2 ;;
+    --rollback) [[ ${2:-} =~ ^[0-9a-f]{40}$ ]] || usage; MODE=rollback TARGET=$2; shift 2 ;;
     --print-remote) MODE=print; shift ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage ;;
@@ -54,6 +54,7 @@ set -euo pipefail
 MODE=$1 SHA=$2 REPIN=$3 TESTS=$4 KEEP=$5 SERVICE=$6 RELEASES=$7 STATE=$8 PORT=$9
 FALLBACK_SHA=${10:-}
 READ_PORT=${11:-8797}
+OPERATOR_HOST=${12:-lugos-host}
 FALLBACK=""
 CONFIG=$SERVICE/config
 STAGING=$SERVICE/staging
@@ -412,7 +413,7 @@ for _, name in candidates[:max(0, len(candidates) - keep)]:
 PY
 rollback=$PREV
 if [ -n "$FALLBACK" ] && ! check_release_state "$PREV"; then rollback=$FALLBACK; fi
-echo "rollback: scripts/deploy-release.sh --rollback $(basename "$rollback") --host <host>"
+printf 'rollback: bash scripts/deploy-release.sh --rollback %q --host %q\n' "${rollback##*/}" "$OPERATOR_HOST"
 REMOTE
 }
 
@@ -430,6 +431,16 @@ else
   git archive --format=tar -o "$tmp/$SHA.tar" "$SHA"
   scp -q "$tmp/$SHA.tar" "$HOST:$SERVICE_DIR/staging/$SHA.tar"
 fi
-remote_script | ssh "$HOST" "cat > '$SERVICE_DIR/staging/deploy-$SHA.sh'"
-ssh "$HOST" bash "$SERVICE_DIR/staging/deploy-$SHA.sh" \
-  "$MODE" "$SHA" "$REPIN" "$TESTS" "$KEEP" "$SERVICE_DIR" "$RELEASES" "$STATE" "$PORT" "$FALLBACK" "$READ_PORT"
+# SSH sends a command string to the remote login shell. Quote every argument,
+# including empty ones, and escape embedded single quotes for a POSIX shell.
+remote_args() {
+  local arg
+  for arg in "$@"; do
+    printf " '%s'" "${arg//\'/\'\\\'\'}"
+  done
+}
+
+remote_path="$SERVICE_DIR/staging/deploy-$SHA.sh"
+remote_script | ssh "$HOST" "cat >$(remote_args "$remote_path")"
+ssh "$HOST" "bash$(remote_args "$remote_path" "$MODE" "$SHA" "$REPIN" "$TESTS" "$KEEP" \
+  "$SERVICE_DIR" "$RELEASES" "$STATE" "$PORT" "$FALLBACK" "$READ_PORT" "$HOST")"
