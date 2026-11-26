@@ -7,6 +7,7 @@ from cirra.audit import SEVERITIES
 from cirra.domain import CirraError, digest
 from cirra.github import native_id, pull_merge_ref, record, revisions, target_revision
 from cirra.policy import assess_checks
+from cirra.publication_fence import PublicationFence, require_state_owner
 from cirra.publish import write_receipt
 from cirra.report import (
     check_result,
@@ -102,11 +103,13 @@ def verdict(report, threshold):
 
 class RequiredReviewCheck:
     def __init__(self, directory, route, change, transport, current_merge):
+        require_state_owner(directory)
         self.route, self.change, self.transport = route, change, transport
         self.current_merge = current_merge
         self.merge = current_merge()
         self.head = change["head_sha"]
         self.slot = digest([NAME, route.repository_id, route.policy.digest, self.head])
+        self.fence = PublicationFence("required-review", self.slot)
         self.path = directory / "review-gates" / (self.slot + ".json")
         self.prefix = "/repos/" + route.repository
 
@@ -125,7 +128,7 @@ class RequiredReviewCheck:
             )
         return native_id(item.get("id"))
 
-    def confirm(self, item, intent):
+    def confirm(self, item, intent, *, readback=False):
         settled = intent["settled"]
         identifier = self.verify(
             item, intent["expected_status"], settled.get("conclusion"), settled.get("native_id")
@@ -137,6 +140,11 @@ class RequiredReviewCheck:
             != intent["output_digest"]
         ):
             raise RemoteUncertain("required review acknowledgement belongs to a different write")
+        if not readback:
+            proof = digest(
+                [intent["expected_status"], settled.get("conclusion"), intent["output_digest"]]
+            )
+            self.fence.acknowledged(proof, identifier, target=settled.get("native_id"))
         result = {**settled, "native_id": identifier}
         write_receipt(self.path, result)
         return result
@@ -158,15 +166,17 @@ class RequiredReviewCheck:
             "output_digest": digest(body["output"]),
             "settled": {**settled, "operation_id": operation},
         }
-        write_receipt(self.path, intent)
-        try:
-            item, _ = http.request(method, path, body=body)
-        except RemoteUncertain:
-            raise
-        except CirraError:
-            write_receipt(self.path, prior or {"state": "refused", "native_id": None})
-            raise
-        return self.confirm(item, intent)
+        proof = digest([body["status"], settled.get("conclusion"), intent["output_digest"]])
+        with self.fence.writing(proof, settled.get("native_id")):
+            write_receipt(self.path, intent)
+            try:
+                item, _ = http.request(method, path, body=body)
+            except RemoteUncertain:
+                raise
+            except CirraError:
+                write_receipt(self.path, prior or {"state": "refused", "native_id": None})
+                raise
+            return self.confirm(item, intent)
 
     def start(self):
         http = self.transport()
@@ -191,11 +201,22 @@ class RequiredReviewCheck:
         if len(matches) > 1 or (prior and prior["state"] != "refused" and not matches):
             raise CirraError("required review check has no unique visible owner after a write")
         identifier = native_id(matches[0]["id"]) if matches else None
+        proof = None
+        if matches and self.fence.owner is not None:
+            item = matches[0]
+            output = record(item.get("output"))
+            projection = {field: output.get(field) for field in ("title", "summary", "text")}
+            proof = digest([item.get("status"), item.get("conclusion"), digest(projection)])
+        known = self.fence.observe(identifier, proof)
         if prior.get("state") == "awaiting_ack":
-            self.identifier = self.confirm(matches[0], prior)["native_id"]
+            self.identifier = self.confirm(matches[0], prior, readback=True)["native_id"]
             return
         if prior.get("native_id") and prior["native_id"] != identifier:
             raise CirraError("required review check changed its native identity")
+        if known and matches[0].get("status") == "in_progress":
+            self.identifier = self.verify(matches[0], "in_progress", identifier=identifier)
+            write_receipt(self.path, {"state": "in_progress", "native_id": self.identifier})
+            return
         if matches and matches[0].get("status") == "completed":
             # GitHub keeps completed check runs terminal. On redelivery, refresh
             # the verdict in finish() without replacing the last report with a pending summary.

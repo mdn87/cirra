@@ -67,10 +67,16 @@ BASELINE_INDEX = (
 
 
 class Store:
-    def __init__(self, directory):
+    def __init__(self, directory, *, readonly=False):
         directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "cirra.sqlite3"
+        self.readonly = readonly
+        if readonly:
+            with self.connection() as connection:
+                if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+                    raise CirraError("saved reports require a compatible read-only schema")
+            return
+        directory.mkdir(parents=True, exist_ok=True)
         with self.transaction() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
@@ -100,9 +106,12 @@ class Store:
 
     @contextmanager
     def connection(self):
-        connection = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        location = self.path.resolve().as_uri() + "?mode=ro" if self.readonly else self.path
+        connection = sqlite3.connect(location, timeout=10, isolation_level=None, uri=self.readonly)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
+        if self.readonly:
+            connection.execute("PRAGMA query_only=ON")
         try:
             yield connection
         finally:
