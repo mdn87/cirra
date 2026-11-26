@@ -13,8 +13,10 @@ audit that is where runnable pr or release work preempts it.
 import json
 import os
 import random
+import re
 import subprocess
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -33,7 +35,9 @@ from cirra.domain import (
 )
 from cirra.github import API_VERSION, check_summary_digest, native_id, record, repository_name
 from cirra.job_queue import AUDIT_PRIORITY, AuditQueue
+from cirra.publication_fence import PublicationFence, require_state_owner
 from cirra.publish import write_receipt
+from cirra.quorum import current_owner
 from cirra.store import Store
 from cirra.transport import JSONClient, ReadUnavailable, RemoteUncertain, RequestNotSent, pages
 
@@ -670,6 +674,8 @@ class AuditCheckPublisher:
         before_create=None,
         expected_summary_digest=None,
     ):
+        fence = PublicationFence("audit", [self.app_id, external_id])
+
         def get(route, params):
             data, more = self.http.request("GET", self.prefix + "/" + route, params)
             return record(data).get("check_runs"), more
@@ -689,46 +695,65 @@ class AuditCheckPublisher:
         if len(found) > 1:
             raise RemoteUncertain("multiple owned audit checks match this audit")
         if found:
+            item = found[0]
+            marker = record(item.get("output")).get("text")
+            if marker is not None and (
+                fence.owner is None
+                or not isinstance(marker, str)
+                or not re.fullmatch(r"<!-- cirra-operation:[0-9a-f]{32} -->", marker)
+            ):
+                raise RemoteUncertain("owned audit check has an unexpected operation marker")
+            summary_digest = check_summary_digest(item, CHECK_TITLE, text=marker)
             if (
-                found[0].get("status") != "completed"
-                or found[0].get("conclusion") != conclusion
-                or check_summary_digest(found[0], CHECK_TITLE)
-                != (expected_summary_digest or digest(summary))
+                item.get("status") != "completed"
+                or item.get("conclusion") != conclusion
+                or summary_digest != (expected_summary_digest or digest(summary))
             ):
                 raise RemoteUncertain("owned audit check does not match the completed report")
-            return {"native_id": native_id(found[0].get("id")), "existing": True}
+            identifier = native_id(item.get("id"))
+            fence.observe(identifier, digest([head, conclusion, summary_digest, marker]))
+            return {"native_id": identifier, "existing": True}
+        fence.observe(None, None)
         if reconcile_only:
             raise RemoteUncertain("the audit check has no confirmed acknowledgement")
         if before_create and (reason := before_create()):
             return {"stopped": reason}
-        item, _ = self.http.request(
-            "POST",
-            self.prefix + "/check-runs",
-            body={
-                "name": CHECK_NAME,
-                "head_sha": head,
-                "status": "completed",
-                "conclusion": conclusion,
-                "external_id": external_id,
-                "output": {"title": CHECK_TITLE, "summary": summary},
-            },
-        )
-        try:
-            if (
-                record(item).get("external_id") != external_id
-                or str(record(item.get("app")).get("id")) != self.app_id
-                or item.get("name") != CHECK_NAME
-                or item.get("head_sha") != head
-                or item.get("status") != "completed"
-                or item.get("conclusion") != conclusion
-                or check_summary_digest(item, CHECK_TITLE) != digest(summary)
-            ):
-                raise CirraError("mismatched check")
-            identifier = native_id(item.get("id"))
-        except CirraError:
-            raise RemoteUncertain(
-                "GitHub audit check acknowledgement did not match the intent"
-            ) from None
+        output = {"title": CHECK_TITLE, "summary": summary}
+        marker = None
+        if fence.owner is not None:
+            marker = output["text"] = f"<!-- cirra-operation:{uuid.uuid4().hex} -->"
+        summary_digest = digest(summary)
+        proof = digest([head, conclusion, summary_digest, marker])
+        with fence.writing(proof, None):
+            item, _ = self.http.request(
+                "POST",
+                self.prefix + "/check-runs",
+                body={
+                    "name": CHECK_NAME,
+                    "head_sha": head,
+                    "status": "completed",
+                    "conclusion": conclusion,
+                    "external_id": external_id,
+                    "output": output,
+                },
+            )
+            try:
+                if (
+                    record(item).get("external_id") != external_id
+                    or str(record(item.get("app")).get("id")) != self.app_id
+                    or item.get("name") != CHECK_NAME
+                    or item.get("head_sha") != head
+                    or item.get("status") != "completed"
+                    or item.get("conclusion") != conclusion
+                    or check_summary_digest(item, CHECK_TITLE, text=marker) != summary_digest
+                ):
+                    raise CirraError("mismatched check")
+                identifier = native_id(item.get("id"))
+            except CirraError:
+                raise RemoteUncertain(
+                    "GitHub audit check acknowledgement did not match the intent"
+                ) from None
+            fence.acknowledged(proof, identifier, target=None)
         return {"native_id": identifier, "existing": False}
 
 
@@ -740,13 +765,14 @@ class AuditPublication:
         self.routes, self.publisher_for = routes, publisher_for
 
     def __call__(self, job, attempt):
+        require_state_owner(self.directory)
         if attempt["tier"] != "pr":
             return {"state": "not_published", "reason": f"{attempt['tier']} audits gate elsewhere"}
         path = self.directory / "audit-publication" / f"{attempt['audit_id']}.json"
         previous = {}
         if path.exists():
             previous = json.loads(path.read_text(encoding="utf-8"))
-            if previous["state"] == "published":
+            if previous["state"] == "published" and current_owner() is None:
                 return {**previous, "duplicate": True}
         identity = json.loads(attempt["identity_json"])
         route = route_for(self.routes, job["context"].get("route"), identity)
@@ -758,7 +784,10 @@ class AuditPublication:
                 "state": "failed",
                 "reason": "the audit policy changed after this request; request it again",
             }
-        uncertain = previous.get("uncertain", previous.get("state") in ("creating", "failed"))
+        confirmed = previous.get("state") == "published"
+        uncertain = confirmed or previous.get(
+            "uncertain", previous.get("state") in ("creating", "failed")
+        )
         saved_intent = uncertain and previous.get("summary_digest")
         comparison = summary = None
         if not saved_intent and "full" in policy.tiers:
@@ -826,6 +855,10 @@ class AuditPublication:
 
             try:
                 publisher = self.publisher_for(route)
+                if current_owner() is not None and type(publisher) is not AuditCheckPublisher:
+                    raise CirraError(
+                        "shared audit publication requires the native GitHub check writer"
+                    )
                 native = publisher.publish(
                     attempt["head"],
                     attempt["audit_id"],
@@ -837,7 +870,11 @@ class AuditPublication:
                 )
                 if native.get("stopped"):
                     return {"state": "stopped", "reason": native["stopped"]}
+                if confirmed and native["native_id"] != previous["native_id"]:
+                    raise RemoteUncertain("confirmed audit check changed its native identity")
                 receipt.update(native)
+                if confirmed:
+                    receipt["duplicate"] = True
             except (ReadUnavailable, ProviderRateLimited, RemoteUncertain) as exc:
                 if isinstance(exc, RemoteUncertain):
                     uncertain = True

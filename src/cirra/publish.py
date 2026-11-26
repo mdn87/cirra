@@ -10,6 +10,7 @@ from pathlib import Path
 from cirra.domain import CirraError, canonical, digest, fields, number, timestamp, utc_now
 from cirra.github import API_VERSION, check_summary_digest, native_id, record, repository_name
 from cirra.policy import assess_checks
+from cirra.publication_fence import PublicationFence, require_send, require_state_owner
 from cirra.report import make_report, render_markdown
 from cirra.transport import JSONClient, RemoteUncertain, pages
 
@@ -162,6 +163,7 @@ class GitHubPublisher:
 
     def write(self, report, metadata, identifier=None):
         summary = summary_text(report, metadata)
+        require_send("advisory", metadata["slot"], digest(summary), identifier)
         body = {
             "name": NAME,
             "status": "completed",
@@ -218,6 +220,7 @@ class GitLabPublisher:
 
     def write(self, report, metadata, identifier=None):
         body = summary_text(report, metadata)
+        require_send("advisory", metadata.get("slot"), digest(body), identifier)
         item = self.client.note(int(report["snapshot"]["change_id"]), body, identifier)
         if (
             not isinstance(item, dict)
@@ -344,6 +347,7 @@ def publish(
     canonical_id=None,
 ):
     """Refresh with the reader and serialize only this change across remote I/O."""
+    require_state_owner(store.path.parent)
     original = store.latest_report(run_id)
     snap = original["snapshot"]
     change_key = digest(
@@ -380,6 +384,16 @@ def publish(
             }
         )
         path = store.path.parent / "publication" / f"{slot}.json"
+        fence = PublicationFence("advisory", slot)
+        if fence.owner is not None and type(publisher) not in (GitHubPublisher, GitLabPublisher):
+            raise CirraError("shared publication requires a supported native advisory writer")
+        content_digest = (
+            digest({k: v for k, v in report.items() if k not in ("observed_at", "report_digest")})
+            if fence.owner is not None
+            else None
+        )
+        if fence.owner is not None and (retry_uncertain or canonical_id):
+            raise CirraError("shared publication cannot override an uncertain native slot")
         receipt = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
         selected_id = canonical_id or (receipt or {}).get("canonical_id")
         found = publisher.find(report, slot)
@@ -392,6 +406,11 @@ def publish(
                 "multiple owned publications found; select --canonical-id after inspection"
             )
         remote = found[0] if found else None
+        known = (
+            fence.observe(remote["id"], remote.get("body_digest"))
+            if remote
+            else fence.observe(None, None)
+        )
         if remote:
             metadata = remote["metadata"]
             if not isinstance(metadata, dict) or metadata.get("slot") != slot:
@@ -402,9 +421,44 @@ def publish(
                 number(metadata.get(field), "publication " + field, 1, 2**63 - 1, integral=True)
             if metadata["run_order"] > order:
                 raise CirraError("remote publication supersedes this local review")
+            if fence.owner is not None and metadata.get("run_id") != run_id:
+                # A restored SQLite database can assign the same rowid (or a higher
+                # one) on a divergent history. Require the previous report locally
+                # before letting a different run replace the provider's current one.
+                if metadata["run_order"] == order or not store.report_by_digest(
+                    metadata.get("run_id"), metadata.get("report_digest")
+                ):
+                    raise CirraError("private review history cannot order these publication runs")
+            if (
+                known
+                and metadata.get("content_digest") == content_digest
+                and (
+                    not receipt
+                    or (
+                        receipt.get("native_id") in (None, remote["id"])
+                        and (
+                            metadata["generation"] > receipt["metadata"]["generation"]
+                            or (receipt["state"] == "published" and receipt["metadata"] == metadata)
+                        )
+                    )
+                )
+            ):
+                # The worker's private snapshot can predate its predecessor's send.
+                # Quorum and the owned native object agree on this exact output.
+                result = {
+                    "state": "published",
+                    "native_id": remote["id"],
+                    "canonical_id": selected_id,
+                    "metadata": metadata,
+                    "body_digest": remote["body_digest"],
+                    "acknowledged_at": utc_now(),
+                }
+                checkpoint(store, claim, path, result)
+                return result
             if (
                 not retry_uncertain
                 and (not receipt or metadata["generation"] > receipt["metadata"]["generation"])
+                and not known
                 and not matches_saved_body(store, remote, receipt, snap)
             ):
                 # A restore can see a later native write than the local snapshot. Keep
@@ -426,7 +480,10 @@ def publish(
                 remote
                 and remote["metadata"] == expected
                 and (receipt.get("native_id") is None or receipt["native_id"] == remote["id"])
-                and matches_saved_body(store, remote, {**receipt, "metadata": expected}, snap)
+                and (
+                    known
+                    or matches_saved_body(store, remote, {**receipt, "metadata": expected}, snap)
+                )
             ):
                 receipt.pop("reason", None)
                 receipt.update(
@@ -458,7 +515,7 @@ def publish(
                     remote["metadata"]["generation"] <= receipt["metadata"]["generation"]
                     and (
                         remote["metadata"] != receipt["metadata"]
-                        or not matches_saved_body(store, remote, receipt, snap)
+                        or not (known or matches_saved_body(store, remote, receipt, snap))
                     )
                 )
             )
@@ -472,7 +529,7 @@ def publish(
             if not retry_uncertain:
                 return receipt
         if reconcile and not retry_uncertain:
-            if remote and matches_saved_body(store, remote, receipt, snap):
+            if remote and (known or matches_saved_body(store, remote, receipt, snap)):
                 result = {
                     "state": "published",
                     "native_id": remote["id"],
@@ -506,6 +563,8 @@ def publish(
             "analysis_digest": report["analysis_digest"],
             "report_digest": report["report_digest"],
         }
+        if fence.owner is not None:
+            metadata["content_digest"] = content_digest
         body_digest = digest(summary_text(report, metadata))
         receipt = {
             "schema_version": 1,
@@ -519,19 +578,30 @@ def publish(
             "intent_at": utc_now(),
             "duplicate_risk_accepted": bool(retry_uncertain and not remote),
         }
-        checkpoint(store, claim, path, receipt)
+        staged = False
         try:
-            result = publisher.write(report, metadata, receipt["native_id"])
-            if (
-                not isinstance(result, dict)
-                or result.get("metadata") != metadata
-                or result.get("body_digest") != body_digest
-                or (receipt["native_id"] is not None and result.get("id") != receipt["native_id"])
-            ):
-                raise RemoteUncertain("native publication does not match the saved write")
+            with fence.writing(body_digest, receipt["native_id"]):
+                checkpoint(store, claim, path, receipt)
+                staged = True
+                result = publisher.write(report, metadata, receipt["native_id"])
+                if (
+                    not isinstance(result, dict)
+                    or result.get("metadata") != metadata
+                    or result.get("body_digest") != body_digest
+                    or (
+                        receipt["native_id"] is not None
+                        and result.get("id") != receipt["native_id"]
+                    )
+                ):
+                    raise RemoteUncertain("native publication does not match the saved write")
+                fence.acknowledged(body_digest, result["id"], target=receipt["native_id"])
         except RemoteUncertain as exc:
+            if not staged:
+                raise
             receipt["reason"] = str(exc)
         except CirraError as exc:
+            if not staged:
+                raise
             receipt.update(state="failed", metadata=metadata, reason=str(exc))
         else:
             receipt.update(
