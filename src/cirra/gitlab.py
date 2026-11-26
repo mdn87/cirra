@@ -6,7 +6,9 @@ from urllib.parse import quote
 from cirra.domain import (
     CirraError,
     ProviderAccessDenied,
+    ProviderIdentityMismatch,
     ProviderRateLimited,
+    ReadUnavailable,
     number,
     path_name,
     sha,
@@ -58,7 +60,7 @@ def revisions(client, change, repository_id):
     mr, _ = client.get(f"merge_requests/{change}")
     record(mr)
     if native_id(mr.get("project_id")) != repository_id or mr.get("iid") != change:
-        raise CirraError("GitLab MR identity mismatch")
+        raise ProviderIdentityMismatch("GitLab MR identity mismatch")
     refs = record(mr.get("diff_refs"))
     head = sha(refs.get("head_sha"))
     if sha(mr.get("sha")) != head:
@@ -121,10 +123,10 @@ def collect(repository, change, config, *, client=None, max_pages=10, strict_ci_
     project, _ = client.get()
     identifier = native_id(record(project).get("id"))
     if project.get("path_with_namespace", "").lower() != repository.lower():
-        raise CirraError("GitLab returned a different project")
+        raise ProviderIdentityMismatch("GitLab returned a different project")
     identity = {"provider": "gitlab", "instance": "https://gitlab.com", "repository_id": identifier}
     if identity not in config.repositories:
-        raise CirraError("GitLab repository is not allowlisted by operator policy")
+        raise ProviderIdentityMismatch("GitLab repository is not allowlisted by operator policy")
     for _ in range(3):
         before = revisions(client, change, identifier)
         head, base, start, target = before
@@ -193,7 +195,7 @@ def collect(repository, change, config, *, client=None, max_pages=10, strict_ci_
             for pipeline in pipelines:
                 pipeline, _ = client.get(f"pipelines/{pipeline['id']}")
                 if pipeline.get("project_id") != int(identifier):
-                    raise CirraError("GitLab pipeline belongs to another project")
+                    raise ProviderIdentityMismatch("GitLab pipeline belongs to another project")
                 jobs = pages(
                     client.get,
                     f"pipelines/{pipeline['id']}/jobs",
@@ -202,7 +204,15 @@ def collect(repository, change, config, *, client=None, max_pages=10, strict_ci_
                 )
                 checks.extend(job_check(job, pipeline, identifier) for job in jobs)
         except CirraError as exc:
-            if strict_ci_reads and isinstance(exc, (ProviderAccessDenied, ProviderRateLimited)):
+            if strict_ci_reads and isinstance(
+                exc,
+                (
+                    ProviderAccessDenied,
+                    ProviderIdentityMismatch,
+                    ProviderRateLimited,
+                    ReadUnavailable,
+                ),
+            ):
                 raise
             errors.append(str(exc))
         if revisions(client, change, identifier) != before:

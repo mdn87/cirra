@@ -20,6 +20,7 @@ from cirra.github import GitHubClient, GitHubError, NoRedirect, collect, export_
 from cirra.policy import assess_checks
 from cirra.session import import_response, prepare
 from cirra.store import Store
+from cirra.transport import ReadUnavailable
 
 HEAD, BASE, TARGET = "2" * 40, "1" * 40, "3" * 40
 TIME = "2026-10-15T06:00:00Z"
@@ -632,6 +633,11 @@ def test_transient_read_failure_retries_but_is_bounded(monkeypatch):
         client_with(transport).get("pulls/9")
     assert "canary-secret" not in str(error.value) and len(transport.requests) == 3
     assert "canary-secret" not in "".join(traceback.format_exception(error.value))
+    assert isinstance(error.value, ReadUnavailable)
+    transport = Transport([(503, b"", {})] * 3)
+    with pytest.raises(ReadUnavailable, match="503"):
+        client_with(transport).get("pulls/9")
+    assert len(transport.requests) == 3
 
 
 def test_size_and_deadline_limits():
@@ -641,7 +647,7 @@ def test_size_and_deadline_limits():
     transport = Transport([])
     client = client_with(transport)
     client.deadline = 0
-    with pytest.raises(GitHubError, match="deadline"):
+    with pytest.raises(ReadUnavailable, match="deadline"):
         client.get("pulls/9")
     assert transport.requests == []
 

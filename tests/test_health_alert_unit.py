@@ -130,7 +130,28 @@ def test_local_http_requires_an_explicit_transport(monkeypatch):
     assert type(health_notify.receiver("events.example", 443)) is http.client.HTTPSConnection
 
     monkeypatch.setenv("LUGOS_EVENT_SCHEME", "http")
-    assert type(health_notify.receiver("10.0.1.33", 8787)) is http.client.HTTPConnection
+    connection = health_notify.receiver("10.0.1.33", 8787)
+    endpoints = {"local": "10.0.1.33"}
+
+    class Peer:
+        def getsockname(self):
+            return endpoints["local"], 54321
+
+        def getpeername(self):
+            return "10.0.1.33", 8787
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        http.client.HTTPConnection, "connect", lambda conn: setattr(conn, "sock", Peer())
+    )
+    connection.connect()
+    connection.close()
+    endpoints["local"] = "10.0.1.22"
+    with pytest.raises(ValueError, match="same host"):
+        connection.connect()
+    assert connection.sock is None
     with pytest.raises(ValueError, match="private IP address"):
         health_notify.receiver("events.example", 8787)
 

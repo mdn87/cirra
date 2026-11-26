@@ -392,8 +392,9 @@ exhausted, or a queue record is unreadable (the worker skips such records).
 run. Both units use HTTP for loopback and verified HTTPS for a remote recipient
 by default. On lugos-host, event-ingest listens on the same host's private
 `10.0.1.33:8787` interface with HTTP. Set `LUGOS_EVENT_SCHEME=http` in both
-health notification units for that route; explicit HTTP accepts only a private
-IP address. Keep the default HTTPS route for recipients outside the trusted LAN.
+health notification units for that route. Cirra checks that both ends of the
+TCP connection have that local address before sending the event credential.
+Use verified HTTPS for recipients on another host, including on the same LAN.
 The alert uses fallback text if the journal takes more than three seconds.
 A rejected resolution keeps the incident marker for the next healthy run.
 

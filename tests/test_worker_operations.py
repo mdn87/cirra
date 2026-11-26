@@ -14,7 +14,8 @@ from cirra.job_queue import Queue
 from cirra.publish import write_receipt
 from cirra.reconcile import sync
 from cirra.retention import cold_evidence, manifest
-from cirra.worker import Processor, heartbeat, work_once
+from cirra.transport import ReadUnavailable
+from cirra.worker import Processor, heartbeat, using_reader, work_once
 
 
 def route(name="first", credential="READER"):
@@ -159,8 +160,9 @@ def test_preflight_refusal_defers_shared_reader_but_keeps_healthy_route_moving(t
     assert seen == ["healthy"]
 
 
+@pytest.mark.parametrize("failure", [ProviderAccessDenied, ReadUnavailable])
 def test_scheduled_audits_continue_with_an_independent_reader_after_a_refusal(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, failure
 ):
     denied = route()
     shared = route("shared")
@@ -170,7 +172,7 @@ def test_scheduled_audits_continue_with_an_independent_reader_after_a_refusal(
     def request(directory, target, event, **kwargs):
         contacted.append(target.name)
         if target == denied:
-            raise ProviderAccessDenied("provider denied access")
+            raise failure("provider denied access")
         return [{"job_id": target.name}]
 
     monkeypatch.setattr("cirra.worker.request_audits", request)
@@ -181,6 +183,50 @@ def test_scheduled_audits_continue_with_an_independent_reader_after_a_refusal(
         {"route": denied.name, "error": "provider denied access"},
         {"job_id": healthy.name},
     ]
+
+
+@pytest.mark.parametrize("preflight", [True, False])
+def test_read_outage_defers_shared_reader_and_charges_only_started_work(tmp_path, preflight):
+    queue = Queue(tmp_path)
+    routes = [route(), route("shared"), route("independent", "OTHER_READER")]
+    config = SimpleNamespace(
+        routes={r.name: r for r in routes}, max_attempts=1, retry_seconds=5, max_jobs_per_day=2
+    )
+    for r in routes:
+        queue.enqueue(r, hint(r.name))
+
+    def process(r, event):
+        if r.name == "first":
+            with using_reader(preflight=preflight):
+                raise ReadUnavailable("reader temporarily unavailable")
+        assert r.name == "independent"
+        return {"state": "done"}
+
+    first = work_once(config, queue, process)
+    assert first["state"] == ("retry" if preflight else "attention")
+    assert queue.usage()["attempts"] == first["attempts"] == (0 if preflight else 1)
+    assert queue.cooldown(queue.reader_key(routes[1])) > time.time()
+    assert work_once(config, queue, process)["route"] == "independent"
+
+
+def test_wrong_repository_stops_its_job_without_retrying_or_pausing_a_shared_reader(
+    tmp_path, monkeypatch
+):
+    targets = [route(), route("healthy")]
+    for target in targets:
+        target.repository_id, target.repository = "17", "example/" + target.name
+    config = SimpleNamespace(
+        routes={r.name: r for r in targets}, max_attempts=3, retry_seconds=1, max_jobs_per_day=1
+    )
+    client = SimpleNamespace(get=lambda: ({"id": 18}, False))
+    monkeypatch.setattr("cirra.worker.GitHubClient", lambda *a, **kw: client)
+    queue = Queue(tmp_path)
+    for target in targets:
+        queue.enqueue(target, hint(target.name))
+    job = work_once(config, queue, Processor(tmp_path, lambda _: "reader", None))
+    assert job["state"] == "attention" and "identity" in job["error"]
+    assert queue.usage()["attempts"] == 0
+    assert [j["route"] for j in queue.pending(config.routes)] == ["healthy"]
 
 
 def test_capacity_refusal_oldest_age_and_delivery_objectives(tmp_path):

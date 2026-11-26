@@ -24,6 +24,14 @@ class ProviderAccessDenied(CirraError):
     """The provider refused this credential or operation."""
 
 
+class ProviderIdentityMismatch(CirraError):
+    """The returned resource does not match the configured repository or request."""
+
+
+class ReadUnavailable(CirraError):
+    """A provider read exhausted its transport retries and may be retried later."""
+
+
 class ProviderRateLimited(CirraError):
     def __init__(self, message, retry_at):
         super().__init__(message)

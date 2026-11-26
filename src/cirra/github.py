@@ -14,7 +14,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from cirra.domain import (
     CirraError,
     ProviderAccessDenied,
+    ProviderIdentityMismatch,
     ProviderRateLimited,
+    ReadUnavailable,
     digest,
     number,
     path_name,
@@ -44,6 +46,10 @@ class GitHubRateLimited(ProviderRateLimited, GitHubError):
 
 class GitHubAccessDenied(ProviderAccessDenied, GitHubError):
     """A GitHub permission failure that needs a configuration change."""
+
+
+class GitHubReadUnavailable(ReadUnavailable, GitHubError):
+    """A bounded GitHub read can be retried after the provider recovers."""
 
 
 def rate_limit_reset(headers, now=None):
@@ -100,7 +106,7 @@ class GitHubClient:
     def remaining(self):
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
-            raise GitHubError("GitHub collection deadline exceeded; retry collection")
+            raise GitHubReadUnavailable("GitHub collection deadline exceeded; retry collection")
         return remaining
 
     def get(self, route="", params=None):
@@ -156,11 +162,13 @@ class GitHubClient:
                     raise GitHubAccessDenied(
                         f"GitHub access denied (HTTP {status}); check reader permissions"
                     ) from None
-                if status not in (500, 502, 503, 504) or attempt == 2:
+                if status not in (500, 502, 503, 504):
                     raise GitHubError(f"GitHub request failed (HTTP {status})") from None
+                if attempt == 2:
+                    raise GitHubReadUnavailable(f"GitHub request failed (HTTP {status})") from None
             except (URLError, OSError):
                 if attempt == 2:
-                    raise GitHubError(
+                    raise GitHubReadUnavailable(
                         "GitHub network request failed after bounded retries"
                     ) from None
             time.sleep(min(random.uniform(0.15, 0.35) * 2**attempt, self.remaining()))
@@ -180,10 +188,10 @@ def native_id(value):
 def revisions(pr, repository_id, change):
     record(pr)
     if type(pr.get("number")) is not int or pr["number"] != change:
-        raise CirraError("GitHub response does not match the requested pull request")
+        raise ProviderIdentityMismatch("GitHub response does not match the requested pull request")
     head, base = record(pr.get("head")), record(pr.get("base"))
     if native_id(record(base.get("repo")).get("id")) != repository_id:
-        raise CirraError("GitHub pull request belongs to another repository")
+        raise ProviderIdentityMismatch("GitHub pull request belongs to another repository")
     count = number(
         pr.get("changed_files"), "GitHub changed file count", 0, 1_000_000, integral=True
     )
@@ -195,7 +203,7 @@ def target_revision(client, branch_name):
     # independently, within the already allowlisted repository.
     branch, _ = client.get("branches/" + quote(branch_name, safe=""))
     if record(branch).get("name") != branch_name:
-        raise CirraError("GitHub returned a different target branch")
+        raise ProviderIdentityMismatch("GitHub returned a different target branch")
     return sha(record(branch.get("commit")).get("sha"))
 
 
@@ -204,7 +212,7 @@ def pull_merge_ref(client, change):
     ref, _ = client.get("git/ref/" + name)
     obj = record(record(ref).get("object"))
     if ref.get("ref") != "refs/" + name or obj.get("type") != "commit":
-        raise CirraError("GitHub returned a different pull-request merge ref")
+        raise ProviderIdentityMismatch("GitHub returned a different pull-request merge ref")
     return sha(obj.get("sha"))
 
 
@@ -350,7 +358,9 @@ def checks_from(client, head, max_pages, *, strict_ci_reads=False):
                 if page == max_pages:
                     errors.append(f"{endpoint}: check page limit reached")
             except CirraError as exc:
-                if strict_ci_reads and isinstance(exc, (ProviderAccessDenied, ProviderRateLimited)):
+                if strict_ci_reads and isinstance(
+                    exc, (ProviderAccessDenied, ProviderRateLimited, ReadUnavailable)
+                ):
                     raise
                 errors.append(f"{endpoint}: {exc}")
                 break
@@ -451,14 +461,14 @@ def collect(
     record(repo)
     repository_id = native_id(repo.get("id"))
     if string(repo.get("full_name"), "GitHub repository").lower() != repository.lower():
-        raise CirraError("GitHub returned a different repository name")
+        raise ProviderIdentityMismatch("GitHub returned a different repository name")
     identity = {
         "provider": "github",
         "instance": "https://github.com",
         "repository_id": repository_id,
     }
     if identity not in config.repositories:
-        raise CirraError("GitHub repository is not allowlisted by operator policy")
+        raise ProviderIdentityMismatch("GitHub repository is not allowlisted by operator policy")
     remaining = config.merge_gate.max_intermediate_comparisons if config.merge_gate else 0
     for _ in range(3):
         pr, _ = client.get(f"pulls/{change}")

@@ -34,6 +34,17 @@ def journal_detail():
     return diagnostic[-900:]
 
 
+class SameHostHTTPConnection(http.client.HTTPConnection):
+    def connect(self):
+        super().connect()
+        # Check the established socket before http.client can send the bearer header.
+        local = ipaddress.ip_address(self.sock.getsockname()[0])
+        peer = ipaddress.ip_address(self.sock.getpeername()[0])
+        if local != peer or peer != ipaddress.ip_address(self.host):
+            self.close()
+            raise ValueError("plaintext health notifications require a receiver on the same host")
+
+
 def receiver(host, port):
     if host == "localhost":
         host = "127.0.0.1"
@@ -44,12 +55,21 @@ def receiver(host, port):
     scheme = os.environ.get("LUGOS_EVENT_SCHEME", "auto")
     if scheme not in ("auto", "http", "https"):
         raise ValueError("LUGOS_EVENT_SCHEME must be auto, http, or https")
-    if scheme == "http" and (address is None or not address.is_private):
-        raise ValueError("LUGOS_EVENT_SCHEME=http requires a private IP address")
-    use_http = scheme == "http" or (
-        scheme == "auto" and address is not None and address.is_loopback
-    )
-    connection = http.client.HTTPConnection if use_http else http.client.HTTPSConnection
+    if scheme != "https" and address is not None and address.is_loopback:
+        connection = http.client.HTTPConnection
+    elif scheme == "http":
+        if (
+            address is None
+            or not address.is_private
+            or address.is_unspecified
+            or address.is_multicast
+        ):
+            raise ValueError(
+                "LUGOS_EVENT_SCHEME=http requires a private IP address on the same host"
+            )
+        connection = SameHostHTTPConnection
+    else:
+        connection = http.client.HTTPSConnection
     return connection(host, port, timeout=8)
 
 

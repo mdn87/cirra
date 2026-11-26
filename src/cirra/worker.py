@@ -18,10 +18,18 @@ from cirra.audit_worker import (
     request_audits,
 )
 from cirra.coordinator import review
-from cirra.domain import CirraError, ProviderAccessDenied, ProviderRateLimited, digest, utc_now
+from cirra.domain import (
+    CirraError,
+    ProviderAccessDenied,
+    ProviderIdentityMismatch,
+    ProviderRateLimited,
+    ReadUnavailable,
+    digest,
+    utc_now,
+)
 from cirra.fixture import FixtureProvider
 from cirra.github import GitHubClient, export_capture, native_id, record
-from cirra.job_queue import AuditQueue, Queue
+from cirra.job_queue import AuditQueue, Queue, provider_retry_time
 from cirra.locking import change_lock
 from cirra.observer import NAME, ObserverCheck, load_observer, observe
 from cirra.publish import (
@@ -46,7 +54,12 @@ AUDIT_SCHEDULE_SECONDS = 3600
 def using_reader(*, preflight=False):
     try:
         yield
-    except (ProviderAccessDenied, ProviderRateLimited) as exc:
+    except (
+        ProviderAccessDenied,
+        ProviderIdentityMismatch,
+        ProviderRateLimited,
+        ReadUnavailable,
+    ) as exc:
         exc.reader_refusal = True
         exc.before_execution = preflight
         raise
@@ -57,22 +70,22 @@ def is_open(route, change, reader):
         client = GitHubClient(route.repository, token=reader)
         repo, _ = client.get()
         if native_id(record(repo).get("id")) != route.repository_id:
-            raise CirraError("worker repository identity changed")
+            raise ProviderIdentityMismatch("worker repository identity changed")
         item, _ = client.get(f"pulls/{change}")
         if (
             record(item).get("number") != change
             or native_id(record(record(item.get("base")).get("repo")).get("id"))
             != route.repository_id
         ):
-            raise CirraError("worker received a different pull request identity")
+            raise ProviderIdentityMismatch("worker received a different pull request identity")
         return item.get("state") == "open" and item.get("draft") is False
     client = gitlab.GitLabClient(route.repository, token=reader)
     project, _ = client.get()
     if native_id(record(project).get("id")) != route.repository_id:
-        raise CirraError("worker project identity changed")
+        raise ProviderIdentityMismatch("worker project identity changed")
     item, _ = client.get(f"merge_requests/{change}")
     if record(item).get("iid") != change or str(item.get("project_id")) != route.repository_id:
-        raise CirraError("worker received a different merge request identity")
+        raise ProviderIdentityMismatch("worker received a different merge request identity")
     return (
         item.get("state") == "opened" and item.get("draft", item.get("work_in_progress")) is False
     )
@@ -124,7 +137,7 @@ class Processor:
                 change=change,
                 default_head=lambda: default_branch_head(route, reader),
             )
-        except (ProviderAccessDenied, ProviderRateLimited) as exc:
+        except (ProviderAccessDenied, ProviderRateLimited, ReadUnavailable) as exc:
             Queue(self.directory).defer_reader(route, exc)
             return [{"error": str(exc)}]
         except CirraError as exc:
@@ -154,8 +167,14 @@ class Processor:
                         route, reader
                     ),
                 )
-            except (ProviderAccessDenied, ProviderRateLimited) as exc:
-                queue.defer_reader(route, exc)
+            except (
+                ProviderAccessDenied,
+                ProviderRateLimited,
+                ReadUnavailable,
+                ProviderIdentityMismatch,
+            ) as exc:
+                if not isinstance(exc, ProviderIdentityMismatch):
+                    queue.defer_reader(route, exc)
                 refusal = {"route": name, "error": str(exc)}
                 receipts.append(refusal)
                 print(
@@ -239,10 +258,12 @@ class Processor:
                 data = self.capture(
                     route.provider, route.repository, change, route.policy, token=reader
                 )
+            if data["change"]["repository_id"] != route.repository_id:
+                raise ProviderIdentityMismatch(
+                    "captured repository differs from the configured worker route"
+                )
         if not branch:
             self.audit_requests = self.request_audits(route, change, data, reader)
-        if data["change"]["repository_id"] != route.repository_id:
-            raise CirraError("captured repository differs from the configured worker route")
         receipt_path, witness_key = None, None
         ci_result = None
         if route.observer:
@@ -458,20 +479,19 @@ def work_once(config, queue, process):
             result = process(route, job["hint"])
             job.update(state=result["state"], result=result)
             job.pop("error", None)
-        except (ProviderAccessDenied, ProviderRateLimited) as exc:
-            limited = isinstance(exc, ProviderRateLimited)
-            until = (
-                max(exc.retry_at, time.time() + config.retry_seconds)
-                if limited
-                else time.time() + 900
-            )
+        except ProviderIdentityMismatch as exc:
+            if getattr(exc, "before_execution", False):
+                queue.return_unused_attempt(reservation)
+            job.update(state="attention", error=str(exc))
+        except (ProviderAccessDenied, ProviderRateLimited, ReadUnavailable) as exc:
+            until = provider_retry_time(exc, config.retry_seconds)
             preflight = getattr(exc, "before_execution", False)
             queue.defer_route(
                 route, until, reader=preflight or getattr(exc, "reader_refusal", False)
             )
             if preflight:
                 queue.return_unused_attempt(reservation)
-            if limited:
+            if not isinstance(exc, ProviderAccessDenied):
                 if preflight:
                     job["attempts"] -= 1
                 job.update(
