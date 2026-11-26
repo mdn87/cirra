@@ -3,6 +3,7 @@ import hmac
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -139,7 +140,10 @@ def test_replacement_host_verification_without_a_live_database(tmp_path, monkeyp
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Linux recovery directory and lock semantics")
-def test_bws_only_restore_checks_witness_without_leaking_it(tmp_path, monkeypatch, backup_cli):
+@pytest.mark.parametrize("online", [False, True])
+def test_bws_only_restore_checks_witness_without_leaking_it(
+    tmp_path, monkeypatch, backup_cli, online
+):
     admin, scratch = tmp_path / "admin", tmp_path / "scratch"
     admin.mkdir(mode=0o700)
     scratch.mkdir(mode=0o700)
@@ -155,8 +159,12 @@ def test_bws_only_restore_checks_witness_without_leaking_it(tmp_path, monkeypatc
                 [
                     {
                         "id": snapshot,
-                        "tags": [backup.TAG],
-                        "paths": [str(state)],
+                        "tags": [backup.TAG, backup.source_tag(state)] if online else [backup.TAG],
+                        "paths": [
+                            "/original-host/scratch/cirra-recovery-source" + str(state)
+                            if online
+                            else str(state)
+                        ],
                         "time": "2026-01-01T00:00:00+00:00",
                     }
                 ]
@@ -385,3 +393,76 @@ def test_quiescent_snapshot_includes_malformed_queue_evidence(tmp_path, monkeypa
     ]
     assert backup_cli(args) == 0
     assert captured == [b"[broken", b"[broken"]
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or not shutil.which("rsync"), reason="Linux online capture"
+)
+@pytest.mark.parametrize(
+    "concurrent", ["heartbeat", "receipt", "directory", "external_link", "replace_database"]
+)
+def test_online_capture_observes_durable_changes_and_preserves_an_open_database(
+    tmp_path, monkeypatch, concurrent
+):
+    from cirra.publish import write_receipt
+
+    state, key, _, _ = example(tmp_path)
+    target = tmp_path / "isolated"
+    target.mkdir()
+    (state / "queue").mkdir()
+    (state / "queue/job.json").write_bytes(b"[broken")
+    (state / "cirra.sqlite3").chmod(0o640)
+    other_link = tmp_path / "other-link"
+    os.link(state / "queue/job.json", other_link)
+    (state / "acceptance").mkdir()
+    (state / "acceptance/private").touch()
+    run = backup.command
+
+    def during_copy(argv, *args, **kwargs):
+        assert argv[0] == "rsync"
+        result = run(argv, *args, **kwargs)
+        if concurrent == "heartbeat":
+            write_receipt(state / "worker-status.json", {"state": "running"}, history=False)
+        elif concurrent == "receipt":
+            write_receipt(state / "queue/accepted.json", {"state": "queued"}, history=False)
+        elif concurrent == "external_link":
+            other_link.write_bytes(b"changed")
+        elif concurrent == "replace_database":
+            original = state / "cirra.sqlite3"
+            saved = state / "acceptance/original"
+            original.rename(saved)
+            saved.rename(original)
+        else:
+            folder = state / "queue/new"
+            folder.mkdir()
+            folder.rmdir()
+        return result
+
+    monkeypatch.setattr(backup, "command", during_copy)
+    with sqlite3.connect(state / "cirra.sqlite3") as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE example(value)")
+        writer.execute("INSERT INTO example VALUES ('committed')")
+        writer.commit()
+        writer.execute("INSERT INTO example VALUES ('in progress')")
+        if concurrent != "heartbeat":
+            with pytest.raises(backup.RecoveryError, match="changed"):
+                backup.stage_online(state, target, 20)
+            return
+        backup.stage_online(state, target, 20)
+    with sqlite3.connect(target / "cirra.sqlite3") as restored:
+        assert restored.execute("SELECT value FROM example").fetchall() == [("committed",)]
+    assert backup.verify_state(target, key)["sqlite_integrity"] == "ok"
+    assert (target / "cirra.sqlite3").stat().st_mode == (state / "cirra.sqlite3").stat().st_mode
+    assert (target / "queue/job.json").read_bytes() == b"[broken"
+    assert not (target / "acceptance").exists() and not (target / "worker-status.json").exists()
+
+
+def test_scheduled_backups_use_online_capture_with_retry_margin():
+    units = SCRIPT.parents[1] / "examples/systemd"
+    for path in (
+        units / "cirra-state-backup.service",
+        units / "cirra-state-backup.service.d/bws-witness.conf",
+    ):
+        assert "cirra-backup-state.py online" in path.read_text()
+    assert "00,06,12,18:30:00 UTC" in (units / "cirra-state-backup.timer").read_text()

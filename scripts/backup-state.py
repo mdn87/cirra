@@ -10,6 +10,7 @@ import shutil
 import socket
 import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,17 @@ UNITS = (
 HEALTH_JOBS = ("cirra-health.service", "cirra-health-alert.service", "cirra-health-resolve.service")
 WITNESS = re.compile(r"[0-9a-f]{64}-(?:execution-)?witness")
 DIGEST = re.compile(r"[0-9a-f]{64}")
+ONLINE_OMIT = {
+    "acceptance",
+    "operator-recovery",
+    "worker-status.json",
+    "cirra.sqlite3",
+    "cirra.sqlite3-journal",
+    "cirra.sqlite3-wal",
+    "cirra.sqlite3-shm",
+}
+RECEIPT_TEMP = re.compile(rb"\.[0-9a-f]{32}\.tmp")
+STAGE_NAME = "cirra-recovery-source"
 
 
 class RecoveryError(Exception):
@@ -42,9 +54,9 @@ def private_dir(path):
         )
 
 
-def command(argv, timeout=30):
+def command(argv, timeout=30, **options):
     try:
-        result = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
+        result = subprocess.run(argv, capture_output=True, timeout=timeout, check=False, **options)
     except subprocess.TimeoutExpired:
         raise RecoveryError(f"{Path(argv[0]).name} timed out") from None
     if result.returncode:
@@ -52,8 +64,13 @@ def command(argv, timeout=30):
     return result.stdout
 
 
-def restic(args, *, timeout=30):
-    return command(["restic", "--no-cache", "--json", "--retry-lock", "5s", *args], timeout)
+def restic(args, *, timeout=30, cwd=None):
+    return command(
+        ["restic", "--no-cache", "--json", "--retry-lock", "5s", *args],
+        timeout,
+        cwd=cwd,
+        env={**os.environ, "TZ": "UTC"},
+    )
 
 
 def unit_state(unit):
@@ -286,10 +303,208 @@ def socket_witness(path):
     return key
 
 
+@contextmanager
+def watch_state(state):
+    """Watch the local Linux state tree before listing or copying its durable entries."""
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+    if fd < 0:
+        raise RecoveryError("could not open the Linux filesystem change monitor")
+    # inotify.h: MODIFY, ATTRIB, MOVED_FROM/TO, CREATE, DELETE, DELETE_SELF, MOVE_SELF.
+    mutations = 0x2 | 0x4 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800
+    only_directory, no_follow = 0x01000000, 0x02000000
+    header = struct.Struct("=iIII")
+
+    def add(path):
+        wd = libc.inotify_add_watch(fd, os.fsencode(path), mutations | only_directory | no_follow)
+        if wd < 0:
+            raise RecoveryError("could not watch every directory in the online backup")
+        return wd
+
+    def unreadable(error):
+        raise error
+
+    try:
+        root_watch = add(state)
+        device = state.stat().st_dev
+        hard_links = {}
+        for parent, names, files in os.walk(state, followlinks=False, onerror=unreadable):
+            # Watch each child before os.walk can enumerate that child's contents.
+            for name in names.copy():
+                path = Path(parent) / name
+                info = path.lstat()
+                if (Path(parent) == state and name in ONLINE_OMIT) or stat.S_ISLNK(info.st_mode):
+                    names.remove(name)
+                elif info.st_dev != device:
+                    raise RecoveryError(
+                        "online backup requires the Cirra state tree on one filesystem"
+                    )
+                else:
+                    add(path)
+            for name in files:
+                if (Path(parent) == state and name in ONLINE_OMIT) or RECEIPT_TEMP.fullmatch(
+                    os.fsencode(name)
+                ):
+                    continue
+                path = Path(parent) / name
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                    # A write through a link outside the tree will not notify its directory.
+                    hard_links[path] = (
+                        info.st_ino,
+                        info.st_ctime_ns,
+                        info.st_mtime_ns,
+                        info.st_size,
+                    )
+
+        def changed():
+            for path, fingerprint in hard_links.items():
+                info = path.lstat()
+                if fingerprint != (info.st_ino, info.st_ctime_ns, info.st_mtime_ns, info.st_size):
+                    return True
+            for _ in range(16):
+                try:
+                    events = os.read(fd, 65536)
+                except BlockingIOError:
+                    return False
+                offset = 0
+                while offset < len(events):
+                    wd, mask, _, length = header.unpack_from(events, offset)
+                    offset += header.size
+                    name = events[offset : offset + length].rstrip(b"\0")
+                    offset += length
+                    # Overflow, watch loss and directory self-moves have no name.
+                    if not name or wd < 0:
+                        return True
+                    if wd == root_watch and os.fsdecode(name) in ONLINE_OMIT:
+                        if name == b"cirra.sqlite3" and mask & ~(0x2 | 0x4):
+                            return True
+                        continue
+                    if not RECEIPT_TEMP.fullmatch(name):
+                        return True
+            return True
+
+        yield changed
+    finally:
+        os.close(fd)
+
+
+class StateChanged(RecoveryError):
+    """A durable file changed while the private copy was being assembled."""
+
+
+def stage_online(state, target, timeout):
+    database = state / "cirra.sqlite3"
+    source_info = database.lstat()
+    if not stat.S_ISREG(source_info.st_mode):
+        raise RecoveryError("online backup requires a regular SQLite database")
+    with watch_state(state) as changed:
+        captured = datetime.now(UTC)
+        options = ["--exclude=/" + name for name in sorted(ONLINE_OMIT)]
+        temporary = "--exclude=." + "[0-9a-f]" * 32 + ".tmp"
+        # The destination is a new private scratch tree used only by this backup.
+        # --checksum also repairs a staged file changed during a preceding attempt.
+        command(
+            [
+                "rsync",
+                "-aHAXx",
+                "--numeric-ids",
+                "--checksum",
+                "--delete",
+                *options,
+                temporary,
+                "--",
+                str(state) + "/",
+                str(target) + "/",
+            ],
+            timeout,
+        )
+        deadline = time.monotonic() + timeout
+
+        def progress(status, remaining, total):
+            if time.monotonic() >= deadline:
+                raise RecoveryError("online SQLite backup timed out")
+
+        with (
+            closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as source,
+            closing(sqlite3.connect(target / "cirra.sqlite3")) as copy,
+        ):
+            source.backup(copy, pages=256, progress=progress, sleep=0.05)
+            copy.execute("PRAGMA journal_mode=DELETE").fetchone()
+        recovered = target / "cirra.sqlite3"
+        os.chown(recovered, source_info.st_uid, source_info.st_gid)
+        shutil.copystat(database, recovered, follow_symlinks=False)
+        if changed():
+            raise StateChanged("Cirra state changed during the online capture")
+    require_idle(target)
+    return captured
+
+
+def snapshot_id(output):
+    snapshots = [
+        event.get("snapshot_id")
+        for line in output.splitlines()
+        if (event := json.loads(line)).get("message_type") == "summary"
+    ]
+    if len(snapshots) != 1 or not DIGEST.fullmatch(snapshots[0] or ""):
+        raise RecoveryError("restic did not acknowledge one complete snapshot")
+    return snapshots[0]
+
+
+def source_tag(state):
+    return "cirra-online-" + hashlib.sha256(os.fsencode(state)).hexdigest()
+
+
+def online_backup(args):
+    with tempfile.TemporaryDirectory(prefix="capture-", dir=args.scratch) as private:
+        root = Path(private) / STAGE_NAME
+        relative = args.state.relative_to("/")
+        target = root / relative
+        target.mkdir(parents=True, mode=0o700)
+        for attempt in range(3):
+            try:
+                captured = stage_online(args.state, target, args.backup_timeout)
+                break
+            except StateChanged:
+                if attempt == 2:
+                    raise
+        verify_state(target, args.witness_key)
+        output = restic(
+            [
+                "backup",
+                "--tag",
+                TAG,
+                "--tag",
+                source_tag(args.state),
+                "--time",
+                captured.strftime("%Y-%m-%d %H:%M:%S"),
+                "--",
+                str(relative),
+            ],
+            timeout=args.backup_timeout,
+            cwd=root,
+        )
+    return {
+        "snapshot_id": snapshot_id(output),
+        "captured_at": captured.isoformat(),
+        "capture_method": "online",
+        "pause_seconds": 0,
+    }
+
+
 def backup(args):
     journal = args.admin / "resume.json"
     resume(journal, deploy_lock=args.deploy_lock)
     check_target(args)
+    if args.action == "online":
+        with exclusive(args.deploy_lock, shared=True):
+            result = online_backup(args)
+        saved(args.admin / "last-backup.json", result)
+        print(json.dumps(result), flush=True)
+        verify(args, result)
+        return
     with exclusive(args.deploy_lock, shared=True):
         started = time.monotonic()
         with quiesce(args.state, journal):
@@ -300,16 +515,10 @@ def backup(args):
                 ["backup", "--tag", TAG, "--one-file-system", *options, "--", str(args.state)],
                 timeout=args.backup_timeout,
             )
-            snapshots = [
-                event.get("snapshot_id")
-                for line in out.splitlines()
-                if (event := json.loads(line)).get("message_type") == "summary"
-            ]
-            if len(snapshots) != 1 or not DIGEST.fullmatch(snapshots[0] or ""):
-                raise RecoveryError("restic did not acknowledge one complete snapshot")
+            snapshot = snapshot_id(out)
         pause = round(time.monotonic() - started, 2)
     result = {
-        "snapshot_id": snapshots[0],
+        "snapshot_id": snapshot,
         "captured_at": captured.isoformat(),
         "pause_seconds": pause,
     }
@@ -328,7 +537,15 @@ def verify(args, captured):
         len(selected) != 1
         or selected[0].get("id") != snapshot
         or TAG not in selected[0].get("tags", [])
-        or selected[0].get("paths") != [str(args.state)]
+    ):
+        raise RecoveryError("the snapshot does not match the approved Cirra path and tag")
+    paths = selected[0].get("paths", [])
+    if paths != [str(args.state)] and not (
+        source_tag(args.state) in selected[0]["tags"]
+        and len(paths) == 1
+        and Path(paths[0]).is_absolute()
+        and ".." not in Path(paths[0]).parts
+        and paths[0].endswith("/" + STAGE_NAME + str(args.state))
     ):
         raise RecoveryError("the snapshot does not match the approved Cirra path and tag")
     # A replacement host recovers the capture time from authenticated restic metadata.
@@ -358,7 +575,7 @@ def verify(args, captured):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("preflight", "backup", "verify", "resume"))
+    parser.add_argument("action", choices=("preflight", "backup", "online", "verify", "resume"))
     parser.add_argument("--state", type=Path, default=Path("/srv/lugos/state/cirra"))
     parser.add_argument("--admin", type=Path, default=Path("/var/lib/cirra-recovery"))
     parser.add_argument("--scratch", type=Path, default=Path("/run/cirra-recovery-restore"))
@@ -384,7 +601,7 @@ def main(argv=None):
         with exclusive(args.admin / "operation.lock"):
             if args.action == "resume":
                 resume(args.admin / "resume.json", deploy_lock=args.deploy_lock)
-            elif args.action == "backup":
+            elif args.action in ("backup", "online"):
                 backup(args)
             else:
                 check_target(args)
