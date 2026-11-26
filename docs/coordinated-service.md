@@ -68,3 +68,9 @@ To return publishing from the Intel Mac to the primary, keep both receivers onli
 Run `python scripts/rehearse-coordinated-service.py --etcd /path/to/etcd --evidence result.json` from the source checkout with the project dependencies installed. The rehearsal creates three temporary etcd voters using mutual TLS and drives the Cirra enrollment CLI, both HTTP receivers, the normal worker and a native provider adapter. The provider transport and repository are synthetic. Physical host, tunnel and GitHub cutover evidence must come from the live deployment.
 
 On November 26, 2026, the Intel Mac ran three local etcd 3.7.4 voters. After the primary process and its private directory were withdrawn, the standby completed the recovered job in 8.76 seconds. The receiver returned HTTP 200 for all 55 sampled health checks. Both receivers returned 503 with a single voter. A separate open-PR test with a local GitHub transport exercised the actual reviewer and publisher entry points. Redelivery and an unchanged refresh produced one native check. Changing the upstream CI result updated that same check. The open-PR test used a deterministic reviewer fixture.
+
+A separate rehearsal used the real Linux host and Intel Mac. Three temporary
+voters on the Mac elected a leader. The Linux client timed out connecting to
+their private client endpoints before either service enrolled or accepted a
+delivery. Production kept its original webhook. Verify the intended private
+client and peer routes before attempting public cutover.
