@@ -33,6 +33,11 @@ def test_mounted_reader_refuses_switched_results_until_rebound(tmp_path, monkeyp
         thread = threading.Thread(target=reader.serve_forever, kwargs={"poll_interval": 0.02})
         thread.start()
         try:
+            # A temporarily unavailable selector is also a failed read at the HTTP boundary.
+            select(tmp_path, "not-installed")
+            assert get(reader, "/healthz")[0].status == 503
+            assert get(reader, "/audits")[0].status == 503
+            select(tmp_path, first.name)
             assert get(reader, "/healthz")[0].status == 200
             read = reader.snapshot.read
 

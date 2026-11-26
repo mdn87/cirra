@@ -144,6 +144,9 @@ def test_replacement_host_verification_without_a_live_database(tmp_path, monkeyp
 def test_bws_only_restore_checks_witness_without_leaking_it(
     tmp_path, monkeypatch, backup_cli, online
 ):
+    # UNIX-domain socket addresses have a short length limit even when TMPDIR is long.
+    monkeypatch.chdir(tmp_path)
+    witness_socket = Path("w.sock")
     admin, scratch = tmp_path / "admin", tmp_path / "scratch"
     admin.mkdir(mode=0o700)
     scratch.mkdir(mode=0o700)
@@ -190,11 +193,11 @@ def test_bws_only_restore_checks_witness_without_leaking_it(
         "--snapshot",
         snapshot,
         "--witness-socket",
-        str(tmp_path / "w.sock"),
+        str(witness_socket),
     ]
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
-        listener.bind(str(tmp_path / "w.sock"))
-        (tmp_path / "w.sock").chmod(0o600)
+        listener.bind(str(witness_socket))
+        witness_socket.chmod(0o600)
         listener.listen()
         listener.settimeout(5)
 
