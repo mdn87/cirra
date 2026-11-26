@@ -317,6 +317,14 @@ class Store:
                 (report["run_id"], report["report_digest"], canonical(report)),
             )
 
+    def report_by_digest(self, run_id, report_digest):
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT body FROM reports WHERE run_id=? AND report_digest=?",
+                (run_id, report_digest),
+            ).fetchone()
+        return json.loads(row["body"]) if row else None
+
     def latest_report(self, run_id):
         with self.connection() as connection:
             row = connection.execute(

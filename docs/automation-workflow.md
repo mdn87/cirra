@@ -130,8 +130,12 @@ After a lost acknowledgement, no matching object or multiple matches remain
 unresolved. A definitive refusal is `failed` and permits an ordinary retry; a
 local size refusal occurs before the write intent. An unconfirmed update to a
 known ID can be explicitly retried without claiming duplicate-create risk. An
-older remote read alone does not prove that an update failed. Reconciliation performs reads and adopts a unique acknowledged
-intent. `--retry-uncertain` explicitly accepts residual duplicate risk for one
+older remote read alone does not prove that an update failed. Reconciliation
+matches the original advisory body, operation marker and native ID for an update.
+GitHub must also return the completed neutral check with its expected output.
+For receipts predating the saved body digest, Cirra renders the specific
+historical report named in the marker. If that report is missing, the
+publication stays unresolved. `--retry-uncertain` explicitly accepts residual duplicate risk for one
 more write after inspection. Multiple matches require a verified canonical ID. That selection persists. A
 previously acknowledged object that disappears becomes uncertain; after
 inspection, the explicit retry can create a replacement with duplicate risk recorded.

@@ -31,13 +31,14 @@ from cirra.domain import (
     sha,
     utc_now,
 )
-from cirra.github import API_VERSION, native_id, record, repository_name
+from cirra.github import API_VERSION, check_summary_digest, native_id, record, repository_name
 from cirra.job_queue import AUDIT_PRIORITY, AuditQueue
 from cirra.publish import write_receipt
 from cirra.store import Store
 from cirra.transport import JSONClient, ReadUnavailable, RemoteUncertain, RequestNotSent, pages
 
 CHECK_NAME = "cirra/audit"
+CHECK_TITLE = "Cirra production audit"
 WAITING = ("awaiting_import", "awaiting_baseline", "awaiting_publication")
 # A noisy or wedged agent must not fill the state filesystem.
 MAX_AGENT_LOG_BYTES = 16 * 1024 * 1024
@@ -686,15 +687,15 @@ class AuditCheckPublisher:
             and str(record(item.get("app")).get("id")) == self.app_id
         ]
         if len(found) > 1:
-            raise CirraError("multiple owned audit checks match this audit")
+            raise RemoteUncertain("multiple owned audit checks match this audit")
         if found:
             if (
                 found[0].get("status") != "completed"
                 or found[0].get("conclusion") != conclusion
-                or digest(record(found[0].get("output")).get("summary"))
+                or check_summary_digest(found[0], CHECK_TITLE)
                 != (expected_summary_digest or digest(summary))
             ):
-                raise CirraError("owned audit check does not match the completed report")
+                raise RemoteUncertain("owned audit check does not match the completed report")
             return {"native_id": native_id(found[0].get("id")), "existing": True}
         if reconcile_only:
             raise RemoteUncertain("the audit check has no confirmed acknowledgement")
@@ -709,7 +710,7 @@ class AuditCheckPublisher:
                 "status": "completed",
                 "conclusion": conclusion,
                 "external_id": external_id,
-                "output": {"title": "Cirra production audit", "summary": summary},
+                "output": {"title": CHECK_TITLE, "summary": summary},
             },
         )
         try:
@@ -720,7 +721,7 @@ class AuditCheckPublisher:
                 or item.get("head_sha") != head
                 or item.get("status") != "completed"
                 or item.get("conclusion") != conclusion
-                or record(item.get("output")).get("summary") != summary
+                or check_summary_digest(item, CHECK_TITLE) != digest(summary)
             ):
                 raise CirraError("mismatched check")
             identifier = native_id(item.get("id"))
@@ -838,7 +839,9 @@ class AuditPublication:
                     return {"state": "stopped", "reason": native["stopped"]}
                 receipt.update(native)
             except (ReadUnavailable, ProviderRateLimited, RemoteUncertain) as exc:
-                if isinstance(exc, (ProviderRateLimited, RequestNotSent)) and not recovering:
+                if isinstance(exc, RemoteUncertain):
+                    uncertain = True
+                elif isinstance(exc, (ProviderRateLimited, RequestNotSent)) and not recovering:
                     uncertain = False  # The provider explicitly refused the create.
                 receipt.update(
                     state="retry",

@@ -274,13 +274,51 @@ def test_publisher_reuses_an_existing_owned_check_run(world):
         "app": {"id": 5},
         "status": "completed",
         "conclusion": "success",
-        "output": {"summary": "summary"},
+        "output": {"title": "Cirra production audit", "summary": "summary"},
     }
     github = FakeGitHub(existing=[existing, {**existing, "id": 10, "app": {"id": 6}}])
     result = AuditCheckPublisher("example/repo", 5, "t", http=github).publish(
         world.head, "a" * 64, "success", "summary"
     )
     assert result == {"native_id": "9", "existing": True} and github.posts == []
+
+
+def test_audit_holds_an_uncertain_create_until_exact_output_is_visible(world, tmp_path):
+    route, runner = world.make(agent(tmp_path))
+    store_baseline(world, route)
+    request(world, route, "app.py")
+    store = Store(world.state)
+    job = audit_once(AuditQueue(world.state, store), store, 20, runner)
+    attempt = audits.get(store, job["attempt_id"])
+
+    class StaleReply(FakeGitHub):
+        def request(self, method, route, params=None, body=None):
+            item, more = super().request(method, route, params, body)
+            if method == "POST":
+                item = {**item, "output": {**item["output"], "title": "Earlier audit"}}
+            return item, more
+
+    github = StaleReply()
+    publisher = AuditPublication(
+        world.state,
+        {"main": route},
+        lambda r: AuditCheckPublisher(r.repository, 5, "fixture", http=github),
+    )
+    assert publisher(job, attempt)["uncertain"]
+    expected = github.runs[0]
+    for output in (
+        {**expected["output"], "title": "Other audit"},
+        {**expected["output"], "text": "Old details"},
+    ):
+        github.runs = [{**expected, "output": output}]
+        receipt = publisher(job, attempt)
+        assert receipt["state"] == "retry" and receipt["uncertain"]
+    github.runs = []
+    assert publisher(job, attempt)["uncertain"]
+    github.runs = [expected]
+    receipt = publisher(job, attempt)
+    assert receipt["state"] == "published" and receipt["existing"]
+    assert len(github.posts) == 1
 
 
 def test_failed_publication_puts_the_job_in_attention(world, tmp_path):

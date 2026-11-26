@@ -260,6 +260,19 @@ def files_from(comparison, count):
     return sorted(result, key=lambda item: item["path"]), gaps
 
 
+def check_summary_digest(item, title, *, text=None):
+    """Fingerprint Cirra's summary only when the rest of its check output matches."""
+    output = item.get("output") if isinstance(item, dict) else None
+    if (
+        isinstance(output, dict)
+        and output.get("title") == title
+        and output.get("text") == text
+        and isinstance(output.get("summary"), str)
+    ):
+        return digest(output["summary"])
+    return None
+
+
 def check_from(item, kind, head, observed):
     record(item)
     identifier = native_id(item.get("id"))

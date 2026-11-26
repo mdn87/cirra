@@ -220,6 +220,89 @@ def test_github_find_ignores_foreign_app_and_rejects_malformed_write(inputs, tmp
         publisher.write(report, {"slot": "slot"})
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_advisory_reconciles_the_original_output_and_update_id(
+    inputs, fixture_data, tmp_path, legacy
+):
+    provider, config = captured(inputs, fixture_data)
+    store = Store(tmp_path / "state")
+    report, _ = review(provider, config, store)
+
+    class Checks:
+        item = None
+        methods = []
+
+        def request(self, method, route, params=None, body=None):
+            if method == "GET":
+                return {"check_runs": [copy.deepcopy(self.item)] if self.item else []}, False
+            self.methods.append(method)
+            self.item = {**(self.item or {}), **copy.deepcopy(body), "id": 7, "app": {"id": 42}}
+            reply = copy.deepcopy(self.item)
+            if method == "PATCH":
+                assert route.endswith("/7")
+                reply["id"] = 8
+            return reply, False
+
+    http = Checks()
+    publisher = GitHubPublisher("example/repo", 42, "fixture", http=http)
+
+    def run(**options):
+        return publish(store, config, report["run_id"], lambda: provider, publisher, **options)
+
+    assert run()["native_id"] == "7"
+    pending = run()
+    assert pending["state"] == "uncertain"
+    path = store.path.parent / "publication" / (pending["metadata"]["slot"] + ".json")
+    expected = copy.deepcopy(http.item)
+    if legacy:
+        # Previous releases saved the report digest but no digest of the posted body.
+        from cirra.report import render_markdown
+
+        metadata = pending["metadata"]
+        metadata.pop("awaiting_ack")
+        metadata.pop("operation_id")
+        pending.pop("body_digest")
+        historical = store.report_by_digest(metadata["run_id"], metadata["report_digest"])
+        previous = render_markdown(historical, legacy_format=True)
+        assert "**Next step**" not in previous
+        expected["output"]["summary"] = marker(metadata) + "\n\n" + previous
+        path.write_text(json.dumps(pending), encoding="utf-8")
+    provider.checks[0]["raw_state"] = "failure"
+    for field, value in (
+        ("title", "A different report"),
+        ("summary", expected["output"]["summary"] + " changed"),
+        ("text", "other output"),
+    ):
+        http.item = copy.deepcopy(expected)
+        http.item["output"][field] = value
+        assert run(reconcile=True)["state"] == "uncertain"
+    for field, value in (("id", 8), ("conclusion", "success"), ("status", "in_progress")):
+        http.item = {**expected, field: value}
+        assert run()["state"] == "uncertain"
+    http.item = expected
+    confirmed = run(reconcile=True)
+    assert confirmed["state"] == "published" and confirmed["native_id"] == "7"
+    assert "awaiting_ack" not in confirmed["metadata"]
+    assert http.methods == ["POST", "PATCH"]
+
+
+def test_reconcile_without_receipt_requires_a_matching_saved_report(inputs, fixture_data, tmp_path):
+    provider, config = captured(inputs, fixture_data)
+    store, writer = Store(tmp_path / "state"), Publisher()
+    report, _ = review(provider, config, store)
+    run_id = report["run_id"]
+    publish(store, config, run_id, lambda: provider, writer)
+    restored = Store(tmp_path / "recovered")
+    other, _ = review(provider, config, restored)
+    result = publish(restored, config, other["run_id"], lambda: provider, writer, reconcile=True)
+    assert result["state"] == "uncertain" and writer.writes == 1
+    writer.hide = True
+    assert (
+        publish(restored, config, other["run_id"], lambda: provider, writer)["state"] == "uncertain"
+    )
+    assert writer.writes == 1
+
+
 def test_ci_definition_mismatch_never_satisfies_release_evidence(inputs):
     provider, config = inputs()
     config = replace(

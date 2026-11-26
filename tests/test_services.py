@@ -13,8 +13,9 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from cirra.domain import CirraError, canonical
+from cirra.domain import CirraError, canonical, digest
 from cirra.job_queue import Queue
+from cirra.publish import summary_text
 from cirra.service_config import ServiceConfig, load_service
 from cirra.webhook import WebhookServer, accept
 from cirra.worker import Processor, work_once
@@ -551,7 +552,13 @@ def test_processor_reuses_review_and_reconciles_lost_publication(
             from cirra.transport import RemoteUncertain
 
             self.writes += 1
-            self.items = [{"id": "100", "metadata": metadata}]
+            self.items = [
+                {
+                    "id": "100",
+                    "metadata": metadata,
+                    "body_digest": digest(summary_text(report, metadata)),
+                }
+            ]
             raise RemoteUncertain("lost acknowledgement")
 
     publisher = Publisher()
@@ -716,7 +723,13 @@ def test_gitlab_worker_observes_reviews_and_updates_one_note_with_separate_crede
         def write(self, report, metadata, identifier):
             assert report["status"] == "complete" and report["ci"]["outcome"] == "verified"
             writes.append(identifier)
-            self.items[:] = [{"id": "100", "metadata": metadata}]
+            self.items[:] = [
+                {
+                    "id": "100",
+                    "metadata": metadata,
+                    "body_digest": digest(summary_text(report, metadata)),
+                }
+            ]
             return self.items[0]
 
     def capture(provider, repository, change, config, *, token, witness=None, witness_key=None):

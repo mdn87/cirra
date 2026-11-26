@@ -122,18 +122,18 @@ def check_result(expected):
     return f"{result}, {plain(relation)}"
 
 
-def render_markdown(report):
+def render_markdown(report, *, legacy_format=False):
     snap, review, ci = report["snapshot"], report["review"], report["ci"]
+    status = (
+        f"Status: **{plain(report['status'])}**. CI: **{plain(ci['outcome'])}**. "
+        f"Reviewer: **{plain(review['outcome'])}**."
+    )
     lines = [
         "# Cirra review",
         "",
         "Advisory report. Maintainers retain merge authority.",
         "",
-        with_next_step(
-            f"Status: **{plain(report['status'])}**. CI: **{plain(ci['outcome'])}**. "
-            f"Reviewer: **{plain(review['outcome'])}**.",
-            advisory_next_step(report),
-        ),
+        status if legacy_format else with_next_step(status, advisory_next_step(report)),
         "",
         f"Change: {plain(snap['provider'])} / {plain(snap['repository_id'])} / "
         f"{plain(snap['change_id'])}",
@@ -160,9 +160,15 @@ def render_markdown(report):
     if not ci["expected"]:
         lines.append("Review-only policy: no conventional CI checks are required.")
     for expected in ci["expected"]:
+        if legacy_format:
+            evidence = expected["evidence"]
+            relation = evidence["relationship"] if evidence else "no verified evidence"
+            result = f"{plain(expected['state'])}; {plain(relation)}"
+        else:
+            result = check_result(expected)
         lines.append(
             f"- {plain(expected['name'])} (source {plain(expected['source_id'])}): "
-            f"{check_result(expected)}. {plain(expected['reason'])}."
+            f"{result}. {plain(expected['reason'])}."
         )
     lines.extend(["", "## Review findings", ""])
     if not review["findings"]:
