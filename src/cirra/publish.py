@@ -304,6 +304,62 @@ def summary_text(report, metadata):
     return body
 
 
+def without_observed_at(record):
+    return {key: value for key, value in record.items() if key != "observed_at"}
+
+
+def coordinated_content_digest(report, native_check=None, *, legacy=False):
+    content = {k: v for k, v in report.items() if k not in ("observed_at", "report_digest")}
+    if legacy:
+        return digest(content)
+    if isinstance(content.get("collection"), dict):
+        content["collection"] = without_observed_at(content["collection"])
+    # The collector stamps both copies of a CI observation. Keep native times,
+    # provenance, and identities. Only the actual advisory returned for this slot
+    # can disappear from the comparison when a subsequent collection sees it.
+    ci = dict(content["ci"])
+    if "evidence" in ci:
+        ci["evidence"] = [
+            without_observed_at(check)
+            for check in ci["evidence"]
+            if not (
+                native_check
+                and check.get("excluded") is True
+                and check.get("name") == NAME
+                and check.get("kind") == "check_run"
+                and (check.get("source_id"), check.get("native_id"), check.get("associated_sha"))
+                == native_check
+            )
+        ]
+    if "expected" in ci:
+        ci["expected"] = [
+            {**expected, "evidence": without_observed_at(expected["evidence"])}
+            if isinstance(expected.get("evidence"), dict)
+            else expected
+            for expected in ci["expected"]
+        ]
+    content["ci"] = ci
+    return digest(content)
+
+
+def matches_coordinated_content(store, metadata, current, native_check=None):
+    previous = metadata.get("content_digest")
+    if previous == current:
+        return True
+    if not isinstance(previous, str) or not all(
+        isinstance(metadata.get(k), str) for k in ("run_id", "report_digest")
+    ):
+        return False
+    # Earlier markers included the collection timestamp. Reuse an authenticated matching
+    # publication only when its exact historical report proves both forms of the digest.
+    saved = store.report_by_digest(metadata.get("run_id"), metadata.get("report_digest"))
+    return (
+        saved is not None
+        and coordinated_content_digest(saved, legacy=True) == previous
+        and coordinated_content_digest(saved, native_check) == current
+    )
+
+
 def matches_saved_body(store, remote, receipt, snapshot):
     if not remote.get("body_digest"):
         return False
@@ -387,11 +443,6 @@ def publish(
         fence = PublicationFence("advisory", slot)
         if fence.owner is not None and type(publisher) not in (GitHubPublisher, GitLabPublisher):
             raise CirraError("shared publication requires a supported native advisory writer")
-        content_digest = (
-            digest({k: v for k, v in report.items() if k not in ("observed_at", "report_digest")})
-            if fence.owner is not None
-            else None
-        )
         if fence.owner is not None and (retry_uncertain or canonical_id):
             raise CirraError("shared publication cannot override an uncertain native slot")
         receipt = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
@@ -406,6 +457,14 @@ def publish(
                 "multiple owned publications found; select --canonical-id after inspection"
             )
         remote = found[0] if found else None
+        native_check = (
+            (publisher.principal_id, remote["id"], snap["head_sha"])
+            if remote and snap["provider"] == "github"
+            else None
+        )
+        content_digest = (
+            coordinated_content_digest(report, native_check) if fence.owner is not None else None
+        )
         known = (
             fence.observe(remote["id"], remote.get("body_digest"))
             if remote
@@ -431,7 +490,7 @@ def publish(
                     raise CirraError("private review history cannot order these publication runs")
             if (
                 known
-                and metadata.get("content_digest") == content_digest
+                and matches_coordinated_content(store, metadata, content_digest, native_check)
                 and (
                     not receipt
                     or (

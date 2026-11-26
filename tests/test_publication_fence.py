@@ -11,11 +11,124 @@ from cirra.coordinator import review
 from cirra.domain import CirraError, ProviderAccessDenied, digest
 from cirra.observer import ObserverCheck, publish_observation
 from cirra.publication_fence import PublicationFence, require_send
-from cirra.publish import GitHubPublisher, GitLabPublisher, publish
+from cirra.publish import (
+    GitHubPublisher,
+    GitLabPublisher,
+    coordinated_content_digest,
+    matches_coordinated_content,
+    publish,
+)
 from cirra.quorum import OWNER_KEY, Owner, bind_owner
 from cirra.review_gate import RequiredReviewCheck
 from cirra.store import Store
 from cirra.transport import RemoteUncertain
+
+
+def test_coordinated_digest_compares_legacy_report_without_its_collection_time():
+    saved = {
+        "run_id": "run",
+        "report_digest": "old report",
+        "observed_at": "earlier",
+        "snapshot": {"target_sha": "a" * 40},
+        "inputs": {"config_digest": "original policy"},
+        "collection": {"source": "github_rest", "observed_at": "first read"},
+        "ci": {"evidence": [{"state": "success", "started_at": "first build"}]},
+    }
+    metadata = {
+        "run_id": saved["run_id"],
+        "report_digest": saved["report_digest"],
+        "content_digest": digest(
+            {k: v for k, v in saved.items() if k not in ("observed_at", "report_digest")}
+        ),
+    }
+    store = SimpleNamespace(
+        report_by_digest=lambda run, report: (
+            saved if (run, report) == ("run", "old report") else None
+        )
+    )
+    fresh = {
+        **saved,
+        "observed_at": "later",
+        "collection": {**saved["collection"], "observed_at": "next read"},
+    }
+    assert matches_coordinated_content(store, metadata, coordinated_content_digest(fresh))
+    for field, replacement in (
+        ("snapshot", {"target_sha": "b" * 40}),
+        ("inputs", {"config_digest": "changed policy"}),
+        ("collection", {**fresh["collection"], "source": "different provider"}),
+        ("ci", {"evidence": [{"state": "success", "started_at": "new build"}]}),
+    ):
+        assert not matches_coordinated_content(
+            store, metadata, coordinated_content_digest({**fresh, field: replacement})
+        )
+    assert not matches_coordinated_content(
+        store, {**metadata, "report_digest": "missing"}, coordinated_content_digest(fresh)
+    )
+
+
+def test_coordinated_digest_keeps_native_evidence_and_excludes_only_the_selected_advisory():
+    head = "a" * 40
+    native = ("71", "1000", head)
+    build = {
+        "kind": "check_run",
+        "name": "tests",
+        "source_id": "73",
+        "native_id": "12",
+        "associated_sha": head,
+        "excluded": False,
+        "raw_state": "success",
+        "started_at": "first start",
+        "completed_at": "first completion",
+        "observed_at": "initial",
+        "provenance": {"trusted": True, "tested_sha": head},
+    }
+    report = {
+        "review": {"notes": ["original model output"]},
+        "ci": {"evidence": [build], "expected": [{"evidence": build}]},
+        "collection": {"observed_at": "initial"},
+    }
+    before = coordinated_content_digest(report)
+    newer = {**build, "observed_at": "next read"}
+    advisory = {
+        **newer,
+        "name": "cirra/review",
+        "source_id": "71",
+        "native_id": "1000",
+        "excluded": True,
+    }
+    refreshed = {
+        **report,
+        "collection": {"observed_at": "next read"},
+        "ci": {"evidence": [newer, advisory], "expected": [{"evidence": newer}]},
+    }
+    assert coordinated_content_digest(refreshed, native) == before
+    assert coordinated_content_digest(refreshed) != before
+    for field, changed in (
+        ("excluded", False),
+        ("kind", "commit_status"),
+        ("name", "cirra/code-review"),
+        ("source_id", "72"),
+        ("native_id", "1001"),
+        ("associated_sha", "b" * 40),
+    ):
+        ci = {**refreshed["ci"], "evidence": [newer, {**advisory, field: changed}]}
+        assert coordinated_content_digest({**refreshed, "ci": ci}, native) != before
+    for field, changed in (
+        ("raw_state", "failure"),
+        ("started_at", "next start"),
+        ("completed_at", "next completion"),
+        ("source_id", "94"),
+        ("native_id", "13"),
+        ("associated_sha", "b" * 40),
+        ("provenance", {"trusted": False}),
+    ):
+        ci = {**refreshed["ci"], "evidence": [{**newer, field: changed}, advisory]}
+        assert coordinated_content_digest({**refreshed, "ci": ci}, native) != before
+    assert (
+        coordinated_content_digest({**refreshed, "review": {"notes": ["different output"]}}, native)
+        != before
+    )
+    assert build["observed_at"] == "initial" and newer["observed_at"] == "next read"
 
 
 class Cluster:
