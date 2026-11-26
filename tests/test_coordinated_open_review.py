@@ -194,6 +194,7 @@ def configure(root, node, voters, cluster_id):
     route = service["routes"][0]
     route.pop("observer")
     route.pop("witness_key_env")
+    service["coordination"]["transfer_witness_env"] = "REHEARSAL_WITNESS"
     route["policy"] = "open-review-policy.yaml"
     policy = yaml.safe_load((root / "policy.yaml").read_text())
     policy["ci"]["expected"] = [{"kind": "check_run", "source_id": "93", "name": "fixture-build"}]
