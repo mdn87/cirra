@@ -181,10 +181,12 @@ def audit_once(
         if on_job:
             on_job(job)
         if attempt["state"] == "complete":
+            queue.return_unused_admission(job)
             return settle(queue, store, job, on_complete)  # Attached to an existing result.
         if reason := queue.stop_reason(job_id):
             # Cancelled or superseded before the attempt existed to be fenced.
             audits.mark(store, attempt_id, reason)
+            queue.return_unused_admission(job)
             return queue.update(job_id, state=reason)
         outcome = run(job, attempt, stop)
         if outcome["state"] == "awaiting_import":
