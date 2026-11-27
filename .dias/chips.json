@@ -607,6 +607,45 @@
           "message": "With and without a fallback, the operator command deployed a candidate, checked a custom reader port and restored the previous release and configuration using its printed command."
         }
       ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:reconcile-cutover-reviews",
+      "projectId": "cirra",
+      "title": "Reconcile cutover reviews and prerequisites",
+      "summary": "Check saved approvals and access handoffs, record what prevents cutover, and preserve the existing production authorization.",
+      "stage": "done",
+      "sequence": 12,
+      "prereqs": [
+        "cirra:resolve-production-audit",
+        "cirra:deploy-ssh-arguments"
+      ],
+      "linkedRunIds": [],
+      "confidence": "authoritative",
+      "timestamps": {
+        "createdAt": "2026-11-27T05:32:58Z",
+        "updatedAt": "2026-11-27T05:33:52Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:reconcile-cutover-reviews:created",
+          "at": "2026-11-27T05:32:58Z",
+          "kind": "created",
+          "message": "The review board has a newer Cloudflare handoff and two executing approvals. Reconcile these before selecting production work."
+        },
+        {
+          "entryId": "cirra:reconcile-cutover-reviews:active",
+          "at": "2026-11-27T05:33:07Z",
+          "kind": "stage-change",
+          "message": "Both Dias parsers passed. Comparing the current review revisions, saved answers and production continuation notes."
+        },
+        {
+          "entryId": "cirra:reconcile-cutover-reviews:done",
+          "at": "2026-11-27T05:33:52Z",
+          "kind": "stage-change",
+          "message": "Verified both production approvals, two unanswered access handoffs, completed backup and reader grants, and the proposed fork owner."
+        }
+      ]
     }
   ]
 }
