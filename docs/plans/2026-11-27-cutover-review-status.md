@@ -6,13 +6,15 @@ Checked the coordination-layer trail, production hosts, Cloudflare and GitHub on
 |---|---|---|
 | V-20261126-ceea5510 | Public webhook and promotion approvals are executing; both have verified answers. The reader grant is applied. | Inspect actual effects and ownership before continuing; reconcile if execution becomes uncertain. Do not request duplicate approval. |
 | V-20261127-362d8b16 | Both connectors joined. Matt authorized publishing the hostname and Cloudflare confirmed it. The operator closed the superseded access request. | Exercise signed deliveries and native publication on the coordinated service before changing GitHub. |
-| V-20261126-0688d8ca | Mac handoff R-20261126-58520c24 revision 1 is presented with no answer. | Matt enrolls the scoped Bitwarden account in local Keychain and permits the voter through the Mac firewall; then verify remotely. |
+| V-20261126-0688d8ca | The operator closed handoff R-20261126-58520c24 after the Mac credential and voter checks passed. | Preserve the credential and restore receipts. Both data hosts can now reach all three voters. |
 | V-20261126-1b0fe1c9 | Dedicated backup approval is applied. | Preserve the recorded restore evidence. |
 | V-20261126-d1fe7174 | Tiered retention was selected. | Preserve preview-only scope; this does not authorize deletion. |
 | V-20261126-ec3bf785 | Matt proposed creating yizzity. | Confirm a Matt-controlled second owner and actual fork before the live acceptance test. |
 
-At 05:29 UTC, `cirra-hooks.newman.foo` returned HTTPS 200 from the Intel Mac while the Linux connector was stopped, then from Linux while the Mac connector was stopped. Each reply matched a unique value served by that host on a temporary test path. Both connectors rejoined with four edge connections each. The probes used the authoritative DNS answer while the homelab resolver still cached the earlier missing record.
+At 05:29 UTC, `cirra-hooks.newman.foo` returned HTTPS 200 from each host while the other connector was stopped. Both unique test responses matched, and both connectors rejoined with four edge connections each. At 05:55 UTC the same hostname returned the expected response through ordinary homelab DNS and public TLS.
 
-GitHub webhook 698884839 still uses the original Linux receiver. Its latest recorded delivery returned HTTP 202. The coordinated receiver port is awaiting enrollment. The Intel Mac still needs its dedicated Bitwarden account in Keychain and permission for incoming voter connections. The private continuation runbook records the remaining production checks.
+Both data hosts reached all three voters at 05:56 UTC. The Mac verified its worker and webhook credentials at 06:11 UTC. Its independent backup reader restored the encrypted 22:10 recovery point, authenticated 254 current and 345 historical witness records, and passed SQLite integrity checks at 06:17 UTC. The six-hour restore check is active. At 06:31 UTC the two data hosts produced matching proofs for their routing key, witness key and intake policy.
 
-Of the twelve historical audit requests through PR 66, the worker verified native GitHub receipts for PRs 60, 64 and 65. Seven more PRs were admitted. PR 66 and the separate full audit of PR 61 still await admission.
+GitHub webhook 698884839 still delivers to the original receiver. GitHub recorded HTTP 202 for its latest delivery. The coordinated service requires signed admission, native publication and recovery tests before switching the webhook.
+
+As of 06:32 UTC, the original worker had verified native GitHub receipts for PRs 56, 57, 58, 59, 60, 63, 64 and 65. The admitted reviews of PRs 61 and 62 still required import. PR 66 and the separate full audit of PR 61 awaited the next daily admission window.
