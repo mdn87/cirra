@@ -722,8 +722,8 @@
       "chipId": "cirra:verify-second-owner-fork",
       "projectId": "cirra",
       "title": "Verify a fork from a second controlled account",
-      "summary": "The second-owner acceptance test needs a Cirra fork under another account Matt controls; the named account currently has none.",
-      "stage": "blocked",
+      "summary": "The controlled yizzity/cirra fork passed signed production admission, exact-head isolated tests, review publication in mdn87/cirra and all seven checks on PR 71.",
+      "stage": "done",
       "sequence": 15,
       "prereqs": [
         "cirra:verify-production-failover"
@@ -732,7 +732,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-27T08:43:21Z",
-        "updatedAt": "2026-11-27T08:43:21Z"
+        "updatedAt": "2026-11-27T09:22:50.737110Z"
       },
       "evidence": [
         {
@@ -740,6 +740,12 @@
           "at": "2026-11-27T08:43:21Z",
           "kind": "created",
           "message": "The provider readback found no Cirra repository or public fork under the named account. This does not block the completed production rollout."
+        },
+        {
+          "entryId": "cirra:verify-second-owner-fork:verified",
+          "at": "2026-11-27T09:22:50.737110Z",
+          "kind": "stage-change",
+          "message": "PR 71 passed all 7 checks for fork head 9397d4f and target 86b2987. Native App 5339263 receipts: docs/github-fork-acceptance.md."
         }
       ]
     }

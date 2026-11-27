@@ -373,9 +373,11 @@ the implementation; the product choices above are Cirra design decisions.
   requiring a new PR-code execution environment.
   [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
-The remaining live acceptance case requires a controlled GitHub fork under
-another owner. On November 26 the authenticated account had no accessible
-organizations and the repository had no forks. The operator completed the
+The live fork acceptance case passed on November 27 using the controlled
+`yizzity/cirra` fork and [PR #71](https://github.com/mdn87/cirra/pull/71).
+Native review and isolated checks identified the exact fork head and upstream
+target; all seven checks passed. See the [fork acceptance record](../github-fork-acceptance.md).
+The operator completed the
 reviewer assessment on October 19. The Cirra App dispatched and reconciled
 the evidence workflow on protected main on November 20.
 [Reviewer assessment](../../eval/README.md) ·

@@ -8,10 +8,10 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-27T08:43:21Z",
+  "assessedAt": "2026-11-27T09:22:50.737110Z",
   "confidence": "authoritative",
   "currentMilestone": "Production now runs on the coordinated pair; takeover, verified return, signed delivery and managed audit reads passed.",
-  "remainingSummary": "Two historical audits await the scheduled UTC admission reset. The separate fork-owner test needs a fork under a second controlled account.",
+  "remainingSummary": "Two historical audits await the scheduled UTC admission reset. The controlled second-owner fork acceptance passed on PR 71.",
   "nextChipId": "cirra:finish-frozen-audits",
   "source": {
     "label": "Production delivery, authority, backup, reader and scheduling receipts",

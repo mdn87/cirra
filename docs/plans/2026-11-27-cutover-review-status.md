@@ -1,6 +1,6 @@
 # Cutover review status
 
-Checked the coordination-layer trail, production hosts, Cloudflare and GitHub on November 27, 2026.
+This records the pre-cutover checks through 06:32 UTC on November 27, 2026. The [production deployment record](../production-rollout-2026-11-27.md) contains the completed rollout. The fork review row below was updated after its live acceptance passed later that morning.
 
 | Review | Observed state | Next action |
 |---|---|---|
@@ -9,7 +9,7 @@ Checked the coordination-layer trail, production hosts, Cloudflare and GitHub on
 | V-20261126-0688d8ca | The operator closed handoff R-20261126-58520c24 after the Mac credential and voter checks passed. | Preserve the credential and restore receipts. Both data hosts can now reach all three voters. |
 | V-20261126-1b0fe1c9 | Dedicated backup approval is applied. | Preserve the recorded restore evidence. |
 | V-20261126-d1fe7174 | Tiered retention was selected. | Preserve preview-only scope; this does not authorize deletion. |
-| V-20261126-ec3bf785 | Matt proposed creating yizzity. | Confirm a Matt-controlled second owner and actual fork before the live acceptance test. |
+| V-20261126-ec3bf785 | Matt confirmed the second account; `yizzity` accepted collaborator access and created `yizzity/cirra`. PR 71 passed all seven checks on its first revision. | Fork acceptance is complete; preserve the [provider evidence](../github-fork-acceptance.md). |
 
 At 05:29 UTC, `cirra-hooks.newman.foo` returned HTTPS 200 from each host while the other connector was stopped. Both unique test responses matched, and both connectors rejoined with four edge connections each. At 05:55 UTC the same hostname returned the expected response through ordinary homelab DNS and public TLS.
 
