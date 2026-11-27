@@ -745,7 +745,7 @@
           "entryId": "cirra:verify-second-owner-fork:verified",
           "at": "2026-11-27T09:22:50.737110Z",
           "kind": "stage-change",
-          "message": "PR 71 head 9397d4f passed native checks 140416966620 and 140417016147 from App 5339263 against upstream target 86b2987; all five conventional CI jobs passed. Evidence: docs/github-fork-acceptance.md."
+          "message": "PR 71 passed all 7 checks for fork head 9397d4f and target 86b2987. Native App 5339263 receipts: docs/github-fork-acceptance.md."
         }
       ]
     }
