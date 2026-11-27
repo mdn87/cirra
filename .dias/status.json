@@ -8,13 +8,13 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-26T19:56:31Z",
+  "assessedAt": "2026-11-27T05:32:58Z",
   "confidence": "authoritative",
-  "currentMilestone": "Both service origins passed a three-voter failover and private-state return on the Intel Mac. The live audit reader served all 45 attempts and 28 gate receipts to Taskmaster.",
-  "remainingSummary": "The public webhook still uses lugos-host. Voter connectivity, Mac backup access and a live cutover need verification. Nine audits await the next UTC window. The fork test needs a second GitHub owner.",
-  "nextChipId": null,
+  "currentMilestone": "The saved failover drill passed. Public cutover and three-voter promotion are approved; their execution records remain open.",
+  "remainingSummary": "Cloudflare and Mac access handoffs await answers. Live cutover remains unverified. Audit completion needs a fresh check; the fork test needs a second owner.",
+  "nextChipId": "cirra:reconcile-cutover-reviews",
   "source": {
-    "label": "Worker receipts, GitHub checks, host measurements and off-host restore verification",
-    "updatedAt": "2026-11-26"
+    "label": "Saved rollout proof and current review board",
+    "updatedAt": "2026-11-27"
   }
 }
