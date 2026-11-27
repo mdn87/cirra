@@ -8,13 +8,13 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-27T05:32:58Z",
+  "assessedAt": "2026-11-27T05:40:45Z",
   "confidence": "authoritative",
-  "currentMilestone": "The saved failover drill passed. Public cutover and three-voter promotion are approved; their execution records remain open.",
-  "remainingSummary": "Cloudflare and Mac access handoffs await answers. Live cutover remains unverified. Audit completion needs a fresh check; the fork test needs a second owner.",
-  "nextChipId": "cirra:reconcile-cutover-reviews",
+  "currentMilestone": "Both Cloudflare connectors served the public hostname independently. GitHub still sends production deliveries to the original receiver.",
+  "remainingSummary": "Verify the Mac account and voter firewall, then prove signed delivery, publication and failover. Historical audits and the second-owner fork test remain.",
+  "nextChipId": "cirra:verify-production-failover",
   "source": {
-    "label": "Saved rollout proof and current review board",
+    "label": "Cloudflare, public HTTPS probes, GitHub and host readbacks",
     "updatedAt": "2026-11-27"
   }
 }
