@@ -280,8 +280,10 @@ still reported target `2fb685a` after `main` advanced to `f1c10f8`, so an outdat
 report could be republished. Cirra now independently resolves the target branch
 before and after collection and refuses failed or inconsistent reads. Regression
 coverage also checks branch movement, denied/malformed reads, encoded names and
-fork target identity. The actual live fork scenario still needs a controlled
-fork under another owner.
+fork target identity. The live fork scenario passed on November 27 using
+`yizzity/cirra` and [PR #71](https://github.com/mdn87/cirra/pull/71), with native
+checks bound to the fork head and upstream target. See the
+[fork acceptance record](github-fork-acceptance.md).
 
 [PR #6](https://github.com/mdn87/cirra/pull/6) exercised the delayed-report case
 on unchanged head `cd29046d9efe8f871ab9da0a8ff2aa54d6b3a4bc`. The first review
@@ -370,7 +372,8 @@ MR !2 is merged and its main pipeline passed. The
 the provider delivery, explicit recovery and operator-generated replay test.
 
 The operator recorded the usefulness assessment for the frozen reviewer cases
-on October 19. The live GitHub fork case still needs a second controlled owner.
+on October 19. The live GitHub fork case passed with the second controlled
+owner on November 27; see the [acceptance evidence](github-fork-acceptance.md).
 [Reviewer assessment](../eval/README.md)
 
 ## References
