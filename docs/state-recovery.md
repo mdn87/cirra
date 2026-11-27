@@ -2,9 +2,11 @@
 
 The recovery job takes a consistent off-host copy of the service database, durable queues, audit history, observer evidence and publication receipts. It then restores the entire snapshot to new private scratch and checks the recovered data. The restic repository must already exist on a separate host and have credentials available independently of the Cirra host.
 
-Matt allows up to 24 hours of data loss and requires Cirra to keep serving through loss of its primary host. The six-hour online backup leaves time to recover from a missed capture. The scheduled November 26 06:30 UTC capture recorded zero seconds of service pause. Restoration took 9.70 seconds, passed SQLite integrity and foreign-key checks, and verified 194 current and 273 historical witness signatures. The Intel Mac recovered the same database independently. Public admission and review publication still depend on the primary host.
+Matt allows up to 24 hours of data loss and requires Cirra to keep serving through loss of its primary host. The coordinated deployment went live on November 27, 2026. Both approved data hosts accept signed deliveries, three voters select the publisher, and each data host can independently back up and restore its private state through the encrypted repository on Nodens. The backup jobs check every 15 minutes and capture every six hours of ownership; standby caches refresh hourly. The production takeover and verified return to the primary passed. [Production evidence and remaining acceptance work](production-rollout-2026-11-27.md)
 
-## Install the recovery job
+## Legacy single-host recovery job
+
+The procedures below retain the original recovery path and its evidence. The running coordinated service uses [private state transfer](private-state-transfer.md) and the managed paths in [data-host deployment](data-host-deployment.md). Keep the old worker fenced after enrollment.
 
 The scheduled backup uses GLAS to fetch the same witness key that signs the worker's receipts. Give the backup its own manifest containing that single BWS reference. On lugos-host, run the following from the Cirra checkout. The temporary file contains a reference ID.
 

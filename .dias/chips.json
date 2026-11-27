@@ -652,8 +652,8 @@
       "chipId": "cirra:verify-production-failover",
       "projectId": "cirra",
       "title": "Verify public webhook failover before switching GitHub",
-      "summary": "Verify both public origins, Mac voter connectivity, signed admissions and GitHub publication before moving live deliveries.",
-      "stage": "active",
+      "summary": "Production ingress, takeover, majority recovery and verified return passed. Both origins and recovery schedules are enabled.",
+      "stage": "done",
       "sequence": 13,
       "prereqs": [
         "cirra:reconcile-cutover-reviews"
@@ -662,7 +662,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-27T05:40:45Z",
-        "updatedAt": "2026-11-27T06:32:20Z"
+        "updatedAt": "2026-11-27T08:43:21Z"
       },
       "evidence": [
         {
@@ -682,6 +682,64 @@
           "kind": "note",
           "at": "2026-11-27T06:32:20Z",
           "message": "Mac access and backup checks passed. Audits 56 and 58 now have verified native receipts. Remaining admitted reports are being corrected on the primary."
+        },
+        {
+          "entryId": "cirra:verify-production-failover:production-live",
+          "at": "2026-11-27T08:43:21Z",
+          "kind": "stage-change",
+          "message": "The Mac took authority in 3.45 seconds; all 20 health samples passed. GitHub confirmed signed admission, both hosts verified backups, and the primary resumed from the Mac state."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:finish-frozen-audits",
+      "projectId": "cirra",
+      "title": "Finish the last two historical audits",
+      "summary": "Ten reports are complete. PR 66 and the full PR 61 audit await the daily limit reset; continuation runs November 28 at 00:05 UTC.",
+      "stage": "blocked",
+      "sequence": 14,
+      "prereqs": [
+        "cirra:verify-production-failover"
+      ],
+      "linkedRunIds": [],
+      "confidence": "authoritative",
+      "timestamps": {
+        "createdAt": "2026-11-27T08:43:21Z",
+        "updatedAt": "2026-11-27T08:43:21Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:finish-frozen-audits:observed",
+          "at": "2026-11-27T08:43:21Z",
+          "kind": "created",
+          "message": "The selected production state preserves all ten receipts and the two remaining policies. The continuation rejects retired state and requires primary authority."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:verify-second-owner-fork",
+      "projectId": "cirra",
+      "title": "Verify a fork from a second controlled account",
+      "summary": "The second-owner acceptance test needs a Cirra fork under another account Matt controls; the named account currently has none.",
+      "stage": "blocked",
+      "sequence": 15,
+      "prereqs": [
+        "cirra:verify-production-failover"
+      ],
+      "linkedRunIds": [],
+      "confidence": "authoritative",
+      "timestamps": {
+        "createdAt": "2026-11-27T08:43:21Z",
+        "updatedAt": "2026-11-27T08:43:21Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:verify-second-owner-fork:observed",
+          "at": "2026-11-27T08:43:21Z",
+          "kind": "created",
+          "message": "The provider readback found no Cirra repository or public fork under the named account. This does not block the completed production rollout."
         }
       ]
     }
