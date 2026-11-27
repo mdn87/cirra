@@ -646,6 +646,32 @@
           "message": "Verified both production approvals, two unanswered access handoffs, completed backup and reader grants, and the proposed fork owner."
         }
       ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:verify-production-failover",
+      "projectId": "cirra",
+      "title": "Verify public webhook failover before switching GitHub",
+      "summary": "Verify both public origins, Mac voter connectivity, signed admissions and GitHub publication before moving live deliveries.",
+      "stage": "active",
+      "sequence": 13,
+      "prereqs": [
+        "cirra:reconcile-cutover-reviews"
+      ],
+      "linkedRunIds": [],
+      "confidence": "authoritative",
+      "timestamps": {
+        "createdAt": "2026-11-27T05:40:45Z",
+        "updatedAt": "2026-11-27T05:40:45Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:verify-production-failover:public-route",
+          "kind": "created",
+          "at": "2026-11-27T05:40:45Z",
+          "message": "Both hosts returned HTTPS 200 through the public hostname with the other connector stopped. GitHub still delivers to its original receiver."
+        }
+      ]
     }
   ]
 }
