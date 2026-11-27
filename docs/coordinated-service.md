@@ -2,6 +2,8 @@
 
 The coordinated service lets either webhook receiver accept a signed change while one worker runs reviews, audits and native publications. The three voting members are the primary, the Intel Mac and the Nodens witness. Only the two data hosts receive the Cirra service configuration, routing secret, provider credentials, review state and witness signing key. Nodens can also store the independently encrypted restic backups under its existing backup role.
 
+This deployment is live as of November 27, 2026. GitHub webhook 698884839 uses `https://cirra-hooks.newman.foo/hooks/cirra-github`; the previous address also reaches coordinated intake. [Observed takeover, recovery and final delivery receipts](production-rollout-2026-11-27.md)
+
 ## Configure the voters and both origins
 
 Use a private network and mutually authenticated TLS for client and peer traffic. Give each voter a persistent data directory, a distinct member identity and a certificate for its advertised addresses. Restrict client access to the two data hosts. Pin the cluster ID from the operator-verified member status. Each Cirra process verifies the cluster identity on its TLS connection before changing a key. Moving a service to a different cluster requires recovering the original coordination history. Starting an empty cluster would lose the evidence needed to avoid repeating a provider action. [etcd transport security](https://etcd.io/docs/v3.7/op-guide/security/) · [etcd recovery](https://etcd.io/docs/v3.7/op-guide/recovery/)
@@ -69,8 +71,4 @@ Run `python scripts/rehearse-coordinated-service.py --etcd /path/to/etcd --evide
 
 In the 18:53 UTC rehearsal on November 26, 2026, the Intel Mac ran three local etcd 3.7.4 voters. After the primary process and its private directory were withdrawn, the standby completed the recovered job in 8.76 seconds. The receiver returned HTTP 200 for all 55 sampled health checks. Both receivers returned 503 with a single voter. A separate open-PR test with a local GitHub transport exercised the actual reviewer and publisher entry points. Redelivery and an unchanged refresh produced one native check. Changing the upstream CI result updated that same check. The open-PR test used a deterministic reviewer fixture.
 
-A separate rehearsal used the real Linux host and Intel Mac. Three temporary
-voters on the Mac elected a leader. The Linux client timed out connecting to
-their private client endpoints before either service enrolled or accepted a
-delivery. Production kept its original webhook. Verify the intended private
-client and peer routes before attempting public cutover.
+The November 27 production exercise withdrew the primary worker, public connector and voter. The Intel Mac acquired authority in 3.45 seconds and accepted a genuine signed replay; all 20 sampled public health requests returned HTTP 200. With two voters stopped, signed admission returned HTTP 503, then returned to HTTP 202 after majority recovery. The frozen Mac state was independently restored from encrypted storage and installed on the primary before its worker resumed. These observations cover the tested failures; they do not guarantee zero interruption for every network or power failure.
