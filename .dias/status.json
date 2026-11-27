@@ -8,13 +8,13 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-27T05:40:45Z",
+  "assessedAt": "2026-11-27T06:32:20Z",
   "confidence": "authoritative",
-  "currentMilestone": "Both Cloudflare connectors served the public hostname independently. GitHub still sends production deliveries to the original receiver.",
-  "remainingSummary": "Verify the Mac account and voter firewall, then prove signed delivery, publication and failover. Historical audits and the second-owner fork test remain.",
+  "currentMilestone": "Both public origins and all three voters passed. The Intel Mac verified an encrypted restore with its own credentials.",
+  "remainingSummary": "Finish the admitted historical audits, then verify signed deliveries, publication and recovery before switching GitHub. The second-owner fork test also remains.",
   "nextChipId": "cirra:verify-production-failover",
   "source": {
-    "label": "Cloudflare, public HTTPS probes, GitHub and host readbacks",
+    "label": "Native credential receipt, backup proof, tunnel checks and live audit queue",
     "updatedAt": "2026-11-27"
   }
 }

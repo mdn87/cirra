@@ -662,7 +662,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-27T05:40:45Z",
-        "updatedAt": "2026-11-27T05:40:45Z"
+        "updatedAt": "2026-11-27T06:32:20Z"
       },
       "evidence": [
         {
@@ -670,6 +670,18 @@
           "kind": "created",
           "at": "2026-11-27T05:40:45Z",
           "message": "Both hosts returned HTTPS 200 through the public hostname with the other connector stopped. GitHub still delivers to its original receiver."
+        },
+        {
+          "entryId": "cirra:verify-production-failover:standby-verified",
+          "kind": "note",
+          "at": "2026-11-27T06:31:19Z",
+          "message": "Both hosts reached all three voters and matched routing and witness proofs. The Mac restored its encrypted backup and enabled six-hour checks."
+        },
+        {
+          "entryId": "cirra:verify-production-failover:admitted-audits",
+          "kind": "note",
+          "at": "2026-11-27T06:32:20Z",
+          "message": "Mac access and backup checks passed. Audits 56 and 58 now have verified native receipts. Remaining admitted reports are being corrected on the primary."
         }
       ]
     }
