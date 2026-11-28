@@ -5,16 +5,16 @@
   "assessmentState": "watchlist",
   "assessmentScope": "current-milestone",
   "percentComplete": null,
-  "milestonePhase": "operational-proof",
+  "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-28T10:52:02.287901Z",
+  "assessedAt": "2026-11-28T12:20:45.466660Z",
   "confidence": "authoritative",
-  "currentMilestone": "Release completion safeguards passed the full Linux suite; the Taskmaster authentication client is deployed.",
-  "remainingSummary": "Deploy the Cirra candidate to both hosts, verify private reader access and independent monitoring, complete candidate audits, and resolve final license, availability, Docker and cleanup decisions.",
-  "nextChipId": "cirra:operational-followup",
+  "currentMilestone": "Operational release safeguards are deployed and verified on both data hosts.",
+  "remainingSummary": "Three verified release decisions, then one frozen candidate with full/release audits, final artifact checks and GitHub publication. Audit admission resumes at the UTC day boundary; destructive cleanup remains deferred.",
+  "nextChipId": "cirra:v1-release",
   "source": {
-    "label": "November 28 release completion tests, Taskmaster deployment and read-only recovery inventory",
+    "label": "PRs 77\u201379, native authentication/monitoring/recovery proof and the finite release review",
     "updatedAt": "2026-11-28"
   }
 }

@@ -818,8 +818,8 @@
       "chipId": "cirra:operational-followup",
       "projectId": "cirra",
       "title": "Add independent monitoring and remaining safeguards",
-      "summary": "Implement and deploy authenticated audit reads, explicit coordinated recovery, operational health and independent notifications; preview retained data before deletion approval.",
-      "stage": "active",
+      "summary": "Authenticated audit reads, coordinated recovery commands, independent monitoring and verified standby-cache health are deployed on both data hosts.",
+      "stage": "done",
       "sequence": 18,
       "prereqs": [
         "cirra:repair-restored-audit-checkouts"
@@ -828,7 +828,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-28T08:05:52.462125Z",
-        "updatedAt": "2026-11-28T10:46:56.166015Z"
+        "updatedAt": "2026-11-28T12:20:45.466660Z"
       },
       "evidence": [
         {
@@ -848,6 +848,12 @@
           "at": "2026-11-28T10:46:56.166015Z",
           "kind": "note",
           "message": "Release batch implemented with independent component review. Linux suite: 791 passed, 8 optional skips. Taskmaster PR25 merged and deployed; Nodens Pushover test accepted."
+        },
+        {
+          "entryId": "cirra:operational-followup:live-release-proof",
+          "at": "2026-11-28T12:20:45.466660Z",
+          "kind": "stage-change",
+          "message": "PRs 77\u201379 landed and deployed; authenticated Taskmaster read, denied service accounts, native alert recovery and fresh encrypted recovery were verified. Runtime e621695821ad."
         }
       ]
     },
@@ -856,8 +862,8 @@
       "chipId": "cirra:retention-and-runner-policy",
       "projectId": "cirra",
       "title": "Choose retention, audit execution and Docker policy",
-      "summary": "Preview retention before deletion approval; select sustainable audit execution and the Linux Docker privilege boundary.",
-      "stage": "planned",
+      "summary": "Retention preview preserves referenced and unproved copies; no deletion was performed. The session runner remains; Docker release-risk acceptance awaits verified review.",
+      "stage": "blocked",
       "sequence": 19,
       "prereqs": [
         "cirra:operational-followup"
@@ -866,7 +872,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-28T08:05:52.462125Z",
-        "updatedAt": "2026-11-28T08:05:52.462125Z"
+        "updatedAt": "2026-11-28T12:20:45.466660Z"
       },
       "evidence": [
         {
@@ -874,6 +880,38 @@
           "at": "2026-11-28T08:05:52.462125Z",
           "kind": "created",
           "message": "Agy Nov 28 Batch 3 remains. Prior retention grant authorized preview only; schema transitions require their own migration plan."
+        },
+        {
+          "entryId": "cirra:retention-and-runner-policy:preview-and-decision",
+          "at": "2026-11-28T12:20:45.466660Z",
+          "kind": "note",
+          "message": "Preview retained all 25 snapshots. Legacy entry points were archived. Docker release-risk acceptance awaits review V-20261128-6ae00438."
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "chipId": "cirra:v1-release",
+      "projectId": "cirra",
+      "title": "Publish the verified v1.0.0 release",
+      "summary": "Resolve three release decisions, freeze one candidate, complete full and release audits, verify artifacts and publish. Daily audit admission remains enforced.",
+      "stage": "blocked",
+      "sequence": 20,
+      "prereqs": [
+        "cirra:operational-followup"
+      ],
+      "linkedRunIds": [],
+      "confidence": "authoritative",
+      "timestamps": {
+        "createdAt": "2026-11-28T12:20:45.466660Z",
+        "updatedAt": "2026-11-28T12:20:45.466660Z"
+      },
+      "evidence": [
+        {
+          "entryId": "cirra:v1-release:created",
+          "at": "2026-11-28T12:20:45.466660Z",
+          "kind": "created",
+          "message": "Finite release plan and concrete license/metadata/notes are prepared. Review V-20261128-6ae00438 holds three decisions; the Nov 28 audit ledger is 10/10."
         }
       ]
     }
