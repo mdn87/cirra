@@ -48,6 +48,94 @@ def test_unknown_systemd_state_cannot_authorize_a_switch(monkeypatch, properties
         controller.active("worker")
 
 
+@pytest.mark.parametrize("failure", [None, "stop", "activation"])
+def test_ingress_rejoins_after_origin_switch_or_failure(monkeypatch, failure):
+    control = DEPLOY["Controller"](SimpleNamespace(mac=False))
+    evidence = {"ready": True, "tunnel_id": "3f9f067c-c96f-4e4a-b25c-e3da3ba86ab2"}
+    calls = []
+    monkeypatch.setattr(control, "ingress", lambda: evidence)
+    monkeypatch.setattr(control, "ready", lambda: calls.append("ready"))
+
+    def connector(start):
+        calls.append("start" if start else "stop")
+        if not start and failure == "stop":
+            raise RuntimeError("stop failed after disconnect")
+
+    monkeypatch.setattr(control, "connector", connector)
+
+    def switch():
+        with control.origin_drained(evidence):
+            calls.append("activate")
+            if failure == "activation":
+                raise RuntimeError("activation failed")
+
+    if failure:
+        with pytest.raises(RuntimeError, match=failure):
+            switch()
+    else:
+        switch()
+    assert calls == (
+        ["stop", "ready", "start"] if failure == "stop" else ["stop", "activate", "ready", "start"]
+    )
+
+
+def test_failed_origin_does_not_rejoin_the_tunnel(monkeypatch):
+    control = DEPLOY["Controller"](SimpleNamespace(mac=False))
+    evidence = {"ready": True, "tunnel_id": "same"}
+    calls = []
+    monkeypatch.setattr(control, "ingress", lambda: evidence)
+    monkeypatch.setattr(control, "connector", calls.append)
+
+    def unavailable():
+        raise RuntimeError("origin did not recover")
+
+    monkeypatch.setattr(control, "ready", unavailable)
+    with pytest.raises(RuntimeError, match="origin did not recover"):
+        with control.origin_drained(evidence):
+            pass
+    assert calls == [False]
+
+
+@pytest.mark.parametrize(
+    "peer", [None, {"ready": False, "tunnel_id": "same"}, {"ready": True, "tunnel_id": "other"}]
+)
+def test_ingress_drain_refuses_an_unverified_or_different_peer(monkeypatch, peer):
+    control = DEPLOY["Controller"](SimpleNamespace(mac=False))
+    monkeypatch.setattr(control, "ingress", lambda: {"ready": True, "tunnel_id": "same"})
+    monkeypatch.setattr(control, "connector", lambda start: pytest.fail("connector was changed"))
+    with pytest.raises(ValueError, match="same tunnel"):
+        with control.origin_drained(peer):
+            pytest.fail("origin was changed")
+
+
+def test_unconfigured_ingress_needs_no_connector_action(monkeypatch, tmp_path):
+    control = DEPLOY["Controller"](SimpleNamespace(mac=False, units=tmp_path))
+    monkeypatch.setattr(control, "connector", lambda start: pytest.fail("connector was changed"))
+    with control.origin_drained(None):
+        pass
+
+
+def test_ingress_evidence_checks_ready_connection_and_identity(monkeypatch, tmp_path):
+    control = DEPLOY["Controller"](SimpleNamespace(mac=False, units=tmp_path))
+    (tmp_path / "cirra-cloudflared.service").write_text("dedicated unit")
+    payload = {
+        "tunnelID": "3f9f067c-c96f-4e4a-b25c-e3da3ba86ab2",
+        "connections": [{"isConnected": True}],
+    }
+
+    class Response(io.BytesIO):
+        status = 200
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: Response(json.dumps(payload).encode())
+    )
+    assert control.ingress() == {"ready": True, "tunnel_id": payload["tunnelID"]}
+    payload["connections"][0]["isConnected"] = False
+    assert control.ingress()["ready"] is False
+    payload["tunnelID"] = "invalid"
+    assert control.ingress() == {"ready": False, "tunnel_id": None}
+
+
 class Controller:
     def __init__(self):
         self.running = False
