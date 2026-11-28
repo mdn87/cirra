@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from cirra.domain import CirraError, canonical
@@ -77,6 +78,20 @@ def stop_process(process):
     process.wait(timeout=10)
 
 
+def join_threads(threads, deadline):
+    for thread in threads:
+        thread.join(timeout=max(0, deadline - time.monotonic()))
+
+
+def cleanup_process(process, threads):
+    # A reaped parent can leave descendants holding its pipes open.
+    if process.poll() is None or any(thread.is_alive() for thread in threads):
+        stop_process(process)
+    join_threads(threads, time.monotonic() + 2)
+    if any(thread.is_alive() for thread in threads):
+        raise CirraError("subprocess cleanup did not return bounded output")
+
+
 def bounded_process(argv, prompt, directory, timeout, maximum):
     """Drain both pipes without retaining unbounded output or exposing stderr."""
     process = subprocess.Popen(
@@ -106,9 +121,13 @@ def bounded_process(argv, prompt, directory, timeout, maximum):
     def send():
         try:
             process.stdin.write(prompt.encode("utf-8"))
-            process.stdin.close()
         except (BrokenPipeError, OSError):
             pass
+        finally:
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
 
     threads = [
         threading.Thread(target=drain, args=(process.stdout, True), daemon=True),
@@ -117,8 +136,6 @@ def bounded_process(argv, prompt, directory, timeout, maximum):
     ]
     for thread in threads:
         thread.start()
-    import time
-
     deadline = time.monotonic() + timeout
     try:
         while process.poll() is None:
@@ -126,16 +143,16 @@ def bounded_process(argv, prompt, directory, timeout, maximum):
                 raise CirraError("reviewer output limit exceeded")
             if time.monotonic() >= deadline:
                 raise TimeoutError("reviewer deadline exceeded")
-        for thread in threads:
-            thread.join(timeout=2)
+        join_threads(threads, min(deadline, time.monotonic() + 2))
         if exceeded.is_set():
             raise CirraError("reviewer output limit exceeded")
+        if any(thread.is_alive() for thread in threads):
+            raise CirraError("reviewer did not return bounded output")
         if process.returncode:
             raise CirraError("reviewer CLI failed; check subscription login and selected model")
         return bytes(output)
     finally:
-        if process.poll() is None:
-            stop_process(process)
+        cleanup_process(process, threads)
 
 
 class ClaudeReviewer:

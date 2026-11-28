@@ -79,6 +79,42 @@ def session(*args):
     return {"state": "awaiting_import"}
 
 
+@pytest.mark.parametrize("failure", [OwnershipLost, QuorumUnavailable])
+def test_worker_abandons_pass_without_retry_write_on_ownership_failure(primary, failure):
+    voters, owner, root = primary
+    queue, config = review_queue(root, "lost-owner")
+    quorum_budget.seed_budgets(owner, root, quorum_budget.utc_day(), 1, 2)
+
+    def process(*_):
+        raise failure("cannot confirm owner")
+
+    with bind_owner(owner), pytest.raises(failure):
+        work_once(config, queue, process)
+    assert queue.scan()[0][0]["state"] == "running"
+
+
+def test_branch_ci_takeover_consumes_new_budget_without_repeating_model_reviews(primary):
+    voters, owner, root = primary
+    queue, config = review_queue(root, "branch-ci")
+    route = config.routes["test"]
+    route.branches, route.observer = ("main",), "observer.yaml"
+    config.max_jobs_per_day = 2
+    job = queue.scan()[0][0]
+    job["hint"].update(source="branch", branch="main", change="branch:main")
+    queue.save(job)
+    quorum_budget.seed_budgets(owner, root, quorum_budget.utc_day(), 2, 2)
+    with bind_owner(owner):
+        assert queue.begin_review(job, 2) is not None  # Existing pre-upgrade charge.
+    # A stale restore does not know whether the old observer finished.
+    job.update(state="running", attempts=1)
+    queue.save(job)
+    replacement = voters.owner()
+    with bind_owner(replacement):
+        result = work_once(config, queue, lambda *_: {"state": "done", "review": "disabled"})
+    assert result["state"] == "done"
+    assert usage(root, "review", quorum_budget.utc_day()) == 2
+
+
 def usage(root, kind, day):
     path = root / {"review": "worker-usage", "audit": "audit-usage"}[kind] / f"{day}.json"
     return json.loads(path.read_text())["attempts"]

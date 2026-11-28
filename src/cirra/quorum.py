@@ -5,6 +5,7 @@ import json
 import re
 import ssl
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -269,9 +270,13 @@ class Quorum:
         owner = Owner(self)
         lease = self.lease()
         if self.compare({OWNER_KEY: None}, {OWNER_KEY: owner.token}, leases={OWNER_KEY: lease}):
+            owner.check_lifetime()
             return owner
         # A committed transaction can lose its response. The nonce belongs to this call only.
-        return owner if self.get(OWNER_KEY) == owner.token else None
+        if self.get(OWNER_KEY) == owner.token:
+            owner.check_lifetime()
+            return owner
+        return None
 
 
 class Owner:
@@ -279,6 +284,15 @@ class Owner:
         self.quorum = quorum
         self.token = uuid.uuid4().hex
         self.lost = threading.Event()
+        ttl = getattr(getattr(quorum, "config", None), "lease_seconds", None)
+        # Start before the lease request: network time must never extend its TTL.
+        self.deadline = time.monotonic() + ttl if ttl is not None else None
+
+    def check_lifetime(self):
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            self.lost.set()
+        if self.lost.is_set():
+            raise OwnershipLost("worker no longer owns this generation")
 
     def get(self, key):
         return self.quorum.get(key)
@@ -286,33 +300,48 @@ class Owner:
     def compare(self, checks, puts, *, deletes=()):
         if OWNER_KEY in checks or OWNER_KEY in puts or OWNER_KEY in deletes:
             raise ValueError("ownership key is reserved")
-        if self.lost.is_set():
-            raise OwnershipLost("worker no longer owns this generation")
+        self.check_lifetime()
         ok = self.quorum.compare({OWNER_KEY: self.token, **checks}, puts, deletes=deletes)
+        self.check_lifetime()
         if not ok and self.quorum.get(OWNER_KEY) != self.token:
             self.lost.set()
             raise OwnershipLost("worker no longer owns this generation")
         return ok
 
     def renew(self):
+        self.check_lifetime()
+        started = time.monotonic()
         lease = self.quorum.lease()
+        self.check_lifetime()
         if not self.quorum.compare(
             {OWNER_KEY: self.token}, {OWNER_KEY: self.token}, leases={OWNER_KEY: lease}
         ):
             self.lost.set()
             raise OwnershipLost("worker lease expired")
+        self.check_lifetime()
+        self.deadline = started + self.quorum.config.lease_seconds
 
     @contextmanager
     def maintaining(self):
         stop = threading.Event()
 
         def renew():
-            while not stop.wait(self.quorum.config.lease_seconds / 3):
+            delay = self.quorum.config.lease_seconds / 3
+            while not stop.wait(delay):
                 try:
                     self.renew()
-                except (OSError, CirraError):
-                    self.lost.set()
+                except OwnershipLost:
                     return
+                except (OSError, CirraError):
+                    # Retry only inside the last confirmed lifetime. Every fenced
+                    # operation independently checks this same monotonic deadline.
+                    remaining = (self.deadline or 0) - time.monotonic()
+                    if remaining <= 0 or self.lost.is_set():
+                        self.lost.set()
+                        return
+                    delay = min(0.25, remaining)
+                else:
+                    delay = self.quorum.config.lease_seconds / 3
 
         thread = threading.Thread(target=renew, daemon=True)
         thread.start()

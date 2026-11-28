@@ -49,6 +49,25 @@ def states(queue):
     return [(job["identity"]["head"], job["state"]) for job in queue.jobs()]
 
 
+def test_oversized_audit_record_is_reported_without_loading_it(env):
+    queue, _, _, pr = env
+    identifier = pr(1, head(1), T0)["job_id"]
+    path = queue.directory / (identifier + ".json")
+    path.write_text(" " * 65536 + path.read_text(), encoding="utf-8")
+    with pytest.raises(CirraError, match="byte limit"):
+        queue.read(identifier)
+    assert queue.scan() == ([], [path.name])
+
+
+@pytest.mark.parametrize("state", ["attention", "failed"])
+def test_unresolved_audit_failure_is_not_archived(env, state):
+    queue, _, _, pr = env
+    identifier = pr(1, head(1), T0)["job_id"]
+    job = queue.update(identifier, state=state)
+    assert queue.archive([job], T0 + 365 * DAY) == [job]
+    assert queue.read(identifier)["state"] == state
+
+
 def test_polling_unchanged_job_preserves_its_timestamp_and_history(env):
     queue, _, _, pr = env
     identifier = pr(1, head(1), T0)["job_id"]

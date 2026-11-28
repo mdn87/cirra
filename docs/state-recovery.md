@@ -6,6 +6,11 @@ Matt allows up to 24 hours of data loss and requires Cirra to keep serving throu
 
 ## Legacy single-host recovery job
 
+For release changes on the enrolled hosts, follow [HA deployment and rollback](ha-deployment.md).
+It preserves the managed state selectors, switches backup and donor-reader code
+with the service runtime, and refuses incompatible schema or queue formats.
+Deployment rollback restores code and configuration, not an older private-state snapshot.
+
 The procedures below retain the original recovery path and its evidence. The running coordinated service uses [private state transfer](private-state-transfer.md) and the managed paths in [data-host deployment](data-host-deployment.md). Keep the old worker fenced after enrollment.
 
 The scheduled backup uses GLAS to fetch the same witness key that signs the worker's receipts. Give the backup its own manifest containing that single BWS reference. On lugos-host, run the following from the Cirra checkout. The temporary file contains a reference ID.

@@ -20,6 +20,101 @@ from cirra.store import Store
 from cirra.worker import heartbeat
 
 
+@pytest.mark.parametrize("backup_age", [None, 24 * 3600])
+def test_active_coordinated_host_reports_missing_or_stale_backup(tmp_path, backup_age):
+    from datetime import UTC, datetime, timedelta
+
+    from cirra.publish import write_receipt
+
+    queue = Queue(tmp_path)
+    heartbeat(queue)
+    now = datetime.now(UTC)
+    authority = {
+        "host": "1" * 64,
+        "epoch": "2" * 64,
+        "tip": "3" * 64,
+        "session": "4" * 64,
+        "floor": int(now.timestamp()) - 7200,
+        "target": None,
+    }
+    write_receipt(tmp_path / "coordination-state.json", {"cluster": "fixture"})
+    write_receipt(tmp_path / "data-authority.json", authority)
+    if backup_age is not None:
+        write_receipt(
+            tmp_path / "data-backup.json",
+            {
+                **{k: authority[k] for k in ("host", "epoch", "tip")},
+                "snapshot_id": "5" * 64,
+                "captured_at": (now - timedelta(seconds=backup_age)).isoformat(),
+            },
+        )
+    assert any(p["kind"] == "backup" for p in check(tmp_path, now=now)["problems"])
+
+
+def test_archived_unresolved_failure_remains_visible_but_requeue_resolves_it(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    queue = Queue(tmp_path)
+    route = SimpleNamespace(name="repo", digest="policy-1")
+    identifier = queue.enqueue(route, {"change": 3, "delivery": "old", "payload_digest": "old"})[
+        "job_id"
+    ]
+    path = queue.directory / (identifier + ".json")
+    job = queue.review_record(path)
+    job.update(state="attention", updated_at=(datetime.now(UTC) - timedelta(days=10)).isoformat())
+    queue.save(job)
+    queue.archive_finished([job])
+    assert path.exists()  # New maintenance must never hide unresolved work.
+    from cirra.health import queue_metrics
+
+    assert queue_metrics(queue)["remaining"] == queue.maximum - 1
+    archive = queue.directory / "archive"
+    archive.mkdir(exist_ok=True)
+    path.replace(archive / path.name)  # Reproduce a pre-upgrade archived failure.
+    heartbeat(queue)
+    assert any(p["kind"] == "attention" for p in check(tmp_path)["problems"])
+    job.update(state="queued", updated_at=datetime.now(UTC).isoformat())
+    queue.save(job)
+    assert not any(p["kind"] == "attention" for p in check(tmp_path)["problems"])
+
+
+def test_new_authority_gets_one_hour_to_replace_its_donors_backup(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from cirra.publish import write_receipt
+
+    now = datetime.now(UTC)
+    queue = Queue(tmp_path)
+    heartbeat(queue)
+    authority = {
+        "host": "1" * 64,
+        "epoch": "2" * 64,
+        "tip": "3" * 64,
+        "session": "4" * 64,
+        "floor": int(now.timestamp()),
+        "target": None,
+    }
+    write_receipt(tmp_path / "coordination-state.json", {"cluster": "fixture"})
+    write_receipt(tmp_path / "data-authority.json", authority)
+    backup = {
+        "host": "a" * 64,
+        "epoch": "b" * 64,
+        "tip": "c" * 64,
+        "snapshot_id": "d" * 64,
+        "captured_at": now.isoformat(),
+    }
+    write_receipt(tmp_path / "data-backup.json", backup)
+    assert not any(p["kind"] == "backup" for p in check(tmp_path, now=now)["problems"])
+    assert any(
+        p["kind"] == "backup" for p in check(tmp_path, now=now + timedelta(hours=2))["problems"]
+    )
+    backup.update({k: authority[k] for k in ("host", "epoch")})
+    write_receipt(tmp_path / "data-backup.json", backup)
+    assert not any(
+        p["kind"] == "backup" for p in check(tmp_path, now=now + timedelta(hours=2))["problems"]
+    )
+
+
 def test_health_reports_legacy_census_until_new_admission_resumes(tmp_path):
     queue = Queue(tmp_path, maximum=64)
     route = SimpleNamespace(name="repo", digest="policy-1")

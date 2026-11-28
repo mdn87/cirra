@@ -175,11 +175,12 @@ def test_health_reports_what_nothing_else_watches(tmp_path, state, expected):
     assert any(problem["kind"] == expected for problem in result["problems"]), result
 
 
-def test_old_attention_jobs_do_not_alert_forever(tmp_path):
+def test_old_unresolved_attention_jobs_remain_visible(tmp_path):
     from cirra.health import check
 
     health_state(tmp_path, attention_age=3 * 86400)
-    assert check(tmp_path)["healthy"] is True
+    assert check(tmp_path)["healthy"] is False
+    assert check(tmp_path, attention_window=86400)["healthy"] is True
 
 
 def test_unreadable_queue_file_is_reported_and_does_not_crash_the_worker(tmp_path):

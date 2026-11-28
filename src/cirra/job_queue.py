@@ -57,6 +57,8 @@ class Queue:
         return json.loads(raw)
 
     def save(self, job):
+        if owner := current_owner():
+            owner.compare({}, {})
         activate(self.directory.parent)
         job["schema_version"] = 1
         write_receipt(self.directory / (job["id"] + ".json"), job)
@@ -72,10 +74,9 @@ class Queue:
 
     def remember_completion(self, job):
         path = self.directory / "completed" / (job["id"] + ".json")
-        if not path.exists():
-            write_receipt(
-                path, {"job_id": job["id"], "accepted_at": job["accepted_at"]}, history=False
-            )
+        receipt = {"job_id": job["id"], "accepted_at": job["accepted_at"], "state": job["state"]}
+        if not path.exists() or self.read(path) != receipt:
+            write_receipt(path, receipt, history=path.exists())
 
     def archive_finished(self, jobs, *, pressure=False):
         """Preserve terminal records outside the polling set; keep payload replay evidence."""
@@ -95,7 +96,7 @@ class Queue:
             # The malformed job keeps its slot and remains visible to health.
             candidate.unlink(missing_ok=True)
             return False
-        if job["state"] not in TERMINAL_REVIEW:
+        if job["state"] not in ("done", "skipped"):
             candidate.unlink(missing_ok=True)
             return False
         if (not pressure or job["state"] == "attention") and (
@@ -482,15 +483,19 @@ class Queue:
         self.defer_route(route, until, reader=True)
         return until
 
-    def begin_review(self, job, maximum):
+    def begin_review(self, job, maximum, *, branch_ci=False):
         owner = quorum_budget.mutation_owner(self.directory.parent)
         if owner is None:
             path = self.usage_path()
             return path if self.reserve_attempt(maximum, path) else None
         day = quorum_budget.utc_day()
         sequence = job.get("budget_sequence", job["attempts"])
-        ticket = quorum_budget.operation("review", job["id"], sequence)
-        if job["state"] == "running":
+        # Branch CI never calls the model. Its observer has native publication
+        # recovery, and a takeover must charge a NEW attempt rather than reuse an
+        # uncertain reservation. Model reviews retain their one-use ticket guard.
+        identity = digest([job["id"], owner.token]) if branch_ci else job["id"]
+        ticket = quorum_budget.operation("branch-ci" if branch_ci else "review", identity, sequence)
+        if job["state"] == "running" and not branch_ci:
             outcome = "uncertain"
         else:
             outcome = quorum_budget.reserve(
@@ -567,6 +572,7 @@ class AuditQueue:
         self.directory = Path(directory).resolve() / "audit-queue"
         receipt_directory(self.directory)
         self.store, self.maximum = store, maximum
+        self._next_maintenance = 0
 
     def _lock(self):
         return change_lock(self.directory / "locks", "audit-queue", 10)
@@ -577,20 +583,25 @@ class AuditQueue:
         path = self.directory / (identifier + ".json")
         if not path.is_file():
             raise CirraError("audit job does not exist")
-        return json.loads(path.read_text(encoding="utf-8"))
+        return Queue.read(self, path)
 
     def save(self, job):
+        if owner := current_owner():
+            owner.compare({}, {})
         activate(self.directory.parent)
         job["schema_version"] = 1
         job["updated_at"] = utc_now()
         write_receipt(self.directory / (job["id"] + ".json"), job)
 
-    def scan(self):
+    def scan(self, directory=None):
         """Readable job records, and names of records that could not be read."""
         jobs, unreadable = [], []
-        for path in self.directory.glob("*.json"):
+        for index, path in enumerate((directory or self.directory).glob("*.json")):
+            if index >= self.maximum + 512:
+                unreadable.append("audit queue exceeds scan limit; maintenance required")
+                break
             try:
-                job = json.loads(path.read_text(encoding="utf-8"))
+                job = Queue.read(self, path)
                 if not (
                     isinstance(job, dict)
                     and type(job.get("schema_version", 1)) is int
@@ -642,7 +653,7 @@ class AuditQueue:
                 for key in ("accepted_at", "updated_at"):
                     if datetime.fromisoformat(job[key]).tzinfo is None:
                         raise ValueError("audit timestamp lacks a timezone")
-            except (OSError, ValueError, OverflowError, RecursionError):
+            except (CirraError, OSError, ValueError, OverflowError, RecursionError):
                 unreadable.append(path.name)
                 continue
             jobs.append(job)
@@ -652,12 +663,22 @@ class AuditQueue:
         # Unreadable records are skipped here and reported by `cirra health`.
         return self.scan()[0]
 
+    def maintain(self):
+        if time.monotonic() >= self._next_maintenance:
+            with self._lock():
+                if owner := current_owner():
+                    owner.compare({}, {})
+                self.archive(self.jobs(), time.time())
+            self._next_maintenance = time.monotonic() + 300
+
     def archive(self, jobs, now):
         """Move finished records older than ARCHIVE_AFTER_SECONDS out of the scan."""
         kept = []
         for job in jobs:
             updated = datetime.fromisoformat(job["updated_at"]).timestamp()
-            if job["state"] in ARCHIVED_STATES and now - updated > ARCHIVE_AFTER_SECONDS:
+            if job["state"] in ("done", "superseded", "cancelled") and (
+                now - updated > ARCHIVE_AFTER_SECONDS
+            ):
                 target = self.directory / "archive" / (job["id"] + ".json")
                 self.remember_request(job)
                 receipt_directory(target.parent)

@@ -5,14 +5,17 @@ import math
 import shutil
 from datetime import UTC, datetime, timedelta
 
+from cirra.data_authority import HEX, valid_authority
 from cirra.domain import CirraError
 from cirra.job_queue import AuditQueue, Queue
 
 # A bounded test run plus review can hold the loop for several minutes, during
 # which the heartbeat legitimately does not move.
 DEFAULT_HEARTBEAT_AGE = 1200
-DEFAULT_ATTENTION_WINDOW = 86400
+DEFAULT_ATTENTION_WINDOW = None
 DELIVERY_TARGET_SECONDS = 1800
+BACKUP_MAX_AGE = 23 * 3600  # Alert before the one-day recovery limit is breached.
+BACKUP_INITIAL_GRACE = 3600
 
 
 def queue_metrics(queue, *, now=None, scanned=None, history=True):
@@ -38,14 +41,7 @@ def queue_metrics(queue, *, now=None, scanned=None, history=True):
         ),
         default=timedelta(),
     )
-    occupied = (
-        len(unreadable)
-        + len(pending)
-        + sum(
-            j["state"] == "attention" and now - _parse(j["updated_at"]) < timedelta(days=7)
-            for j in jobs
-        )
-    )
+    occupied = len(unreadable) + len(pending) + sum(j["state"] == "attention" for j in jobs)
     refusal = queue.directory.parent / "queue-refusal.json"
     last_refusal = _record(queue, refusal).get("observed_at")
     counts = _record(queue, queue.directory.parent / "webhook-admissions" / f"{now.date()}.json")
@@ -120,6 +116,59 @@ def _record(queue, path):
     return record
 
 
+def _backup_problem(queue, status, now):
+    root = queue.directory.parent
+    if not (root / "coordination-state.json").exists() or status.get("state") != "running":
+        return None
+    try:
+        authority = _record(queue, root / "data-authority.json")
+        if not valid_authority(authority):
+            raise CirraError("invalid local data authority")
+        if authority["target"] is not None:
+            return None  # A frozen handoff is checked by the coordination health path.
+        backup = _record(queue, root / "data-backup.json")
+        captured = _parse(backup.get("captured_at"))
+        valid = (
+            captured is not None
+            and isinstance(backup.get("snapshot_id"), str)
+            and HEX.fullmatch(backup["snapshot_id"])
+            and all(backup.get(k) == authority[k] for k in ("host", "epoch"))
+            and authority["floor"] - 60 <= captured.timestamp()
+            and -60 <= (now - captured).total_seconds() < BACKUP_MAX_AGE
+        )
+        if valid:
+            return None
+        previous_tenure = any(backup.get(k) != authority[k] for k in ("host", "epoch"))
+        if (not backup or previous_tenure) and (
+            0 <= now.timestamp() - authority["floor"] < BACKUP_INITIAL_GRACE
+        ):
+            return None
+    except (CirraError, OSError, ValueError, TypeError, OverflowError):
+        pass
+    return {
+        "kind": "backup",
+        "detail": "active data host has no verified backup less than 23 hours old",
+    }
+
+
+def _archived_review_failures(queue, current):
+    jobs, unreadable = [], []
+    present = {job["id"] for job in current}
+    for index, path in enumerate((queue.directory / "archive").glob("*.json")):
+        if index >= 10000:
+            unreadable.append("archive exceeds health scan limit")
+            break
+        if path.stem in present:
+            continue
+        try:
+            job = queue.review_record(path)
+            if job["state"] == "attention":
+                jobs.append(job)
+        except (CirraError, OSError, ValueError, TypeError, OverflowError):
+            unreadable.append(path.name)
+    return jobs, unreadable
+
+
 def check(
     state_dir,
     *,
@@ -135,6 +184,7 @@ def check(
 
     status_path = root / "worker-status.json"
     heartbeat = None
+    status = {}
     if status_path.exists():
         try:
             status = _record(queue, status_path)
@@ -159,6 +209,9 @@ def check(
     elif now - heartbeat > timedelta(seconds=max_heartbeat_age):
         age = int((now - heartbeat).total_seconds())
         problems.append({"kind": "heartbeat", "detail": f"worker heartbeat is {age} s old"})
+    backup_problem = _backup_problem(queue, status, now)
+    if backup_problem:
+        problems.append(backup_problem)
 
     jobs, unreadable = queue.scan()
     if unreadable:
@@ -203,20 +256,32 @@ def check(
         problems.append(
             {"kind": "disk", "detail": "state storage has less than its free-space reserve"}
         )
-    since = now - timedelta(seconds=attention_window)
-    for job in jobs:
+    since = now - timedelta(seconds=attention_window) if attention_window is not None else None
+    archived, archive_unreadable = _archived_review_failures(queue, jobs)
+    if archive_unreadable:
+        problems.append(
+            {"kind": "queue", "detail": f"unreadable archived records: {archive_unreadable}"}
+        )
+    for job in [*jobs, *archived]:
         updated = _parse(job.get("updated_at"))
-        if job.get("state") == "attention" and updated is not None and updated >= since:
+        if job.get("state") == "attention" and (since is None or (updated and updated >= since)):
             problems.append({"kind": "attention", "job": job.get("id"), "detail": job.get("error")})
 
-    audit_jobs, audit_unreadable = AuditQueue(state_dir).scan()
+    audit_queue = AuditQueue(state_dir)
+    audit_jobs, audit_unreadable = audit_queue.scan()
+    archived_audits, archived_unreadable = audit_queue.scan(audit_queue.directory / "archive")
+    current_ids = {job["id"] for job in audit_jobs}
+    audit_jobs.extend(job for job in archived_audits if job["id"] not in current_ids)
+    audit_unreadable.extend("archive/" + name for name in archived_unreadable)
     if audit_unreadable:
         problems.append(
             {"kind": "audit-queue", "detail": f"unreadable audit records: {audit_unreadable}"}
         )
     for job in audit_jobs:
         updated = _parse(job.get("updated_at"))
-        if job.get("state") in ("attention", "failed") and updated and updated >= since:
+        if job.get("state") in ("attention", "failed") and (
+            since is None or (updated and updated >= since)
+        ):
             detail = job.get("error") or (job.get("result") or {}).get("publication")
             problems.append({"kind": "audit", "job": job.get("id"), "detail": detail})
 

@@ -3,7 +3,9 @@
 import hashlib
 import hmac
 import json
+import random
 import re
+import time
 
 from cirra.domain import CirraError, DeliveryConflict, canonical, digest, number
 from cirra.github import GitHubClient, native_id, record
@@ -17,6 +19,24 @@ PENDING = "inbox/pending/"
 COUNT = "inbox/count"
 CONFIG = "inbox/policy"
 HEX = re.compile("[0-9a-f]{64}")
+
+
+def intake_digest(route):
+    return getattr(route, "intake_digest", None) or route.digest
+
+
+def _comparison_attempts():
+    """Bound contention retries without synchronizing competing receivers."""
+    deadline = time.monotonic() + 2
+    for attempt in range(8):
+        if attempt:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, random.uniform(0.005, min(0.2, 0.01 * 2**attempt))))
+            if time.monotonic() >= deadline:
+                break
+        yield attempt
 
 
 class SharedInbox:
@@ -36,7 +56,8 @@ class SharedInbox:
                 config.coordination.preferred_node,
                 config.coordination.standby_node,
                 sorted(
-                    (r.name, r.provider, r.repository_id, r.digest) for r in self.routes.values()
+                    (r.name, r.provider, r.repository_id, intake_digest(r))
+                    for r in self.routes.values()
                 ),
             ]
         )
@@ -49,7 +70,7 @@ class SharedInbox:
         return hmac.new(self.secret, canonical(parts).encode(), hashlib.sha256).hexdigest()
 
     def route_id(self, route):
-        return self.opaque(["route", route.name, route.digest])
+        return self.opaque(["route", route.name, intake_digest(route)])
 
     def change_id(self, route, change):
         return self.opaque(["change", self.route_id(route), change])
@@ -106,7 +127,7 @@ class SharedInbox:
                 self.remember(route, change)
         except (CirraError, OSError):
             pass  # The other data host can independently discover the private locator.
-        for _ in range(8):
+        for _ in _comparison_attempts():
             self.check()
             known = self.quorum.get(binding)
             prior = self.quorum.get(job)
@@ -211,7 +232,7 @@ class SharedInbox:
         if state not in TERMINAL_REVIEW:
             raise CirraError("shared work needs a terminal private queue record")
         key = PENDING + identifier
-        for _ in range(8):
+        for _ in _comparison_attempts():
             value, count = owner.get(key), owner.get(COUNT)
             if value is None:
                 return
@@ -297,7 +318,13 @@ class SharedInbox:
                     raise QuorumUnavailable(
                         "private completion receipt differs from the shared job"
                     )
-                self.settle(owner, job_id, "done")
+                # Existing local/archive records are checked above, so legacy
+                # receipts remain usable when their original record survives.
+                # A receipt alone must not turn an unknown outcome into success.
+                state = completion.get("state") or owner.get("inbox/results/" + job_id)
+                if state not in TERMINAL_REVIEW:
+                    raise QuorumUnavailable("private completion receipt lacks its terminal state")
+                self.settle(owner, job_id, state)
                 continue
             try:
                 self.queue.enqueue(route, hint)
@@ -309,7 +336,7 @@ class SharedInbox:
         hint = job["hint"]
         return (
             job["route"] == route.name
-            and job["route_digest"] == route.digest
+            and job["route_digest"] in (route.digest, intake_digest(route))
             and hint.get("payload_digest") == payload
             and self.change_id(route, hint.get("change")) == identity
         )

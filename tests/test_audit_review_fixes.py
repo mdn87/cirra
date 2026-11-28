@@ -621,7 +621,7 @@ def test_first_worker_pass_runs_the_schedule_check(world, monkeypatch):
     assert receipt["reason"] == "schedule" and not receipt["attached"]
 
 
-def test_attention_jobs_are_archived_too(env):
+def test_attention_jobs_stay_visible_when_new_work_is_requested(env):
     queue, store, _, pr = env
     first = pr(1)
     path = queue.directory / (first["job_id"] + ".json")
@@ -631,7 +631,9 @@ def test_attention_jobs_are_archived_too(env):
         json.dumps({**record, "state": "attention", "updated_at": old}), encoding="utf-8"
     )
     pr(2)
-    assert (queue.directory / "archive" / (first["job_id"] + ".json")).is_file()
+    assert path.is_file()
+    assert queue.read(first["job_id"])["state"] == "attention"
+    assert not (queue.directory / "archive" / (first["job_id"] + ".json")).exists()
 
 
 # --- Third Codex round on #20 -----------------------------------------------

@@ -64,6 +64,7 @@ class Route:
     digest: str
     review_enabled: bool = True
     branches: tuple[str, ...] = ()
+    intake_digest: str | None = None
 
     @property
     def instance(self):
@@ -81,6 +82,31 @@ class ServiceConfig:
     max_retry_seconds: float = 3600
     reconcile_seconds: float = 0
     coordination: QuorumConfig | None = None
+
+
+def intake_policy_digest(item, directory, policy):
+    """Retain admission identity across an observer-pin-only rolling upgrade.
+
+    The retained policy is operator-owned configuration. Every other policy
+    value must remain identical; route fields still participate in the digest.
+    """
+    if "intake_policy" not in item:
+        return policy.digest
+    baseline = load_config(local_path(directory, item["intake_policy"]))
+    documents = []
+    for path in (baseline.path, policy.path):
+        data, _ = read_yaml(path)
+        count = 0
+        for check in data["ci"]["expected"]:
+            if check.get("name") == "cirra/isolated-tests" and "definition_digest" in check:
+                check["definition_digest"] = "observer-runtime-pin"
+                count += 1
+        if count != 1:
+            raise CirraError("intake compatibility requires one pinned observer check")
+        documents.append(data)
+    if documents[0] != documents[1]:
+        raise CirraError("intake compatibility permits only an observer definition change")
+    return baseline.digest
 
 
 def load_service(path):
@@ -137,7 +163,14 @@ def load_service(path):
                 "webhook_secret_env",
                 "publisher",
             ],
-            ["reader_token_env", "observer", "witness_key_env", "review_enabled", "branches"],
+            [
+                "reader_token_env",
+                "observer",
+                "witness_key_env",
+                "review_enabled",
+                "branches",
+                "intake_policy",
+            ],
             label="service route",
         )
         name = string(item["name"], "route name", 64)
@@ -210,6 +243,8 @@ def load_service(path):
         branches = tuple(branch_name(branch) for branch in branches)
         if len(set(branches)) != len(branches) or (branches and not observer):
             raise CirraError("branch CI requires unique branches and an observer")
+        original_route = {key: value for key, value in item.items() if key != "intake_policy"}
+        intake_policy = intake_policy_digest(item, path.parent, policy)
         routes[name] = Route(
             name,
             provider,
@@ -221,9 +256,10 @@ def load_service(path):
             publisher,
             observer,
             witness_env,
-            digest({"route": item, "policy": policy.digest}),
+            digest({"route": original_route, "policy": policy.digest}),
             review_enabled,
             branches,
+            digest({"route": original_route, "policy": intake_policy}),
         )
     coordination = (
         QuorumConfig.load(path.parent, data["coordination"]) if "coordination" in data else None

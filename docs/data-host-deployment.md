@@ -4,6 +4,13 @@ The webhook receiver and worker run as separate processes. Give both the same en
 
 The November 27 production deployment runs on lugos-host and the Intel Mac with Nodens as the third voter. Both receiver/worker pairs, backup schedules and donor refreshes are enabled. The primary audit reader and health checks follow the managed state. [Deployment evidence and operational adjustments](production-rollout-2026-11-27.md)
 
+For upgrades and rollback of that existing deployment, use the
+[HA release procedure](ha-deployment.md). The Linux processes are
+`cirra-ha-worker.service` and `cirra-ha-webhook.service`, using `ha-config/` and
+`ha-launch/`; the original `cirra-worker.service` remains fenced. The remaining
+setup examples describe enrollment and templates, not permission to reenroll
+the production state or restart the old worker.
+
 ## Credentials and observer configuration
 
 1. Bind the same private BWS reference to `CIRRA_ROUTING_KEY` in each data host's **receiver and worker** manifests. Set `coordination.routing_key_env: CIRRA_ROUTING_KEY` in both service configurations. Use an independent random value with at least 32 bytes. Preserve each manifest's existing entries. The receiver also uses the route webhook secrets. The worker uses the configured provider readers, publisher and witness key. Check each host's native Glas profile with its own account. Only reference names and IDs belong in the manifests.
@@ -26,7 +33,7 @@ Set the `--state-dir` arguments in the Linux worker and receiver Glas launcher c
 /srv/lugos/services/cirra/current/.venv/bin/python -I -B -m cirra refresh-standby-snapshot --service-config /srv/lugos/services/cirra/config/service.yaml --state-dir /srv/lugos/state/cirra-ha/current
 ```
 
-Install the HA unit files and matching `.service.d` directories into `/etc/systemd/system/`. Install `scripts/managed-linux-state.sh` and `scripts/grant-audit-read-access.sh` together as root-owned, mode-0755 files under `/usr/local/libexec/cirra-ha/`. Write `/srv/lugos/state/cirra-ha/current` on a single line in the root-owned `/srv/lugos/services/cirra/deployment-state-path` file. Set `CIRRA_STATE=/srv/lugos/state/cirra-ha/current` in the operator environment for each subsequent `scripts/deploy-release.sh` invocation. Both rollout and rollback check the recorded selector, and the printed rollback command preserves the selected paths and ports. Check the persistent `40-worker-state.conf` on both units references the same selector before enabling coordinated processing.
+Install the HA unit files and matching `.service.d` directories into `/etc/systemd/system/`. Install `scripts/managed-linux-state.sh` and `scripts/grant-audit-read-access.sh` together as root-owned, mode-0755 files under `/usr/local/libexec/cirra-ha/`. Existing production upgrades use `scripts/deploy-ha.py`, which preserves the managed selector and checks release compatibility. The standalone `deploy-release.sh` does not manage the production HA units. Preserve the runtime queue-format guard through an upgrade or rollback; do not create another enrollment or redirect the selector to the legacy state tree.
 
 For Linux backups, prepare `/etc/cirra-ha/private` as root-owned mode `0700`. Create the following root-owned, mode-0600 configuration files. The systemd manager supplies the credentials to each job separately.
 

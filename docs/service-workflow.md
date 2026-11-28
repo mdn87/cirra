@@ -9,6 +9,13 @@ rules, and merge decision. Cirra never merges a PR.
 Service objectives, alert ownership, publication recovery and cold storage are
 documented in [Worker operations](worker-operations.md).
 
+The production service uses coordinated HA on `lugos-host` and `intelmac`, with
+Nodens as a voter and encrypted backup host. Its current paths, units and rollout
+commands are in [HA deployment](ha-deployment.md). The standalone installation
+examples and dated operational history below do not replace that procedure.
+Production receivers use port `18796` and the managed `cirra-ha/current` state
+selector on Linux; the original single-host worker must remain fenced.
+
 The worker also supports GitLab merge-request reviews, isolated tests, and
 maintained advisory notes. GitHub observations attest the supervisor's native
 check. GitLab observations use a signed `observer_run` record retained by Cirra;
@@ -447,9 +454,13 @@ backups and retention appropriate to the repository data.
 `cirra health --state-dir <state>` prints one JSON object and exits 1 when
 something needs an operator: the worker heartbeat is missing or older than
 `--max-heartbeat-age` (1200 s by default, because a bounded test and review can
-hold the loop), a job entered `attention` within `--attention-window` (one day),
+hold the loop), a review job remains in `attention` or an audit remains in
+`attention`/`failed` (including older archives),
 the last reconcile reported a route or branch error, today's admission is
 exhausted, or a queue record is unreadable (the worker skips such records).
+Coordinated active hosts also require a verified backup less than 23 hours old,
+after a one-hour grace period for a new authority. `--attention-window` opts
+into a historical age filter; operational health reports all unresolved failures.
 `examples/systemd/cirra-health.service` and `.timer` run it every five minutes.
 `cirra-health-alert.service` (`OnFailure=`) posts an
 `operator_attention.requested` event to lugos event-ingest, and
@@ -800,8 +811,10 @@ storage.
 
 ### Deploying and rolling back
 
-`scripts/deploy-release.sh` replaces the manual steps above. From a checkout
-on the operator machine:
+For coordinated production, use [the HA release procedure](ha-deployment.md).
+The following commands apply only to a standalone installation.
+`scripts/deploy-release.sh` refuses a host with an installed HA launcher.
+From a checkout on the operator machine:
 
 ```text
 scripts/deploy-release.sh --host lugos-host --ref <commit>
