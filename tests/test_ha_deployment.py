@@ -154,3 +154,23 @@ def test_stage_rejects_archive_escape(tmp_path):
     with pytest.raises(ValueError, match="escaping path"):
         DEPLOY["stage"](p, "a" * 40, base64.b64encode(raw), hashlib.sha256(raw).hexdigest())
     assert not (tmp_path / "escape").exists()
+
+
+@pytest.mark.parametrize("mismatch", [None, "invocation", "group", "command", "pid"])
+def test_worker_drain_checks_native_process_identity(tmp_path, mismatch):
+    folder = tmp_path / "123"
+    folder.mkdir()
+    group = "/system.slice/cirra-ha-worker.service"
+    (folder / "cgroup").write_text("0::" + ("/other" if mismatch == "group" else group))
+    command = b"python\0-m\0cirra\0worker\0--state-dir\0/state\0"
+    (folder / "cmdline").write_bytes(b"unrelated\0" if mismatch == "command" else command)
+    status = {
+        "pid": "123" if mismatch == "pid" else 123,
+        "invocation_id": "stale" if mismatch == "invocation" else "current",
+    }
+    properties = {"InvocationID": "current", "ControlGroup": group}
+    if mismatch:
+        with pytest.raises(ValueError):
+            DEPLOY["verify_worker_pid"](status, properties, tmp_path)
+    else:
+        assert DEPLOY["verify_worker_pid"](status, properties, tmp_path) == 123

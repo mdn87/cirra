@@ -13,6 +13,7 @@ import json
 import os
 import platform
 import re
+import signal
 import subprocess
 import sys
 import tarfile
@@ -170,6 +171,24 @@ def set_pointer(path, target):
     os.replace(temporary, path)
 
 
+def verify_worker_pid(status, properties, proc=Path("/proc")):
+    """A heartbeat PID must belong to this unit invocation and run Cirra's worker."""
+    pid = status.get("pid")
+    if type(pid) is not int or pid <= 1 or not properties.get("InvocationID"):
+        raise ValueError("worker has no verified live process identity")
+    if status.get("invocation_id") != properties["InvocationID"]:
+        raise ValueError("worker heartbeat belongs to a different service invocation")
+    groups = (proc / str(pid) / "cgroup").read_text().splitlines()
+    args = (proc / str(pid) / "cmdline").read_bytes().split(b"\0")
+    if (
+        not properties.get("ControlGroup")
+        or properties["ControlGroup"] not in [row.split(":", 2)[-1] for row in groups]
+        or not any(args[i : i + 3] == [b"-m", b"cirra", b"worker"] for i in range(len(args) - 2))
+    ):
+        raise ValueError("heartbeat PID does not identify this unit's Cirra worker")
+    return pid
+
+
 class Controller:
     def __init__(self, p):
         self.p = p
@@ -196,15 +215,29 @@ class Controller:
             run(["launchctl", "bootout", self.domain + "/" + self.label("worker")])
         else:
             # The installed handler finishes the bounded pass. Never force-kill it.
-            run(
-                [
-                    "systemctl",
-                    "kill",
-                    "--kill-who=main",
-                    "--signal=SIGTERM",
-                    "cirra-ha-worker.service",
-                ]
-            )
+            status = json.loads((self.p.state / "worker-status.json").read_bytes())
+            pid = status.get("pid")
+            if type(pid) is not int or pid <= 1:
+                raise ValueError("worker heartbeat has no live process identity")
+            # Pin the kernel process identity before inspecting /proc to reject PID reuse.
+            descriptor = os.pidfd_open(pid)
+            try:
+                raw = run(
+                    [
+                        "systemctl",
+                        "show",
+                        "cirra-ha-worker.service",
+                        "-p",
+                        "InvocationID",
+                        "-p",
+                        "ControlGroup",
+                    ]
+                )
+                properties = dict(row.split("=", 1) for row in raw.decode().splitlines())
+                verify_worker_pid(status, properties)
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            finally:
+                os.close(descriptor)
             deadline = time.monotonic() + 1200
             while self.active("worker"):
                 if time.monotonic() >= deadline:
