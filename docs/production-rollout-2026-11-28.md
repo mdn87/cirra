@@ -108,3 +108,21 @@ then reconcile Cirra's native evidence workflow before publishing the approved
 tag and GitHub Release. The current UTC day's audit ledger is 10/10; it was not
 reset or bypassed. The v1.0.0 gate is not satisfied by queue admission or by
 this operational record.
+
+## Final operational readback
+
+PR [79](https://github.com/mdn87/cirra/pull/79) completed the cache-health
+correction with all seven checks passing. The Linux suite passed 825 tests
+with eight optional skips; isolated tests and package construction passed.
+Both data hosts subsequently deployed `e621695821ad4a3975623825400fdd61d85240aa`;
+Linux and Mac health were green, the Mac reported a verified eligible cache,
+and authenticated audit reads and all four monitoring targets remained healthy.
+Both native health services sent fresh heartbeats. Five public health requests
+after activation and 20 sampled during the worker pause returned HTTP 200.
+The installed and cached recovery points remain separately visible. The final
+versioned candidate and publication gates above are still unfinished.
+
+A separate diagnostic limitation was recorded for later maintenance: retained
+observer logs omit stderr, so the package failure needed a bounded diagnostic
+rerun. The observer still used the actual nonzero exit status to refuse the
+check; this limitation did not produce a passing result.
