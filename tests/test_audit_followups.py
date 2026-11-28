@@ -143,7 +143,7 @@ def test_health_is_quiet_for_a_running_idle_worker(tmp_path):
     from cirra.health import check
 
     health_state(tmp_path, reconcile={"routes": [{"route": "repo", "jobs": []}]})
-    assert check(tmp_path) == {"healthy": True, "problems": []}
+    assert check(tmp_path) == {"healthy": True, "problems": [], "warnings": []}
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,7 @@
 
 import json
 import runpy
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,9 +13,16 @@ from test_data_authority import Quorum
 
 from cirra import audits
 from cirra.data_authority import AUTHORITY, DataAuthority
-from cirra.domain import CirraError, digest
+from cirra.domain import CirraError, canonical, digest
 from cirra.locking import change_lock
-from cirra.quorum import OwnershipLost, QuorumUnavailable, bind_owner, current_owner
+from cirra.quorum import (
+    OWNER_KEY,
+    Owner,
+    OwnershipLost,
+    QuorumUnavailable,
+    bind_owner,
+    current_owner,
+)
 from cirra.store import Store
 
 
@@ -178,7 +186,7 @@ def test_authority_changed_during_acquisition_refuses_import(world):
     assert audits.get(world.store, world.attempt["attempt_id"])["state"] == "prepared"
 
 
-def test_lost_lease_never_returns_a_success_receipt(world, monkeypatch):
+def test_lost_lease_reports_committed_but_unconfirmed(world, monkeypatch):
     original = audits.import_report
 
     def lose_after_store(*args):
@@ -187,8 +195,11 @@ def test_lost_lease_never_returns_a_success_receipt(world, monkeypatch):
         return result
 
     monkeypatch.setattr(audits, "import_report", lose_after_store)
-    with pytest.raises(OwnershipLost):
+    with pytest.raises(CirraError, match="committed but unconfirmed") as error:
         world.operation(*world.args)
+    assert error.value.receipt["state"] == "committed_unconfirmed"
+    assert error.value.receipt["authority_checkpointed"] is False
+    assert audits.get(world.store, world.attempt["attempt_id"])["state"] == "complete"
     assert current_owner() is None
 
 
@@ -202,3 +213,133 @@ def test_editing_original_during_import_cannot_replace_accepted_json(world, monk
     monkeypatch.setattr(audits, "import_report", replace_original)
     result = world.operation(*world.args)
     assert result["report_digest"] == digest(world.report)
+
+
+def test_oversized_markdown_refused_before_lease_or_import(world):
+    world.path.with_suffix(".md").write_bytes(b"x" * (4 * 1024 * 1024 + 1))
+    with pytest.raises(CirraError, match="Markdown"):
+        world.operation(*world.args)
+    assert world.cluster.acquisitions == 0
+    assert audits.get(world.store, world.attempt["attempt_id"])["state"] == "prepared"
+
+
+def test_symlinked_markdown_refused_before_lease(world):
+    path = world.path.with_suffix(".md")
+    original = path.with_name("retained-report.md")
+    path.rename(original)
+    path.symlink_to(original)
+    with pytest.raises(CirraError, match="Markdown"):
+        world.operation(*world.args)
+    assert world.cluster.acquisitions == 0
+
+
+@pytest.fixture
+def real_owner(world):
+    class TestQuorum:
+        config = SimpleNamespace(lease_seconds=3600)
+
+        def get(self, key):
+            return world.cluster.get(key)
+
+        def compare(self, checks, puts, *, deletes=(), leases=None):
+            applied = world.cluster.compare(checks, puts)
+            if applied:
+                for key in deletes:
+                    world.cluster.values.pop(key, None)
+            return applied
+
+    quorum = TestQuorum()
+    owners = []
+
+    def acquire():
+        owner = Owner(quorum)
+        world.cluster.values[OWNER_KEY] = owner.token
+        owners.append(owner)
+        return owner
+
+    world.operation.__globals__["connect"]().quorum.acquire = acquire
+    return owners
+
+
+def test_real_owner_expiry_after_sqlite_commit_has_safe_replay(world, real_owner, monkeypatch):
+    original = audits.import_report
+    checkpoint_tip = []
+
+    def expire_after_commit(*args):
+        result = original(*args)
+        checkpoint_tip.append(world.cluster.get(AUTHORITY))
+        real_owner[-1].deadline = 0
+        return result
+
+    monkeypatch.setattr(audits, "import_report", expire_after_commit)
+    with pytest.raises(CirraError, match="committed but unconfirmed"):
+        world.operation(*world.args)
+    assert audits.get(world.store, world.attempt["attempt_id"])["state"] == "complete"
+    assert world.cluster.get(AUTHORITY) == checkpoint_tip[0]
+    monkeypatch.setattr(audits, "import_report", original)
+    assert world.operation(*world.args)["reused"]
+    assert world.cluster.get(AUTHORITY) != checkpoint_tip[0]
+
+
+def test_checkpoint_lost_reply_converges_via_native_intent(world, real_owner, monkeypatch):
+    original = audits.import_report
+
+    def lose_checkpoint_reply(*args):
+        result = original(*args)
+        world.cluster.lose_reply = True
+        return result
+
+    monkeypatch.setattr(audits, "import_report", lose_checkpoint_reply)
+    with pytest.raises(CirraError, match="committed but unconfirmed"):
+        world.operation(*world.args)
+    assert audits.get(world.store, world.attempt["attempt_id"])["state"] == "complete"
+    assert (world.state / "data-authority-intent.json").is_file()
+    monkeypatch.setattr(audits, "import_report", original)
+    result = world.operation(*world.args)
+    assert result["reused"] and result["authority_checkpointed"]
+
+
+def test_authority_moved_after_commit_refuses_old_host_replay(world, real_owner, monkeypatch):
+    original = audits.import_report
+
+    def move_after_commit(*args):
+        result = original(*args)
+        authority = json.loads(world.cluster.values[AUTHORITY])
+        authority["host"] = world.authority.secondary
+        world.cluster.values[AUTHORITY] = canonical(authority)
+        return result
+
+    monkeypatch.setattr(audits, "import_report", move_after_commit)
+    with pytest.raises(CirraError, match="committed but unconfirmed"):
+        world.operation(*world.args)
+    monkeypatch.setattr(audits, "import_report", original)
+    with pytest.raises(CirraError, match="original unfrozen"):
+        world.operation(*world.args)
+
+
+def test_schema_mismatch_is_refused_without_migration_or_lease(world):
+    with world.store.connection() as connection:
+        connection.execute("PRAGMA user_version=2")
+    with pytest.raises(CirraError, match="compatible read-only schema"):
+        world.operation(*world.args)
+    assert world.cluster.acquisitions == 0
+    with world.store.connection() as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_readback_database_error_reports_committed_unconfirmed(world, monkeypatch):
+    original = audits.import_report
+
+    def readback_error(*args):
+        raise sqlite3.OperationalError("private database readback failed")
+
+    def fail_readback_after_commit(*args):
+        result = original(*args)
+        monkeypatch.setattr(audits, "get", readback_error)
+        return result
+
+    monkeypatch.setattr(audits, "import_report", fail_readback_after_commit)
+    with pytest.raises(CirraError, match="committed but unconfirmed") as error:
+        world.operation(*world.args)
+    assert error.value.receipt["state"] == "committed_unconfirmed"
+    assert "private database" not in json.dumps(error.value.receipt)

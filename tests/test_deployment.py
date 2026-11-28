@@ -239,12 +239,14 @@ def test_failed_unit_restore_still_restores_release_and_configuration(deployment
 
 
 def test_rollback_checks_the_active_audit_readers_database(deployment, tmp_path):
+    from test_audit_reads import READ_TOKEN
+
     from cirra.audit_reads import AuditReadServer
     from cirra.store import Store
 
     rollback, _, _, _ = deployment
     reader_state = tmp_path / "reader-state"
-    with AuditReadServer(("127.0.0.1", 0), reader_state) as reader:
+    with AuditReadServer(("127.0.0.1", 0), reader_state, token=READ_TOKEN) as reader:
         thread = threading.Thread(target=reader.serve_forever, daemon=True)
         thread.start()
         try:

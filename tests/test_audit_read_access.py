@@ -10,6 +10,7 @@ from http.client import HTTPConnection
 from pathlib import Path
 
 import pytest
+from test_audit_reads import READ_TOKEN
 
 from cirra.publish import write_receipt
 from cirra.store import Store
@@ -54,12 +55,15 @@ with AuditReadServer(('127.0.0.1', 0), root) as server:
     for _ in sys.stdin:
         server.handle_request()
 """
+        environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        environment.pop("CIRRA_AUDIT_READ_TOKEN_FILE", None)
+        environment["CIRRA_AUDIT_READ_TOKEN"] = READ_TOKEN
         proc = subprocess.Popen(
             [os.environ.get("CIRRA_TEST_READER_PYTHON", sys.executable), "-c", child, str(state)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            env=environment,
         )
         try:
             port = int(proc.stdout.readline())
@@ -69,7 +73,7 @@ with AuditReadServer(('127.0.0.1', 0), root) as server:
                 proc.stdin.flush()
                 client = HTTPConnection("127.0.0.1", port, timeout=5)
                 try:
-                    client.request("GET", path)
+                    client.request("GET", path, headers={"Authorization": "Bearer " + READ_TOKEN})
                     response = client.getresponse()
                     assert response.status == 200
                     return json.loads(response.read())["record"]

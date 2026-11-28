@@ -8,13 +8,13 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-28T08:53:48.442010Z",
+  "assessedAt": "2026-11-28T10:52:02.287901Z",
   "confidence": "authoritative",
-  "currentMilestone": "HA reliability and checkout recovery are deployed; all four previously admitted session audits are imported and published.",
-  "remainingSummary": "One full audit and PRs 73\u201375 await budget admission. Monitoring, clock/read safeguards, two PR 72 findings, retention approval and runner/Docker policy remain.",
+  "currentMilestone": "Release completion safeguards passed the full Linux suite; the Taskmaster authentication client is deployed.",
+  "remainingSummary": "Deploy the Cirra candidate to both hosts, verify private reader access and independent monitoring, complete candidate audits, and resolve final license, availability, Docker and cleanup decisions.",
   "nextChipId": "cirra:operational-followup",
   "source": {
-    "label": "Nov 28 exact audit/report/GitHub readback, healthy worker roles and the independent follow-up plan",
+    "label": "November 28 release completion tests, Taskmaster deployment and read-only recovery inventory",
     "updatedAt": "2026-11-28"
   }
 }

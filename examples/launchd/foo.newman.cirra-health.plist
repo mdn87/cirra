@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>foo.newman.cirra-health</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/matt/.local/share/cirra-standby/ha-current/.venv/bin/python</string>
+        <string>-I</string><string>-B</string>
+        <string>/Users/matt/.local/share/cirra-standby/ha-current/scripts/report-health.py</string>
+        <string>--state-dir</string><string>/Users/matt/.local/share/cirra-standby/state/current</string>
+        <string>--service-config</string><string>/Users/matt/.local/share/cirra-standby/config/ha/service.yaml</string>
+        <string>--host-heartbeat-file</string><string>/Users/matt/.local/share/cirra-standby/config/ha/monitoring-host.url</string>
+        <string>--active-heartbeat-file</string><string>/Users/matt/.local/share/cirra-standby/config/ha/monitoring-active.url</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>StartInterval</key><integer>300</integer>
+    <key>ProcessType</key><string>Background</string>
+    <key>Umask</key><integer>63</integer>
+    <key>StandardOutPath</key><string>/Users/matt/Library/Logs/cirra-health.log</string>
+    <key>StandardErrorPath</key><string>/Users/matt/Library/Logs/cirra-health-error.log</string>
+</dict>
+</plist>

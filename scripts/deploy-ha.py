@@ -84,7 +84,7 @@ print(json.dumps({'state_version':resolved.name,'schema':SCHEMA_VERSION}))
 
 def deployment_paths(p):
     if p.mac:
-        return [
+        paths = [
             p.wrapper,
             *(
                 p.units / f"foo.newman.cirra-ha-{role}.plist"
@@ -93,11 +93,23 @@ def deployment_paths(p):
             p.units / "foo.newman.cirra-private-backup.plist",
             p.root.parent / "cirra-private-backup/tools/run-coordinated-backup.py",
         ]
+        health = p.units / "foo.newman.cirra-health.plist"
+        return [*paths, *([health] if health.exists() else [])]
     paths = [p.wrapper]
     paths.extend(
         p.root / "ha-launch" / name
         for name in ("worker.json", "webhook.json", "worker.check.json", "webhook.check.json")
     )
+    for name in (
+        "cirra-health.service.d/zzz-kuma-push.conf",
+        "cirra-audit-reads.service.d/95-reader-auth.conf",
+        "cirra-private-backup.service.d/95-health-alert.conf",
+        "cirra-private-backup@.service.d/95-health-alert.conf",
+        "cirra-standby-refresh.service.d/95-health-alert.conf",
+    ):
+        path = p.units / name
+        if path.exists():
+            paths.append(path)
     paths.extend(
         p.units / name
         for name in (
@@ -285,6 +297,7 @@ class Controller:
                 for label in (
                     "foo.newman.cirra-ha-donor-refresh",
                     "foo.newman.cirra-private-backup",
+                    "foo.newman.cirra-health",
                 ):
                     deadline = time.monotonic() + 1500
                     while True:
@@ -335,18 +348,24 @@ class Controller:
                     time.sleep(1)
             yield
         finally:
+            failures = []
             for name in paused:
-                if self.p.mac:
-                    run(
-                        [
-                            "launchctl",
-                            "bootstrap",
-                            self.domain,
-                            str(self.p.units / (name + ".plist")),
-                        ]
-                    )
-                else:
-                    run(["systemctl", "start", name + ".timer"])
+                try:
+                    if self.p.mac:
+                        run(
+                            [
+                                "launchctl",
+                                "bootstrap",
+                                self.domain,
+                                str(self.p.units / (name + ".plist")),
+                            ]
+                        )
+                    else:
+                        run(["systemctl", "start", name + ".timer"])
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    failures.append(name)
+            if failures:
+                raise RuntimeError("scheduled maintenance did not resume: " + ", ".join(failures))
 
     def ready(self):
         deadline = time.monotonic() + 35

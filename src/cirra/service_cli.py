@@ -82,6 +82,9 @@ def register(commands):
         "health", help="exit nonzero when the worker, queue, reconcile, or budget needs attention"
     )
     health.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
+    health.add_argument(
+        "--service-config", type=Path, help="include configured audit baseline age warnings"
+    )
     health.add_argument("--max-heartbeat-age", type=int, default=1200)
     health.add_argument(
         "--attention-window",
@@ -101,7 +104,7 @@ def register(commands):
     pins.add_argument("--repin", action="store_true")
     reads = commands.add_parser(
         "serve-audit-reads",
-        help="serve the audit store read-only on loopback HTTP; GET only, no credentials",
+        help="serve authenticated, read-only audit GET requests on loopback HTTP",
     )
     reads.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
     reads.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -134,7 +137,12 @@ def run(args, credential, capture):
     if args.command == "health":
         from cirra.health import main as health
 
-        return health(args.state_dir, args.max_heartbeat_age, args.attention_window)
+        return health(
+            args.state_dir,
+            args.max_heartbeat_age,
+            args.attention_window,
+            service_config=load_service(args.service_config) if args.service_config else None,
+        )
     if args.command == "jobs":
         from cirra.health import queue_metrics
 
