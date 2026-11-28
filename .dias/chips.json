@@ -786,8 +786,8 @@
       "chipId": "cirra:settle-current-session-audits",
       "projectId": "cirra",
       "title": "Resolve the current session audit backlog",
-      "summary": "PRs 67, 68, 69 and 72 still await report import. Queued and deferred requests remain subject to the existing daily budget.",
-      "stage": "planned",
+      "summary": "PRs 67, 68, 69 and 72 are imported and published with exact report readback; the remaining unadmitted requests retain the daily budget.",
+      "stage": "done",
       "sequence": 17,
       "prereqs": [
         "cirra:repair-restored-audit-checkouts"
@@ -796,7 +796,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-28T08:05:52.462125Z",
-        "updatedAt": "2026-11-28T08:05:52.462125Z"
+        "updatedAt": "2026-11-28T08:53:48.442010Z"
       },
       "evidence": [
         {
@@ -804,6 +804,12 @@
           "at": "2026-11-28T08:05:52.462125Z",
           "kind": "created",
           "message": "Live census on Nov 28: four awaiting_import, one queued and two deferred. These are separate from the twelve completed historical audits."
+        },
+        {
+          "entryId": "cirra:settle-current-session-audits:settled",
+          "at": "2026-11-28T08:53:48.442010Z",
+          "kind": "stage-change",
+          "message": "Four reports imported and matched to GitHub; 20/20 ingress probes passed. PR 72 retains two findings. Evidence: docs/current-audit-settlement-2026-11-28.md."
         }
       ]
     },
@@ -822,7 +828,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-28T08:05:52.462125Z",
-        "updatedAt": "2026-11-28T08:05:52.462125Z"
+        "updatedAt": "2026-11-28T08:53:48.442010Z"
       },
       "evidence": [
         {
@@ -830,6 +836,12 @@
           "at": "2026-11-28T08:05:52.462125Z",
           "kind": "created",
           "message": "Agy Nov 28 Batch 2 remains after PRs 73/74. No host-local data-access risk acceptance or legacy-artifact deletion was inferred."
+        },
+        {
+          "entryId": "cirra:operational-followup:audit72",
+          "at": "2026-11-28T08:53:48.442010Z",
+          "kind": "note",
+          "message": "PR 72 has two accepted private findings concerning locking/concurrency. Include them in the remaining safeguards; successful native publication does not close findings."
         }
       ]
     },
