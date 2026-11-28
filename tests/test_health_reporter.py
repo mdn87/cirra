@@ -64,6 +64,27 @@ def credential(path, value):
     return path
 
 
+def test_systemd_acl_credential_requires_its_root_owned_service_mount(reporter, monkeypatch):
+    directory = "/run/credentials/cirra-health.service"
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", directory)
+    info = SimpleNamespace(st_uid=0, st_gid=0, st_nlink=1, st_mode=0o100440)
+    accepted = reporter["systemd_credential"]
+    assert accepted(Path(directory) / "host-heartbeat", info)
+    assert not accepted(Path("/tmp/host-heartbeat"), info)
+    for field, value in (
+        ("st_uid", 1000),
+        ("st_gid", 1000),
+        ("st_nlink", 2),
+        ("st_mode", 0o100444),
+    ):
+        changed = SimpleNamespace(**{**vars(info), field: value})
+        assert not accepted(Path(directory) / "host-heartbeat", changed)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", "/tmp/credentials")
+    assert not accepted(Path("/tmp/credentials/host-heartbeat"), info)
+    monkeypatch.delenv("CREDENTIALS_DIRECTORY")
+    assert not accepted(Path(directory) / "host-heartbeat", info)
+
+
 def arguments(tmp_path, kuma):
     return SimpleNamespace(
         state_dir=tmp_path,
