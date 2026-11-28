@@ -88,6 +88,23 @@ def load_observer(path):
     return data
 
 
+def require_observer_engine(info, *, rootless=False):
+    """Reject engines that silently ignore the observer's resource controls."""
+    if not isinstance(info, dict) or info.get("OSType") != "linux":
+        raise CirraError("the observer requires a Linux Docker engine")
+    # Docker can accept resource flags while warning that the host cannot
+    # enforce them. Refuse that engine before creating any untrusted process.
+    required = ("MemoryLimit", "SwapLimit", "CpuCfsQuota", "CpuCfsPeriod", "PidsLimit")
+    missing = [capability for capability in required if info.get(capability) is not True]
+    if missing:
+        raise CirraError("Docker cannot enforce observer resource limits: " + ", ".join(missing))
+    is_rootless = "name=rootless" in (info.get("SecurityOptions") or [])
+    if rootless and not is_rootless:
+        raise CirraError("this service requires a rootless Docker engine")
+    if is_rootless and (info.get("CgroupVersion") != "2" or info.get("CgroupDriver") != "systemd"):
+        raise CirraError("rootless observation requires cgroup v2 with the systemd driver")
+
+
 class DockerExecutor:
     def command(self, policy, directory):
         prefix = ["docker", "--context", policy["docker_context"]]
@@ -130,20 +147,7 @@ class DockerExecutor:
     def run(self, policy, archive, directory, name):
         run = self.command(policy, directory)
         info = json.loads(run(["info", "--format", "{{json .}}"]))
-        if info.get("OSType") != "linux":
-            raise CirraError("the observer requires a Linux Docker engine")
-        # Docker can accept resource flags while warning that the host cannot
-        # enforce them. Refuse that engine before creating any untrusted process.
-        required = ("MemoryLimit", "SwapLimit", "CpuCfsQuota", "CpuCfsPeriod", "PidsLimit")
-        missing = [capability for capability in required if info.get(capability) is not True]
-        if missing:
-            raise CirraError(
-                "Docker cannot enforce observer resource limits: " + ", ".join(missing)
-            )
-        if "name=rootless" in info.get("SecurityOptions", []) and (
-            info.get("CgroupVersion") != "2" or info.get("CgroupDriver") != "systemd"
-        ):
-            raise CirraError("rootless observation requires cgroup v2 with the systemd driver")
+        require_observer_engine(info)
         image = json.loads(run(["image", "inspect", policy["image"]]))[0]
         if image.get("Id") != policy["image"] or image.get("Os") != "linux":
             raise CirraError("Docker image does not match the pinned Linux image")

@@ -9,7 +9,14 @@ import yaml
 from cirra import provenance
 from cirra.domain import CirraError
 from cirra.github import check_from
-from cirra.observer import NAME, DockerExecutor, load_observer, observation_output, observe
+from cirra.observer import (
+    NAME,
+    DockerExecutor,
+    load_observer,
+    observation_output,
+    observe,
+    require_observer_engine,
+)
 from cirra.observer_process import run_control
 from cirra.observer_source import export_source
 from cirra.transport import RemoteUncertain
@@ -291,6 +298,20 @@ def test_rootless_engine_requires_delegated_cgroup_v2(
     monkeypatch.setattr(DockerExecutor, "command", lambda *args: run)
     with pytest.raises(CirraError, match="cgroup v2"):
         DockerExecutor().run(observer_policy, tmp_path / "absent.tar", tmp_path, "unused")
+
+
+def test_rootless_service_preflight_rejects_a_capable_rootful_engine():
+    with pytest.raises(CirraError, match="requires a rootless"):
+        require_observer_engine(ENGINE, rootless=True)
+    require_observer_engine(
+        {
+            **ENGINE,
+            "SecurityOptions": ["name=rootless"],
+            "CgroupVersion": "2",
+            "CgroupDriver": "systemd",
+        },
+        rootless=True,
+    )
 
 
 @pytest.mark.parametrize("provider,ref", [("github", "pull"), ("gitlab", "merge-requests")])

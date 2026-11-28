@@ -18,7 +18,12 @@ case "$action" in
   backup)
     # Only the fixed supervisor starts a system unit. Its unprivileged child
     # provisions the spool; the backup payload also runs under the worker UID.
-    /usr/bin/setpriv --reuid=matt --regid=matt --init-groups -- \
+    service_user=${CIRRA_STATE_USER:-matt}
+    uid=$(id -u "$service_user")
+    gid=$(id -g "$service_user")
+    [[ "$uid" != 0 && "$(stat -c %u -- "$state")" = "$uid" && \
+        "$(stat -c %g -- "$state")" = "$gid" ]]
+    /usr/bin/setpriv --reuid="$uid" --regid="$gid" --init-groups -- \
         /bin/bash "$0" spool "$root" "$version"
     /usr/bin/systemctl start "cirra-private-backup@$version.service"
     ;;

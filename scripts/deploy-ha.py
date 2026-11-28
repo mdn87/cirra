@@ -210,12 +210,36 @@ class Controller:
         return f"foo.newman.cirra-ha-{role}"
 
     def active(self, role):
-        args = (
-            ["launchctl", "print", self.domain + "/" + self.label(role)]
-            if self.p.mac
-            else ["systemctl", "is-active", "--quiet", f"cirra-ha-{role}.service"]
+        if self.p.mac:
+            return (
+                subprocess.run(
+                    ["launchctl", "print", self.domain + "/" + self.label(role)],
+                    capture_output=True,
+                    timeout=10,
+                ).returncode
+                == 0
+            )
+        result = run(
+            [
+                "systemctl",
+                "show",
+                "-p",
+                "LoadState",
+                "-p",
+                "ActiveState",
+                f"cirra-ha-{role}.service",
+            ],
+            timeout=10,
         )
-        return subprocess.run(args, capture_output=True, timeout=10).returncode == 0
+        properties = dict(row.split("=", 1) for row in result.decode().splitlines())
+        if properties.get("LoadState") != "loaded":
+            raise ValueError("cannot establish the installed service state")
+        state = properties.get("ActiveState")
+        if state in ("inactive", "failed"):
+            return False
+        if state in ("active", "activating", "deactivating", "reloading", "maintenance"):
+            return True
+        raise ValueError("cannot establish whether the service is stopped")
 
     def stop_worker(self):
         if not self.active("worker"):

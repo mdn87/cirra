@@ -78,6 +78,20 @@ def test_backup_spool_belongs_to_the_actual_selected_private_version(tmp_path):
     assert prepare(version).returncode
 
 
+def test_backup_selector_refuses_root_before_starting_a_payload(tmp_path):
+    version = "c" * 64
+    (tmp_path / "current.restores" / version).mkdir(parents=True)
+    select(tmp_path, version)
+    result = subprocess.run(
+        ["bash", SCRIPT, "backup", tmp_path],
+        env={**os.environ, "CIRRA_STATE_USER": "root"},
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "current.restores" / (version + ".private-transfer")).exists()
+
+
 @pytest.mark.skipif(not shutil.which("setfacl"), reason="POSIX ACL tools required")
 def test_reader_rebind_revokes_traversal_of_the_previous_state(tmp_path):
     versions = tmp_path / "current.restores"

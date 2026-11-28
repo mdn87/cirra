@@ -25,6 +25,12 @@ selects, queues and gates `pr`, `release` and `full` production audits from the
 events Cirra already handles. The [audit guide](docs/audit-workflow.md) covers
 the policy, the worker, agent runners, imports, publication and the release gate.
 
+The v1.0.0 candidate adds an [MIT license](LICENSE) and
+[release notes](CHANGELOG.md). Its [release decisions](docs/release-acceptance.md)
+define the conditional availability boundary and required Linux isolation.
+The [Linux isolation guide](docs/linux-worker-isolation.md) covers the dedicated
+service account, rootless observer and state-preserving account cutover.
+
 ## Run the offline example
 
 Python 3.11 or newer is required. From the repository root on Windows:
