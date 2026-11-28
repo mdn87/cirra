@@ -26,6 +26,13 @@ assert os.getuid() == 65534
 assert 'CIRRA_WITNESS_KEY' not in os.environ
 assert 'GITHUB_TOKEN' not in os.environ
 assert not pathlib.Path('/var/run/docker.sock').exists()
+cg = pathlib.Path('/sys/fs/cgroup')
+if (cg / 'cgroup.controllers').exists():
+    assert (cg / 'memory.max').read_text().strip() == str(1024 * 1024 * 1024)
+    assert (cg / 'memory.swap.max').read_text().strip() == '0'
+    quota, period = (cg / 'cpu.max').read_text().split()
+    assert quota != 'max' and int(quota) / int(period) == 2
+    assert (cg / 'pids.max').read_text().strip() == '128'
 assert sorted(p.name for p in pathlib.Path('/input').iterdir()) == [
     'commands.json', 'runner.py', 'source.tar'
 ]
@@ -60,6 +67,7 @@ print('Isolation assertions passed')
                 "image": os.environ["CIRRA_DOCKER_TEST_IMAGE"],
                 "commands": [["python", "check.py"]],
                 "timeout_seconds": 1 if case == "timeout" else 30,
+                "docker_context": os.environ.get("CIRRA_DOCKER_TEST_CONTEXT", "default"),
             }
         )
     )

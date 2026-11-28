@@ -132,6 +132,18 @@ class DockerExecutor:
         info = json.loads(run(["info", "--format", "{{json .}}"]))
         if info.get("OSType") != "linux":
             raise CirraError("the observer requires a Linux Docker engine")
+        # Docker can accept resource flags while warning that the host cannot
+        # enforce them. Refuse that engine before creating any untrusted process.
+        required = ("MemoryLimit", "SwapLimit", "CpuCfsQuota", "CpuCfsPeriod", "PidsLimit")
+        missing = [capability for capability in required if info.get(capability) is not True]
+        if missing:
+            raise CirraError(
+                "Docker cannot enforce observer resource limits: " + ", ".join(missing)
+            )
+        if "name=rootless" in info.get("SecurityOptions", []) and (
+            info.get("CgroupVersion") != "2" or info.get("CgroupDriver") != "systemd"
+        ):
+            raise CirraError("rootless observation requires cgroup v2 with the systemd driver")
         image = json.loads(run(["image", "inspect", policy["image"]]))[0]
         if image.get("Id") != policy["image"] or image.get("Os") != "linux":
             raise CirraError("Docker image does not match the pinned Linux image")

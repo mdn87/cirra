@@ -16,6 +16,14 @@ from cirra.transport import RemoteUncertain
 
 KEY = "independent-observer-signing-key-at-least-32-bytes"
 IMAGE = "sha256:" + "1" * 64
+ENGINE = {
+    "OSType": "linux",
+    "MemoryLimit": True,
+    "SwapLimit": True,
+    "CpuCfsQuota": True,
+    "CpuCfsPeriod": True,
+    "PidsLimit": True,
+}
 
 
 @pytest.fixture
@@ -208,7 +216,7 @@ def test_docker_launch_isolated_and_pinned(observer_policy, tmp_path, monkeypatc
         if argv[1] == "context":
             return b'"unix:///var/run/docker.sock"'
         if argv[1] == "info":
-            return b'{"OSType":"linux"}'
+            return json.dumps(ENGINE).encode()
         if argv[1:3] == ["image", "inspect"]:
             return json.dumps([{"Id": IMAGE, "Os": "linux"}]).encode()
         if argv[1] == "create":
@@ -239,6 +247,50 @@ def test_docker_launch_isolated_and_pinned(observer_policy, tmp_path, monkeypatc
     assert len([arg for arg in create if arg == "--mount"]) == 1
     assert not any("docker.sock" in arg or ".env" in arg for arg in create)
     assert result["exit_code"] == 0 and calls[-1][1:3] == ["rm", "--force"]
+
+
+@pytest.mark.parametrize(
+    "capability", ["MemoryLimit", "SwapLimit", "CpuCfsQuota", "CpuCfsPeriod", "PidsLimit"]
+)
+@pytest.mark.parametrize("unsupported", [False, None, "true"])
+def test_docker_refuses_unenforceable_limits_before_creating_container(
+    observer_policy, tmp_path, monkeypatch, capability, unsupported
+):
+    info = {**ENGINE, capability: unsupported}
+    if unsupported is None:
+        del info[capability]
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        assert args == ["info", "--format", "{{json .}}"]
+        return json.dumps(info).encode()
+
+    monkeypatch.setattr(DockerExecutor, "command", lambda *args: run)
+    with pytest.raises(CirraError, match=capability):
+        DockerExecutor().run(observer_policy, tmp_path / "absent.tar", tmp_path, "unused")
+    assert len(calls) == 1
+    assert not (tmp_path / "input").exists()
+
+
+@pytest.mark.parametrize("version,driver", [("1", "systemd"), ("2", "cgroupfs"), (None, None)])
+def test_rootless_engine_requires_delegated_cgroup_v2(
+    observer_policy, tmp_path, monkeypatch, version, driver
+):
+    info = {
+        **ENGINE,
+        "SecurityOptions": ["name=seccomp,profile=builtin", "name=rootless"],
+        "CgroupVersion": version,
+        "CgroupDriver": driver,
+    }
+
+    def run(args, **kwargs):
+        assert args == ["info", "--format", "{{json .}}"]
+        return json.dumps(info).encode()
+
+    monkeypatch.setattr(DockerExecutor, "command", lambda *args: run)
+    with pytest.raises(CirraError, match="cgroup v2"):
+        DockerExecutor().run(observer_policy, tmp_path / "absent.tar", tmp_path, "unused")
 
 
 @pytest.mark.parametrize("provider,ref", [("github", "pull"), ("gitlab", "merge-requests")])
