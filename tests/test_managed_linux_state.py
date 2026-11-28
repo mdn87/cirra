@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 import pytest
-from test_audit_reads import get
+from test_audit_reads import READ_TOKEN, get
 
 from cirra.audit_reads import AuditReadServer
 from cirra.store import Store
@@ -29,7 +29,7 @@ def test_mounted_reader_refuses_switched_results_until_rebound(tmp_path, monkeyp
     Store(second)
     select(tmp_path, first.name)
     monkeypatch.setenv("CIRRA_AUDIT_STATE_SELECTOR", str(tmp_path / "current"))
-    with AuditReadServer(("127.0.0.1", 0), first) as reader:
+    with AuditReadServer(("127.0.0.1", 0), first, token=READ_TOKEN) as reader:
         thread = threading.Thread(target=reader.serve_forever, kwargs={"poll_interval": 0.02})
         thread.start()
         try:
@@ -52,7 +52,7 @@ def test_mounted_reader_refuses_switched_results_until_rebound(tmp_path, monkeyp
         finally:
             reader.shutdown()
             thread.join(timeout=2)
-    with AuditReadServer(("127.0.0.1", 0), second) as rebound:
+    with AuditReadServer(("127.0.0.1", 0), second, token=READ_TOKEN) as rebound:
         assert rebound.read("/healthz")[0] == 200
 
 

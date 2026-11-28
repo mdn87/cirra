@@ -174,3 +174,39 @@ def test_worker_drain_checks_native_process_identity(tmp_path, mismatch):
             DEPLOY["verify_worker_pid"](status, properties, tmp_path)
     else:
         assert DEPLOY["verify_worker_pid"](status, properties, tmp_path) == 123
+
+
+def test_all_maintenance_timers_are_resumed_after_one_start_fails(monkeypatch):
+    control = DEPLOY["Controller"](SimpleNamespace(mac=False))
+    namespace = control.maintenance_paused.__wrapped__.__globals__
+    calls = []
+
+    def run(command, *args, **kwargs):
+        calls.append(command)
+        if command == ["systemctl", "start", "cirra-private-backup.timer"]:
+            raise RuntimeError("timer start failed")
+        return b""
+
+    monkeypatch.setitem(namespace, "run", run)
+    monkeypatch.setattr(
+        namespace["subprocess"], "run", lambda *args, **kwargs: SimpleNamespace(returncode=0)
+    )
+    with pytest.raises(RuntimeError, match="cirra-private-backup"):
+        with control.maintenance_paused():
+            pass
+    assert [call for call in calls if call[1] == "start"] == [
+        ["systemctl", "start", name + ".timer"]
+        for name in ("cirra-private-backup", "cirra-standby-refresh", "cirra-health")
+    ]
+
+
+def test_optional_health_and_auth_files_join_deployment_journal(tmp_path):
+    p = SimpleNamespace(
+        mac=False, root=tmp_path, units=tmp_path / "units", wrapper=tmp_path / "run"
+    )
+    health = p.units / "cirra-health.service.d/zzz-kuma-push.conf"
+    auth = p.units / "cirra-audit-reads.service.d/95-reader-auth.conf"
+    for path in (health, auth):
+        path.parent.mkdir(parents=True)
+        path.write_text("managed optional integration")
+    assert {health, auth} <= set(DEPLOY["deployment_paths"](p))

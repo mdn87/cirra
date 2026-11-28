@@ -3,11 +3,15 @@
 import json
 import math
 import shutil
+import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 
+from cirra.audits import repository_key
 from cirra.data_authority import HEX, valid_authority
 from cirra.domain import CirraError
 from cirra.job_queue import AuditQueue, Queue
+from cirra.store import Store
 
 # A bounded test run plus review can hold the loop for several minutes, during
 # which the heartbeat legitimately does not move.
@@ -16,6 +20,7 @@ DEFAULT_ATTENTION_WINDOW = None
 DELIVERY_TARGET_SECONDS = 1800
 BACKUP_MAX_AGE = 23 * 3600  # Alert before the one-day recovery limit is breached.
 BACKUP_INITIAL_GRACE = 3600
+AUDIT_BACKLOG_AGE = 48 * 3600
 
 
 def queue_metrics(queue, *, now=None, scanned=None, history=True):
@@ -116,6 +121,14 @@ def _record(queue, path):
     return record
 
 
+def _capture_time(record):
+    try:
+        captured = datetime.fromisoformat(record["captured_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return captured if captured.utcoffset() is not None else None
+
+
 def _backup_problem(queue, status, now):
     root = queue.directory.parent
     if not (root / "coordination-state.json").exists() or status.get("state") != "running":
@@ -127,7 +140,7 @@ def _backup_problem(queue, status, now):
         if authority["target"] is not None:
             return None  # A frozen handoff is checked by the coordination health path.
         backup = _record(queue, root / "data-backup.json")
-        captured = _parse(backup.get("captured_at"))
+        captured = _capture_time(backup)
         valid = (
             captured is not None
             and isinstance(backup.get("snapshot_id"), str)
@@ -148,6 +161,125 @@ def _backup_problem(queue, status, now):
     return {
         "kind": "backup",
         "detail": "active data host has no verified backup less than 23 hours old",
+    }
+
+
+def _restore_problem(queue, status, now):
+    root = queue.directory.parent
+    if not (root / "coordination-state.json").exists() or status.get("state") != "standby":
+        return None
+    try:
+        authority = _record(queue, root / "data-authority.json")
+        restored = _record(queue, root / "data-restored.json")
+        captured = _capture_time(restored)
+        if (
+            valid_authority(authority)
+            and all(restored.get(k) == authority[k] for k in ("host", "epoch", "tip"))
+            and isinstance(restored.get("snapshot_id"), str)
+            and HEX.fullmatch(restored["snapshot_id"])
+            and captured is not None
+            and -60 <= (now - captured).total_seconds() < BACKUP_MAX_AGE
+        ):
+            return None
+    except (CirraError, OSError, ValueError, TypeError, OverflowError):
+        pass
+    return {
+        "kind": "restore",
+        "detail": "standby has no matching verified restore less than 23 hours old",
+    }
+
+
+def _recovery_metrics(queue, status, now):
+    result = {"worker_state": status.get("state"), "max_age_seconds": BACKUP_MAX_AGE}
+    for label, filename in (("backup", "data-backup.json"), ("restore", "data-restored.json")):
+        captured = None
+        try:
+            captured = _capture_time(_record(queue, queue.directory.parent / filename))
+        except (CirraError, OSError, ValueError, TypeError, OverflowError):
+            pass
+        result[label] = {
+            "captured_at": captured.isoformat() if captured else None,
+            "age_seconds": int((now - captured).total_seconds()) if captured else None,
+        }
+    return result
+
+
+def _audit_metrics(root, jobs, now, policies):
+    """Read-only operational visibility; audit delay never changes availability."""
+    warnings = []
+    waiting = {}
+    for state in ("awaiting_import", "deferred"):
+        ages = [
+            max(0, int((now - _parse(job["accepted_at"])).total_seconds()))
+            for job in jobs
+            if job["state"] == state
+            and not job.get("superseded_by")
+            and not job["cancel_requested"]
+        ]
+        waiting[state] = {"count": len(ages), "oldest_request_age_seconds": max(ages, default=0)}
+        if max(ages, default=0) > AUDIT_BACKLOG_AGE:
+            warnings.append(
+                {
+                    "kind": "audit-backlog",
+                    "state": state,
+                    "detail": f"{state} audit requests include work older than 48 hours",
+                }
+            )
+    baselines = []
+    keys = list(policies or {})
+    try:
+        if (root / "cirra.sqlite3").exists():
+            with Store(root, readonly=True).connection() as connection:
+                deadline = time.monotonic() + 2
+                connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+                if policies is None:
+                    keys = [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT DISTINCT repository_key FROM audits LIMIT 257"
+                        )
+                    ]
+                if len(keys) > 256:
+                    raise CirraError("audit health repository limit exceeded")
+                for key in keys:
+                    row = connection.execute(
+                        "SELECT attempt_id, completed_at FROM audits WHERE repository_key=? "
+                        "AND tier='full' AND state='complete' AND scope='repository' "
+                        "ORDER BY completed_at DESC, rowid DESC LIMIT 1",
+                        (key,),
+                    ).fetchone()
+                    baselines.append(_baseline_age(key, row, now, policies))
+        else:
+            baselines = [_baseline_age(key, None, now, policies) for key in keys]
+        for baseline in baselines:
+            if baseline["overdue"]:
+                warnings.append(
+                    {
+                        "kind": "audit-baseline",
+                        "repository_key": baseline["repository_key"],
+                        "detail": "repository full audit is missing or exceeds its configured age",
+                    }
+                )
+    except (CirraError, sqlite3.Error, OSError, ValueError, TypeError, OverflowError):
+        warnings.append({"kind": "audit-baseline", "detail": "cannot read audit baseline ages"})
+        baselines = []
+    return {
+        "backlog_warning_seconds": AUDIT_BACKLOG_AGE,
+        "waiting": waiting,
+        "baselines": baselines,
+        "baseline_policy_known": policies is not None,
+    }, warnings
+
+
+def _baseline_age(key, row, now, policies):
+    age = max(0, int(now.timestamp() - row["completed_at"])) if row else None
+    maximum = policies.get(key) if policies is not None else None
+    return {
+        "repository_key": key,
+        "attempt_id": row["attempt_id"] if row else None,
+        "age_seconds": age,
+        "max_age_days": maximum,
+        "overdue": (age is None or age > maximum * 86400) if maximum is not None else None,
     }
 
 
@@ -176,6 +308,7 @@ def check(
     attention_window=DEFAULT_ATTENTION_WINDOW,
     now=None,
     include_metrics=False,
+    audit_policies=None,
 ):
     now = now or datetime.now(UTC)
     queue = Queue(state_dir)
@@ -212,6 +345,9 @@ def check(
     backup_problem = _backup_problem(queue, status, now)
     if backup_problem:
         problems.append(backup_problem)
+    restore_problem = _restore_problem(queue, status, now)
+    if restore_problem:
+        problems.append(restore_problem)
 
     jobs, unreadable = queue.scan()
     if unreadable:
@@ -306,18 +442,35 @@ def check(
         problems.append(
             {"kind": "daily", "detail": f"daily admission exhausted ({usage['attempts']})"}
         )
-    result = {"healthy": not problems, "problems": problems}
+    audit_metrics, warnings = _audit_metrics(root, audit_jobs, now, audit_policies)
+    result = {"healthy": not problems, "problems": problems, "warnings": warnings}
     if include_metrics:
         result["queue_metrics"] = metrics
+        result["audit_metrics"] = audit_metrics
+        result["recovery_metrics"] = _recovery_metrics(queue, status, now)
     return result
 
 
-def main(state_dir, max_heartbeat_age, attention_window):
+def main(state_dir, max_heartbeat_age, attention_window, service_config=None):
+    policies = None
+    if service_config is not None:
+        policies = {}
+        for route in service_config.routes.values():
+            if route.policy.audit is not None:
+                key = repository_key(
+                    {
+                        name: getattr(route, name)
+                        for name in ("provider", "instance", "repository_id")
+                    }
+                )
+                age = route.policy.audit.max_age_days
+                policies[key] = min(policies.get(key, age), age)
     result = check(
         state_dir,
         max_heartbeat_age=max_heartbeat_age,
         attention_window=attention_window,
         include_metrics=True,
+        audit_policies=policies,
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if result["healthy"] else 1

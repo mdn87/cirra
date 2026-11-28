@@ -4,8 +4,9 @@ import json
 from urllib.parse import quote
 
 from cirra.domain import CirraError, digest, number, sha, string, utc_now
-from cirra.github import record
+from cirra.github import native_id, record
 from cirra.policy import assess_checks
+from cirra.publication_fence import PublicationFence, require_send, require_state_owner
 from cirra.publish import checkpoint
 from cirra.transport import RemoteUncertain
 
@@ -143,16 +144,18 @@ def trusted_workflow_revision(reader, prefix, request):
     if branch.get("protected") is not True:
         raise CirraError("release workflow ref is not a protected branch")
     trusted_sha = sha(record(branch.get("commit")).get("sha"))
-    comparison, _ = reader.request(
-        "GET", prefix + f"/compare/{request['expected_sha']}...{trusted_sha}"
-    )
+    require_candidate_ancestor(reader, prefix, request["expected_sha"], trusted_sha)
+    return trusted_sha
+
+
+def require_candidate_ancestor(reader, prefix, candidate_sha, workflow_sha):
+    comparison, _ = reader.request("GET", prefix + f"/compare/{candidate_sha}...{workflow_sha}")
     record(comparison)
     if (
         comparison.get("status") not in ("ahead", "identical")
-        or record(comparison.get("merge_base_commit")).get("sha") != request["expected_sha"]
+        or record(comparison.get("merge_base_commit")).get("sha") != candidate_sha
     ):
         raise CirraError("reviewed candidate is not reachable from the protected target branch")
-    return trusted_sha
 
 
 def dispatch(
@@ -166,6 +169,7 @@ def dispatch(
     reconcile=False,
     retry_uncertain=False,
 ):
+    require_state_owner(store.path.parent)
     if not isinstance(request, dict) or digest(
         {key: value for key, value in request.items() if key != "request_digest"}
     ) != request.get("request_digest"):
@@ -190,6 +194,7 @@ def dispatch(
         [snapshot[name] for name in ("provider", "instance", "repository_id", "change_id")]
     )
     path = store.path.parent / "releases" / f"{request['request_id']}.json"
+    fence = PublicationFence("release", request["request_id"])
     with store.lease(key, config.claim_ttl_seconds, config.wait_seconds) as claim:
         store.latest_attempt_order(claim, request["run_id"])
         fresh = collector()
@@ -202,7 +207,7 @@ def dispatch(
         prefix = "/repos/" + request["repository"]
         trusted_sha = trusted_workflow_revision(reader_http or http, prefix, request)
         previous = json.loads(path.read_text()) if path.exists() else None
-        if previous or reconcile:
+        if previous or reconcile or fence.owner is not None:
             matches = []
             for page in range(1, 11):
                 runs, more = http.request(
@@ -217,34 +222,59 @@ def dispatch(
                     item
                     for item in values
                     if record(item).get("display_title") == "cirra-release-" + request["request_id"]
-                    and item.get("head_sha") == (previous or {}).get("workflow_sha", trusted_sha)
+                    and (
+                        item.get("head_sha") == previous["workflow_sha"]
+                        if previous
+                        else fence.owner is not None or item.get("head_sha") == trusted_sha
+                    )
+                    and (
+                        fence.owner is None
+                        or (
+                            item.get("head_branch") == request["ref"]
+                            and item.get("event") == "workflow_dispatch"
+                        )
+                    )
                 )
                 if not more:
                     break
             else:
                 raise CirraError("release reconciliation page limit reached")
             if len(matches) == 1:
+                identifier = native_id(matches[0].get("id"))
+                workflow_sha = sha(matches[0].get("head_sha"))
+                if fence.owner is not None and workflow_sha != trusted_sha:
+                    require_candidate_ancestor(
+                        reader_http or http, prefix, request["expected_sha"], workflow_sha
+                    )
+                proof = dispatch_proof(request, workflow_sha)
+                fence.observe(identifier, proof)
                 receipt = {
                     "state": "observed",
                     "request_id": request["request_id"],
-                    "run_id": str(matches[0]["id"]),
-                    "workflow_sha": matches[0]["head_sha"],
+                    "run_id": identifier,
+                    "workflow_sha": workflow_sha,
                     "trust": "merged_into_protected_target",
                     "observed_at": utc_now(),
                 }
-                checkpoint(store, claim, path, receipt)
+                dispatch_checkpoint(fence, store, claim, path, receipt)
                 return receipt
             if len(matches) > 1:
                 raise CirraError(
                     "multiple native release runs match; inspect before further dispatch"
                 )
             if previous and previous["state"] in ("accepted", "observed"):
+                if fence.owner is not None:
+                    fence.owner.compare({}, {})
                 return {
                     **previous,
                     "reason": "Already acknowledged; reconcile only. Check run visibility/name.",
                 }
             if reconcile or (previous and previous["state"] == "uncertain" and not retry_uncertain):
+                if fence.owner is not None:
+                    fence.owner.compare({}, {})
                 return previous or {"state": "unresolved", "request_id": request["request_id"]}
+        fence.observe(None, None)
+        proof = dispatch_proof(request, trusted_sha)
         receipt = {
             "state": "uncertain",
             "request_id": request["request_id"],
@@ -253,19 +283,26 @@ def dispatch(
             "intent_at": utc_now(),
             "duplicate_risk_accepted": bool(previous and retry_uncertain),
         }
-        checkpoint(store, claim, path, receipt)
         try:
-            http.request(
-                "POST",
-                prefix + f"/actions/workflows/{request['workflow_id']}/dispatches",
-                body={
-                    "ref": request["ref"],
-                    "inputs": {
-                        "cirra_request_id": request["request_id"],
-                        "cirra_expected_sha": request["expected_sha"],
+            with fence.writing(
+                proof,
+                None,
+                prepare=lambda: dispatch_checkpoint(fence, store, claim, path, receipt),
+            ):
+                if fence.owner is not None:
+                    fence.owner.compare({}, {})
+                require_send("release", request["request_id"], proof, None)
+                http.request(
+                    "POST",
+                    prefix + f"/actions/workflows/{request['workflow_id']}/dispatches",
+                    body={
+                        "ref": request["ref"],
+                        "inputs": {
+                            "cirra_request_id": request["request_id"],
+                            "cirra_expected_sha": request["expected_sha"],
+                        },
                     },
-                },
-            )
+                )
         except RemoteUncertain as exc:
             receipt["reason"] = str(exc)
         except CirraError as exc:
@@ -275,5 +312,18 @@ def dispatch(
                 state="accepted",
                 reason="Provider accepted the request; reconcile to observe the native run.",
             )
-        checkpoint(store, claim, path, receipt)
+        dispatch_checkpoint(fence, store, claim, path, receipt)
         return receipt
+
+
+def dispatch_proof(request, workflow_sha):
+    return digest(["release-dispatch", request["request_id"], workflow_sha])
+
+
+def dispatch_checkpoint(fence, store, claim, path, receipt):
+    """Fence local receipt writes; only native readback can clear a pending send."""
+    if fence.owner is not None:
+        fence.owner.compare({}, {})
+    checkpoint(store, claim, path, receipt)
+    if fence.owner is not None:
+        fence.owner.compare({}, {})

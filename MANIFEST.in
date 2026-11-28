@@ -1,7 +1,10 @@
 recursive-include examples *.json *.yaml *.yml
+recursive-include examples *.plist
 include examples/observer.Dockerfile
 include worker-state-version
-recursive-include examples/systemd *.service
+recursive-include examples/systemd *.service *.timer *.conf *.sh *.py *.plist
+recursive-include scripts *.py *.sh
+recursive-include requirements *.txt
 recursive-include eval *.json *.md
 recursive-include docs *.md
 recursive-include tests *.py

@@ -1,5 +1,5 @@
 [Unit]
-Description=Cirra read-only audit route on loopback (GET only, no credentials)
+Description=Cirra authenticated read-only audit route on loopback
 After=network.target
 
 [Service]
@@ -7,6 +7,8 @@ Type=simple
 User=cirra-audit-reader
 Group=cirra-audit-reader
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+LoadCredential=cirra-audit-read-token:/etc/cirra/audit-read.token
+Environment=CIRRA_AUDIT_READ_TOKEN_FILE=%d/cirra-audit-read-token
 WorkingDirectory=/
 ExecStart=/run/cirra-audit-runtime/bin/python -m cirra serve-audit-reads \
     --state-dir /run/cirra-audit-state \

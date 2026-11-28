@@ -9,6 +9,8 @@ import argparse
 import json
 import os
 import re
+import sqlite3
+import stat
 import tempfile
 from pathlib import Path
 
@@ -21,6 +23,44 @@ from cirra.quorum_budget import enrollment_locks
 from cirra.service_config import load_service
 from cirra.store import Store
 from cirra.vendor.production_audit.scripts import validate_report
+
+MAX_MARKDOWN_BYTES = 4 * 1024 * 1024
+
+
+class CommittedUnconfirmed(CirraError):
+    """The local import committed, but its fenced checkpoint was not confirmed."""
+
+    def __init__(self, attempt_id, expected_digest, selected, reused):
+        super().__init__("audit import committed but unconfirmed; replay on the authoritative host")
+        self.receipt = {
+            "state": "committed_unconfirmed",
+            "attempt_id": attempt_id,
+            "report_digest": expected_digest,
+            "selector": selected.name,
+            "reused": reused,
+            "authority_checkpointed": False,
+            "recovery": "replay the same accepted report on the authoritative host",
+        }
+
+
+def read_markdown(path):
+    """Bound the companion before taking a lease; refuse links and special files."""
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise CirraError("audit Markdown must be a regular file, not a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            before.st_dev,
+            before.st_ino,
+        ):
+            raise CirraError("audit Markdown changed while opening")
+        raw = stream.read(MAX_MARKDOWN_BYTES + 1)
+    if len(raw) > MAX_MARKDOWN_BYTES:
+        raise CirraError("audit Markdown exceeds 4 MiB")
+    return raw
 
 
 def import_coordinated(config, directory, attempt_id, report, expected_digest, credential):
@@ -35,6 +75,8 @@ def import_coordinated(config, directory, attempt_id, report, expected_digest, c
         or not (selected / "cirra.sqlite3").is_file()
     ):
         raise CirraError("coordinated import requires the selected physical state version")
+    # An operator import must not silently migrate an enrolled private database.
+    Store(selected, readonly=True)
     checkout = selected / "audit-attempts" / attempt_id / "checkout"
     if checkout.resolve(strict=True) != checkout:
         raise CirraError("the audit checkout escaped the selected private state")
@@ -48,7 +90,7 @@ def import_coordinated(config, directory, attempt_id, report, expected_digest, c
         frozen = Path(temporary) / source.name
         frozen.write_text(canonical(data) + "\n", encoding="utf-8")
         frozen.chmod(0o600)
-        frozen.with_suffix(".md").write_bytes(source.with_suffix(".md").read_bytes())
+        frozen.with_suffix(".md").write_bytes(read_markdown(source.with_suffix(".md")))
         frozen.with_suffix(".md").chmod(0o600)
         problems = validate_report.file_problems(frozen, data) + validate_report.validate(
             data, checkout
@@ -81,10 +123,15 @@ def import_coordinated(config, directory, attempt_id, report, expected_digest, c
                 owner.compare({}, {})
                 store = Store(selected)
                 result, reused = audits.import_report(store, attempt_id, frozen, checkout)
-                authority.checkpoint(owner)
-                saved = audits.get(store, attempt_id)
-                if saved["report_digest"] != expected_digest:
-                    raise CirraError("the stored audit differs from the accepted report")
+                try:
+                    authority.checkpoint(owner)
+                    saved = audits.get(store, attempt_id)
+                    if saved["report_digest"] != expected_digest:
+                        raise CirraError("the stored audit differs from the accepted report")
+                except (CirraError, OSError, ValueError, sqlite3.Error) as exc:
+                    raise CommittedUnconfirmed(
+                        attempt_id, expected_digest, selected, reused
+                    ) from exc
                 return {
                     "attempt_id": attempt_id,
                     "state": result["state"],
@@ -113,7 +160,10 @@ def main():
             args.expected_report_digest,
             os.environ.get,
         )
-    except (CirraError, OSError, ValueError):
+    except CommittedUnconfirmed as exc:
+        print(json.dumps(exc.receipt))
+        return 2
+    except (CirraError, OSError, ValueError, sqlite3.Error):
         # Detailed reports and credential-bearing paths stay in the private role.
         print(
             json.dumps(

@@ -1,18 +1,22 @@
 """Read-only loopback HTTP route over the audit store for derived views.
 
 The listener binds 127.0.0.1 only, answers GET only, opens the SQLite store read-only,
-holds no credentials and never writes application state. Every success carries the record, its
+and requires a dedicated bearer credential except for /healthz. It has no publisher
+credentials and never writes application state. Every success carries the record, its
 SHA-256 and the audit store's generation, so a reader can hash exactly what it saw and
 refuse a store that changed while it was reading. Gate verdicts are the receipts Cirra
 stored when it published or waived an audit; nothing is recomputed here. Audit packets are
 not served: they hold repository content a derived view has no use for.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
 import socket
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -36,6 +40,8 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 HEX = re.compile(r"[0-9a-f]{32,64}\Z")
 TOKEN = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 FILTERS = {"head": HEX, "repository_key": HEX64, "tier": TOKEN, "state": TOKEN}
+BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]{32,256}={0,2}\Z")
+MAX_TOKEN_BYTES = 256
 SUMMARY = (
     "attempt_id",
     "audit_id",
@@ -60,6 +66,48 @@ def stamp(value):
 
 def loads(value):
     return None if value is None else json.loads(value)
+
+
+def token_digest(token=None):
+    """Load one local read credential at startup; never include its value or path in errors."""
+    try:
+        if token is None:
+            token = os.environ.get("CIRRA_AUDIT_READ_TOKEN")
+            filename = os.environ.get("CIRRA_AUDIT_READ_TOKEN_FILE")
+            if token is not None and filename is not None:
+                raise ValueError("ambiguous credential")
+            if filename is not None:
+                path = Path(filename)
+                if not filename or path.is_symlink():
+                    raise ValueError("credential must be a regular file")
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                with os.fdopen(os.open(path, flags), "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode):
+                        raise ValueError("credential must be a regular file")
+                    if os.name == "posix" and (
+                        info.st_uid not in (0, os.getuid()) or info.st_mode & 0o137
+                    ):
+                        raise ValueError("credential permissions are not private")
+                    raw = stream.read(MAX_TOKEN_BYTES + 3)
+                if raw.endswith(b"\r\n"):
+                    raw = raw[:-2]
+                elif raw.endswith(b"\n"):
+                    raw = raw[:-1]
+                token = raw.decode("ascii")
+        if (
+            not isinstance(token, str)
+            or len(token) > MAX_TOKEN_BYTES
+            or not BEARER_TOKEN.fullmatch(token)
+        ):
+            raise ValueError("credential is missing or malformed")
+        return hashlib.sha256(token.encode("ascii")).digest()
+    except (OSError, UnicodeError, ValueError):
+        raise CirraError(
+            "audit reader credential unavailable: configure one valid "
+            "CIRRA_AUDIT_READ_TOKEN or CIRRA_AUDIT_READ_TOKEN_FILE"
+        ) from None
 
 
 def summary(row):
@@ -123,9 +171,10 @@ class AuditReadServer(ThreadingHTTPServer):
     request_queue_size = 16
     request_deadline = 10
 
-    def __init__(self, address, state_dir):
+    def __init__(self, address, state_dir, *, token=None):
         if address[0] != "127.0.0.1":
             raise CirraError("audit read listener must bind to 127.0.0.1")
+        self._token_digest = token_digest(token)
         self.state_dir = Path(state_dir).resolve()
         self.state_selector = os.environ.get("CIRRA_AUDIT_STATE_SELECTOR")
         self.store_path = self.state_dir / "cirra.sqlite3"
@@ -214,7 +263,7 @@ class AuditReadServer(ThreadingHTTPServer):
         return connection
 
     def read(self, raw_path):
-        """Answer one GET as (status, body); the record and generation share one read."""
+        """Trusted in-process read; HTTP callers are authorized by ReadHandler first."""
         parts = urlsplit(raw_path)
         name, key = route(parts.path)
         if name is None:
@@ -335,11 +384,29 @@ class ReadHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             self.server.request_context.route = route(urlsplit(self.path).path)[0] or "(other)"
+            if urlsplit(self.path).path != "/healthz" and not self.authorized():
+                self.respond(401, {"error": "unauthorized"})
+                return
             status, body = self.server.read(self.path)
         except (CirraError, OSError, ValueError, RecursionError, sqlite3.Error) as exc:
             self.server.log_error(exc)
             status, body = 503, {"error": "audit store unavailable"}
         self.respond(status, body)
+
+    def authorized(self):
+        values = self.headers.get_all("Authorization", [])
+        if len(values) != 1:
+            return False
+        scheme, _, token = values[0].partition(" ")
+        if (
+            scheme.lower() != "bearer"
+            or len(token) > MAX_TOKEN_BYTES
+            or not BEARER_TOKEN.fullmatch(token)
+        ):
+            return False
+        return hmac.compare_digest(
+            hashlib.sha256(token.encode("ascii")).digest(), self.server._token_digest
+        )
 
     def respond(self, status, body, *, allow=False):
         payload = canonical(body).encode()
@@ -347,6 +414,8 @@ class ReadHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        if status == 401:
+            self.send_header("WWW-Authenticate", 'Bearer realm="cirra-audit-reads"')
         if allow:
             self.send_header("Allow", "GET")
         self.send_header("Connection", "close")

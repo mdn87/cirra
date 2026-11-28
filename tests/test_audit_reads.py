@@ -30,10 +30,17 @@ from cirra.store import Store
 
 FINDING = ("C011", "app.py", 11, 12, "high")
 NEW_FINDING = ("C012", "app.py", 13, 14, "critical")
+READ_TOKEN = "audit-reader-fixture-" + "a" * 48
 # The recorded fixture names the checkout generically instead of a host path.
 RECORDED_AGENT = AGENT.replace(
     'repo_path=os.environ["CIRRA_AUDIT_CHECKOUT"]', 'repo_path="checkout"'
 )
+
+
+@pytest.fixture(autouse=True)
+def reader_credential(monkeypatch):
+    monkeypatch.delenv("CIRRA_AUDIT_READ_TOKEN_FILE", raising=False)
+    monkeypatch.setenv("CIRRA_AUDIT_READ_TOKEN", READ_TOKEN)
 
 
 @pytest.fixture
@@ -53,7 +60,7 @@ def served(world):
 
 def get(server, path, method="GET"):
     connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
-    connection.request(method, path)
+    connection.request(method, path, headers={"Authorization": "Bearer " + READ_TOKEN})
     response = connection.getresponse()
     body = response.read()
     connection.close()
@@ -570,7 +577,13 @@ def test_completion_includes_body_write_and_client_disconnect(
             # Force an observable peer reset on both Winsock and POSIX.
             linger = struct.pack("HH" if os.name == "nt" else "ii", 1, 0)
             client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
-        client.sendall(b"GET /audits?tier=private HTTP/1.0\r\n\r\n")
+        client.sendall(
+            (
+                "GET /audits?tier=private HTTP/1.0\r\nAuthorization: Bearer "
+                + READ_TOKEN
+                + "\r\n\r\n"
+            ).encode()
+        )
         with HTTPResponse(client) as response:
             response.begin()
             request_id = response.getheader("X-Request-ID")
@@ -595,7 +608,7 @@ def test_completion_includes_body_write_and_client_disconnect(
     assert entry["route"] == "audits" and "private" not in str(entry)
 
 
-def test_cli_serves_reads_without_credentials(world):
+def test_cli_serves_reads_without_publisher_credentials(world):
     route, _ = world.make()
     store_baseline(world, route)
     process = subprocess.Popen(
@@ -642,7 +655,7 @@ def fetch(server, path):
     response, _ = get(server, path)
     assert response.status == 200, path
     connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
-    connection.request("GET", path)
+    connection.request("GET", path, headers={"Authorization": "Bearer " + READ_TOKEN})
     body = connection.getresponse().read()
     connection.close()
     return body

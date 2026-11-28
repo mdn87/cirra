@@ -172,6 +172,23 @@ findings are new or open, and a full audit also lists resolved ones. Findings
 match by their concept IDs plus path. Importing the same report again is a
 no-op.
 
+On enrolled HA state, pause both workers and use
+`scripts/import-coordinated-audit.py` on the current authoritative host. It
+accepts the existing attempt, reviewed JSON digest and managed state selector;
+the companion Markdown must be a regular file no larger than 4 MiB. A schema
+mismatch is refused without migration. The command never promotes a standby
+or publishes a provider check.
+
+Exit 0 confirms the local import and its fenced authority checkpoint. Exit 2
+with `state: committed_unconfirmed` means the SQLite import committed but the
+checkpoint or readback could not be confirmed; it is not a refusal and not a
+success receipt. Rerun the same attempt and report digest on the authoritative
+host. A lost checkpoint reply converges through the native authority intent;
+an already imported report is reused. If authority moved, the old host refuses
+the replay: import against the selected state on the new authority instead.
+Resume the authoritative worker first, then the standby, and verify native
+publication separately. No quorum/SQLite cross-system atomicity is claimed.
+
 ## Publication and gates
 
 A completed `pr` audit publishes one `cirra/audit` check run on the head (GitHub

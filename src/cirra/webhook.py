@@ -1,9 +1,11 @@
 """A bounded loopback HTTP receiver. A TLS reverse proxy owns public ingress."""
 
 import json
+import os
 import re
 import socket
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -13,6 +15,7 @@ from pathlib import Path
 from cirra import events
 from cirra.domain import CirraError, DeliveryConflict, canonical, utc_now
 from cirra.job_queue import Queue
+from cirra.locking import change_lock
 from cirra.queue_format import activate
 from cirra.reviewer import unique_object
 
@@ -109,6 +112,25 @@ class WebhookServer(ThreadingHTTPServer):
 
     def enqueue(self, route, hint):
         return self.intake().enqueue(route, hint)
+
+    def check_local_admission(self):
+        """Probe local storage and the bounded slot census without admitting a job."""
+        queue = self.queue
+        with change_lock(queue.directory / "locks", "enqueue", 0.2):
+            count = queue.slots.count()
+            if count is None or not 0 <= count < queue.maximum:
+                raise CirraError("local queue admission is unavailable")
+            # Admission writes the root's slot counter, a queue job and a delivery
+            # receipt. Probe their actual directories, not os.access permissions.
+            directories = [queue.directory.parent, queue.directory]
+            deliveries = queue.directory / "deliveries"
+            if deliveries.exists():
+                directories.append(deliveries)
+            for directory in directories:
+                with tempfile.TemporaryFile(dir=directory, prefix=".cirra-health-") as stream:
+                    stream.write(b"1")
+                    stream.flush()
+                    os.fsync(stream.fileno())
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -239,9 +261,12 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_GET(self):
-        if self.path == "/healthz" and self.server.shared_inbox is not None:
+        if self.path == "/healthz":
             try:
-                self.server.intake().check()
+                if self.server.shared_inbox is not None:
+                    self.server.intake().check()
+                else:
+                    self.server.check_local_admission()
             except (CirraError, OSError):
                 return self.respond(503, {"status": "admission unavailable"})
         self.respond(
