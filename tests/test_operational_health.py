@@ -253,6 +253,7 @@ def recovery_cache(tmp_path):
     }
     metadata = archive.with_name(archive.name + ".receipt.json")
     write_receipt(metadata, receipt, history=False)
+    metadata.chmod(0o600)  # Native fetch runs with a private umask.
     config = SimpleNamespace(routes={}, coordination=SimpleNamespace(recovery_archive=archive))
     return SimpleNamespace(
         root=tmp_path,
@@ -298,6 +299,7 @@ def test_cached_capture_freshness_uses_capture_not_receipt_mtime(recovery_cache,
     world = recovery_cache
     world.receipt["captured_at"] = (world.now - timedelta(seconds=age)).isoformat()
     write_receipt(world.metadata, world.receipt, history=False)
+    world.metadata.chmod(0o600)
     result = cache_health(world)
     assert result["healthy"] is ready
     assert result["recovery_metrics"]["restore_cache"]["age_seconds"] == age
@@ -319,6 +321,7 @@ def test_cached_capture_freshness_uses_capture_not_receipt_mtime(recovery_cache,
 def test_unverified_or_wrong_tenure_cache_does_not_hide_stale_restore(recovery_cache, key, value):
     world = recovery_cache
     write_receipt(world.metadata, {**world.receipt, key: value}, history=False)
+    world.metadata.chmod(0o600)
     result = cache_health(world)
     assert not result["healthy"]
     assert [p["kind"] for p in result["problems"]] == ["restore"]
