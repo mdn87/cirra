@@ -41,6 +41,7 @@ from cirra.publish import (
     write_receipt,
 )
 from cirra.queue_format import activate
+from cirra.quorum import QuorumUnavailable
 from cirra.report import export_report
 from cirra.review_gate import RequiredReviewCheck, merge_revision
 from cirra.store import Store
@@ -465,7 +466,10 @@ def work_once(config, queue, process):
     job = jobs[0]
     route = config.routes.get(job["route"])
     shared_inbox = getattr(queue, "shared_inbox", None)
-    if route is None or route.digest != job["route_digest"]:
+    if route is None or job["route_digest"] not in (
+        route.digest,
+        getattr(route, "intake_digest", None),
+    ):
         job.update(state="attention", error="route or policy changed; inspect before requeuing")
     elif shared_inbox is not None and not shared_inbox.require_pending(current_owner(), job):
         job.update(
@@ -475,7 +479,11 @@ def work_once(config, queue, process):
     elif job["attempts"] >= config.max_attempts:
         job.update(state="attention", error="retry limit reached; inspect the saved job")
     else:
-        reservation = queue.begin_review(job, config.max_jobs_per_day)
+        branch_ci = bool(
+            job["hint"].get("branch") in getattr(route, "branches", ())
+            and getattr(route, "observer", None)
+        )
+        reservation = queue.begin_review(job, config.max_jobs_per_day, branch_ci=branch_ci)
         if reservation is None:
             return job if job["state"] == "attention" else None
         started = time.monotonic()
@@ -490,6 +498,8 @@ def work_once(config, queue, process):
             result = process(route, job["hint"])
             job.update(state=result["state"], result=result)
             job.pop("error", None)
+        except QuorumUnavailable:
+            raise  # Leave the durable running record for the next owner's recovery.
         except ProviderIdentityMismatch as exc:
             if getattr(exc, "before_execution", False):
                 queue.return_unused_attempt(reservation)
@@ -655,17 +665,21 @@ def _work_as_owner(
     # resumes through the existing review/publisher recovery mechanisms.
     with change_lock(queue.directory / "locks", "worker", 0):
         if selector is not None and selector.resolve(strict=True) != queue.directory.parent:
-            from cirra.quorum import QuorumUnavailable
-
             raise QuorumUnavailable("the standby selected a newer verified private restore")
+        if owner is not None:
+            owner.compare({}, {})
         activate(queue.directory.parent)
         next_reconcile = 0
+        audit_queue = AuditQueue(queue.directory.parent)
         while not stopped.is_set():
             if shared is not None:
                 owner.compare({}, {})
                 authority.activate(owner)
             try:
                 ready = queue.maintain()
+                audit_queue.maintain()
+            except QuorumUnavailable:
+                raise
             except (CirraError, OSError, ValueError) as exc:
                 print(
                     json.dumps(
@@ -730,7 +744,11 @@ def _work_as_owner(
             if getattr(process, "audit", None):
                 pass_id, start = uuid.uuid4().hex, time.monotonic()
                 try:
+                    if owner is not None:
+                        owner.compare({}, {})
                     audit_job = process.audit(config)
+                except QuorumUnavailable:
+                    raise
                 except Exception as exc:
                     # Audits never stop review work; the failure is visible in the log.
                     message = str(exc) if isinstance(exc, CirraError) else type(exc).__name__

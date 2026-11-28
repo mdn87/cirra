@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 
-from cirra.dispatch import ENVIRONMENT, stop_process
+from cirra.dispatch import ENVIRONMENT, cleanup_process, join_threads
 from cirra.domain import CirraError
 
 
@@ -44,7 +44,10 @@ def run_control(argv, directory, *, timeout=60, maximum=1024 * 1024, data=b"", e
         except (BrokenPipeError, OSError):
             pass
         finally:
-            process.stdin.close()
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
 
     threads = [
         threading.Thread(target=drain, args=(process.stdout, True), daemon=True),
@@ -60,8 +63,7 @@ def run_control(argv, directory, *, timeout=60, maximum=1024 * 1024, data=b"", e
                 raise CirraError("observer subprocess exceeded its output limit")
             if time.monotonic() >= deadline:
                 raise CirraError("observer subprocess exceeded its deadline")
-        for thread in threads:
-            thread.join(timeout=2)
+        join_threads(threads, min(deadline, time.monotonic() + 2))
         if exceeded.is_set() or any(thread.is_alive() for thread in threads):
             raise CirraError("observer subprocess did not return bounded output")
         if process.returncode:
@@ -70,5 +72,4 @@ def run_control(argv, directory, *, timeout=60, maximum=1024 * 1024, data=b"", e
             )
         return bytes(output)
     finally:
-        if process.poll() is None:
-            stop_process(process)
+        cleanup_process(process, threads)

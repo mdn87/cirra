@@ -58,6 +58,10 @@ OPERATOR_HOST=${12:-lugos-host}
 FALLBACK=""
 CONFIG=$SERVICE/config
 STAGING=$SERVICE/staging
+if [ -f "$SERVICE/ha-launch/worker.json" ]; then
+  echo "This host uses coordinated HA services; use scripts/deploy-ha.py." >&2
+  exit 2
+fi
 UNITS=(cirra-webhook.service cirra-worker.service)
 HEALTH_PORTS=("$PORT")
 for optional in cirra-audit-reads.service cirra-health.timer; do

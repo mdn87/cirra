@@ -79,6 +79,7 @@ def load_observer(path):
                 "observer.py",
                 "observer_source.py",
                 "observer_process.py",
+                "dispatch.py",
                 "provenance.py",
             )
         }

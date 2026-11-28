@@ -113,6 +113,15 @@ def deployment(tmp_path):
     return rollback, service, state, releases / current
 
 
+def test_standalone_driver_refuses_installed_ha_topology(deployment):
+    rollback, service, _, current = deployment
+    (service / "ha-launch").mkdir()
+    (service / "ha-launch/worker.json").write_text("{}")
+    result = rollback()
+    assert result.returncode != 0 and "deploy-ha.py" in result.stderr
+    assert (service / "current").resolve() == current
+
+
 def test_rollback_refuses_incompatible_schema_before_switch(deployment):
     rollback, service, state, current = deployment
     with sqlite3.connect(state / "cirra.sqlite3") as db:

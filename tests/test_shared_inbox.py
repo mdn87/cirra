@@ -69,6 +69,67 @@ def hint(text, change=73):
     return {"change": change, "delivery": text, "payload_digest": digest(["private body", text])}
 
 
+@pytest.mark.parametrize("state", ["done", "attention", "skipped"])
+def test_completion_only_recovery_preserves_exact_terminal_state(systems, state):
+    a, b, voters, owner, route = systems
+    oid = a.enqueue(route, hint("completion-only"))["job_id"]
+    b.remember(route, 73)
+    write_receipt(
+        b.queue.directory / "completed" / (oid + ".json"),
+        {"job_id": oid, "accepted_at": "2026-11-01T00:00:00Z", "state": state},
+    )
+    with bind_owner(owner):
+        b.materialize(owner)
+    assert voters.get("inbox/results/" + oid) == state
+
+
+def test_ambiguous_legacy_completion_does_not_invent_success(systems):
+    a, b, voters, owner, route = systems
+    oid = a.enqueue(route, hint("legacy-only"))["job_id"]
+    b.remember(route, 73)
+    write_receipt(b.queue.directory / "completed" / (oid + ".json"), {"job_id": oid})
+    with bind_owner(owner), pytest.raises(QuorumUnavailable, match="terminal state"):
+        b.materialize(owner)
+    assert voters.get(PENDING + oid) is not None
+
+
+def test_cas_contention_backs_off_without_claiming_admission(systems, monkeypatch):
+    from cirra import shared_inbox
+
+    a, _, voters, _, route = systems
+    clock, delays = [0.0], []
+    monkeypatch.setattr(shared_inbox.time, "monotonic", lambda: clock[0])
+
+    def sleep(delay):
+        delays.append(delay)
+        clock[0] += delay
+
+    monkeypatch.setattr(shared_inbox.time, "sleep", sleep)
+    monkeypatch.setattr(voters, "compare", lambda *_args, **_kwargs: False)
+    with pytest.raises(QuorumUnavailable, match="busy"):
+        a.enqueue(route, hint("busy"))
+    assert 1 <= len(delays) <= 7 and 0 < sum(delays) <= 2
+    assert voters.get(COUNT) == "0"
+
+
+def test_legacy_receipt_recovers_from_retained_record_and_updates_terminal_result(systems):
+    a, b, voters, owner, route = systems
+    oid = a.enqueue(route, hint("retained"))["job_id"]
+    b.remember(route, 73)
+    with bind_owner(owner):
+        b.materialize(owner)
+        job = b.queue.review_record(b.queue.directory / (oid + ".json"))
+        job["state"] = "attention"
+        b.queue.save(job)
+        receipt = b.queue.directory / "completed" / (oid + ".json")
+        write_receipt(receipt, {"job_id": oid, "accepted_at": job["accepted_at"]})
+        b.materialize(owner)
+        assert voters.get("inbox/results/" + oid) == "attention"
+        job["state"] = "done"
+        b.queue.save(job)
+        assert b.queue.read(receipt)["state"] == "done"
+
+
 def test_duplicate_conflict_and_ledger_evidence(systems):
     a, b, voters, owner, route = systems
     original = hint("private-delivery")

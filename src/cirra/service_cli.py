@@ -83,7 +83,12 @@ def register(commands):
     )
     health.add_argument("--state-dir", type=Path, default=Path(".cirra/service"))
     health.add_argument("--max-heartbeat-age", type=int, default=1200)
-    health.add_argument("--attention-window", type=int, default=86400)
+    health.add_argument(
+        "--attention-window",
+        type=int,
+        default=None,
+        help="Explicit historical filter in seconds; defaults to all unresolved failures",
+    )
     observer = commands.add_parser(
         "observer-definition", help="validate and fingerprint an observer policy"
     )

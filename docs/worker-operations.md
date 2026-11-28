@@ -4,7 +4,11 @@ The operator who owns the Cirra service on `lugos-host` is Matt. The five-minute
 `cirra-health.timer` sends failures through Lugos operator attention. Use
 `cirra health --state-dir "$STATE"` for the current alert and
 `cirra jobs --state-dir "$STATE"` for the queue, worker, and publication records.
-On the host, `STATE=/srv/lugos/state/cirra`.
+On `lugos-host`, `STATE=/srv/lugos/state/cirra-ha/current`; on Intel Mac,
+`STATE=/Users/matt/.local/share/cirra-standby/state/current`. Resolve the current
+authority before changing either queue. Linux runs `cirra-ha-worker.service`
+and `cirra-ha-webhook.service`; the original worker remains fenced. Use the
+[HA deployment and rollback procedure](ha-deployment.md) for this topology.
 
 ## Service objectives
 
@@ -40,14 +44,14 @@ Rerunning a terminal delivery explicitly updates its current completion record.
 This command calculates admission from the current UTC day's webhook journal on the host.
 
 ```sh
-journalctl -u cirra-webhook.service --since "$(date -u +%F) 00:00:00 UTC" -o cat |
+journalctl -u cirra-ha-webhook.service --since "$(date -u +%F) 00:00:00 UTC" -o cat |
   jq -Rn '[inputs | fromjson? | select(.event == "webhook_request" and .admission != null)] |
     if length == 0 then null else
       100 * (map(select(.status == 202 and (.admission == "accepted" or .admission == "duplicate"))) | length) / length end'
 ```
 
 The worker publishes the configured slot limit with its heartbeat. Admission
-reclaims completed work under pressure. Recent jobs requiring attention and
+reclaims completed work under pressure. Unresolved jobs requiring attention and
 unreadable records occupy a slot. The health timer alerts at 10% remaining
 capacity, on a refusal in the past 15 minutes, or after eligible work has waited
 over 30 minutes. Provider cooldowns delay eligibility until the stored reset
@@ -72,7 +76,13 @@ and command output belong outside incident messages.
 Provider quota refusals before execution return the daily admission and defer
 other jobs using the same configured reader until reset. A permission denial
 goes to attention and pauses the reader for 15 minutes. Correct the credential or
-target, inspect the saved job, then use `cirra requeue` with a reason.
+target and inspect the saved job. On standalone state, use `cirra requeue` with
+a reason. For a coordinated branch-CI job, pause both workers and run
+`scripts/requeue-coordinated-branch.py` on the original authoritative host with
+the inspected job's digest and a reason. Resume that worker before the standby.
+This preserves history and the existing quota sequence. An interrupted branch
+observer can recover under a fresh quota charge; uncertain model-review
+executions still require their original execution to be reconciled.
 SQL and JSON records for a completed PR audit survive an interrupted check
 publication. The worker retries up to five times with increasing delays and
 honors provider reset times. If a create may have reached GitHub, recovery reads
@@ -101,9 +111,15 @@ intents. Select a release that reads the recorded format or roll forward with a
 fix. Restoring an older full-state backup requires reconciling provider writes and
 deliveries since that backup. SQLite remains at schema version 3.
 
-The review queue moves terminal records to `queue/archive/` after seven days
-and reclaims successful or skipped records earlier under pressure. Audit queue
-maintenance moves terminal records after seven days. Current receipts and
+The review queue moves successful or skipped records to `queue/archive/` after
+seven days, or earlier under pressure. Audit maintenance archives completed,
+superseded or cancelled requests after seven days. Unresolved attention and
+failed jobs stay visible until explicitly resolved, including records archived
+by an older release. Health has no age cutoff for these failures by default;
+`--attention-window` is an explicit historical filter, not an operational default.
+Active coordinated hosts also report missing or invalid backup receipts and
+backups older than 23 hours, with one hour to capture a new authority's first
+backup. Current receipts and
 compact delivery and completed-payload keys stay on the service volume for
 the lifetime of the installation. Restore these from the same backup as the
 worker state after disk recovery.

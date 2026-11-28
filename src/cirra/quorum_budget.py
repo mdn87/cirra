@@ -30,6 +30,7 @@ def utc_day():
 def mutation_owner(directory):
     owner = current_owner()
     if owner is not None:
+        owner.compare({}, {})
         activate(directory, 2)
     elif live_format(directory) >= 2:
         raise CirraError("coordinated daily admission requires a current publishing owner")
