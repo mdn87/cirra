@@ -469,6 +469,19 @@ def stage(p, sha, encoded, expected):
         prefix = ["sudo", "-u", "matt", "-H"]
     run([*prefix, sys.executable, "-m", "venv", str(release / ".venv")], timeout=120)
     python = str(release / ".venv/bin/python")
+    environment = dict(os.environ)
+    binary_options = ["--only-binary=:all:"]
+    if p.mac:
+        # This Intel Mac's OS predates the cryptography wheel's deployment target.
+        # Use the already provisioned compiler/OpenSSL and hashed source archive.
+        environment.update(
+            PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            OPENSSL_DIR="/usr/local/opt/openssl@3",
+            CARGO_BUILD_JOBS="2",
+            CARGO_HOME=str(p.root / "cargo-build"),
+            PIP_CACHE_DIR=str(p.root / "wheel-cache"),
+        )
+        binary_options.append("--no-binary=cryptography")
     run(
         [
             *prefix,
@@ -478,11 +491,12 @@ def stage(p, sha, encoded, expected):
             "install",
             "--disable-pip-version-check",
             "--require-hashes",
-            "--only-binary=:all:",
+            *binary_options,
             "-r",
             str(release / "requirements/dev.txt"),
         ],
         timeout=600,
+        env=environment,
     )
     run(
         [
