@@ -1,6 +1,7 @@
 """Stage 4 of the production-audit tiers plan: pr audits through the worker."""
 
 import json
+import shutil
 import sys
 import time
 from dataclasses import replace
@@ -14,11 +15,13 @@ from cirra import audits
 from cirra.audit_worker import (
     AuditCheckPublisher,
     AuditPublication,
+    AuditRunner,
     audit_once,
     request_audits,
 )
 from cirra.domain import CirraError
 from cirra.job_queue import AuditQueue
+from cirra.quorum import OwnershipLost
 from cirra.store import Store
 from cirra.transport import ReadUnavailable, RemoteUncertain
 
@@ -216,6 +219,70 @@ def test_session_audit_waits_for_import_then_publishes(world, tmp_path):
     assert settled["state"] == "done"
     assert settled["result"]["publication"]["conclusion"] == "success"
     assert len(github.posts) == 1
+
+
+def test_restored_waiting_audit_keeps_identity_and_can_resume(world, tmp_path):
+    route, runner = world.make()
+    store_baseline(world, route)
+    request(world, route, "app.py")
+    store = Store(world.state)
+    waiting = audit_once(AuditQueue(world.state, store), store, 20, runner)
+    restored = tmp_path / "restored"
+    shutil.copytree(world.state, restored)
+    recovered_store = Store(restored)
+    recovered = AuditRunner(restored, {"main": route}, lambda _: None)
+    attempt = audits.get(recovered_store, waiting["attempt_id"])
+    context = []
+    recovered.cleanup(recovered_store, on_attempt=lambda *args: context.append(args))
+    assert context == [(attempt["attempt_id"], route.name)]
+    assert audits.get(recovered_store, attempt["attempt_id"]) == attempt
+    assert AuditQueue(restored).read(waiting["id"]) == waiting
+    resumed = recovered(waiting, attempt, lambda: None)
+    packet = json.loads(Path(resumed["packet_path"]).read_text())
+    checkout = recovered.attempt_dir(attempt["attempt_id"]) / "checkout"
+    assert Path(packet["repository"]["path"]) == checkout
+    report = build_report("pr", world.head, world.base, repo_path=checkout)
+    result, _ = audits.import_report(
+        recovered_store, attempt["attempt_id"], write_report(tmp_path / "out", report), checkout
+    )
+    assert result["state"] == "complete"
+
+
+@pytest.mark.parametrize("error", [CirraError, OwnershipLost])
+def test_checkout_maintenance_continues_after_damage_but_stops_on_lease_loss(
+    world, monkeypatch, error
+):
+    from cirra import audit_worker
+
+    route, runner = world.make()
+    identifiers = ["a" * 32, "b" * 32]
+    for identifier in identifiers:
+        (runner.attempt_dir(identifier) / "checkout").mkdir(parents=True)
+    identity = {
+        "repository": audit_worker.repository_of(route),
+        "head": world.head,
+    }
+    monkeypatch.setattr(
+        audits,
+        "get",
+        lambda store, identifier: {
+            "attempt_id": identifier,
+            "state": "prepared",
+            "identity_json": json.dumps(identity),
+        },
+    )
+    calls, context = [], []
+
+    def repair(state, provider, repository, directory, **kwargs):
+        calls.append(directory.parent.name)
+        if directory.parent.name == identifiers[0]:
+            raise error("checkout damage or ownership loss")
+
+    monkeypatch.setattr(audit_worker, "repair_checkout", repair)
+    with pytest.raises(error):
+        runner.cleanup(None, on_attempt=lambda *args: context.append(args))
+    assert calls == (identifiers if error is CirraError else identifiers[:1])
+    assert context[-1] == (identifiers[0], route.name)
 
 
 def test_superseded_command_audit_is_stopped_at_a_checkpoint(world, tmp_path):

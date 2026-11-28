@@ -91,6 +91,25 @@ a packet to `audit-packets/<attempt>.json` with the tier, revisions, the skill
 identity Cirra expects, the newest baseline's profile for `pr` audits, and the
 catalog domains for `full` audits.
 
+Private-state restores can place the Git cache and its linked worktrees on a
+different host or under a new physical state directory. The worker reconnects
+the two Git metadata links for each known attempt within the selected copy,
+checking the repository, attempt and pinned revision before writing. It also
+does this before resuming an existing checkout. It never follows the old host's
+paths or repairs another retained copy. Final-attempt cleanup then uses the
+reconnected worktree. Failures identify `phase: checkout_maintenance` and the
+affected attempt in the worker log, separately from queue execution.
+Damage to one checkout does not prevent maintenance of the others; loss of
+quorum ownership stops further mutations immediately. The state path may be
+the managed `current` symlink, but links inside attempt/cache metadata are refused.
+
+This repair does not accept, cancel, or rerun waiting reports. An exported session
+packet may still name its original host's absolute checkout path; use the
+selected state's `audit-attempts/<attempt>/checkout` when importing on the new
+host. Resuming the runner exports a fresh packet with the same attempt identity
+and the current checkout path. Report validation and coordinated import ownership
+checks still apply.
+
 With `kind: session` the job waits as `awaiting_import`. Give the packet to an
 agent session that has the skill, then import the report:
 

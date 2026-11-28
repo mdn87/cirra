@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from cirra import audits
 from cirra.audit import select_tiers
-from cirra.audit_checkout import change_ref, prepare_checkout, remove_checkout
+from cirra.audit_checkout import change_ref, prepare_checkout, remove_checkout, repair_checkout
 from cirra.dispatch import stop_process, tool_environment
 from cirra.domain import (
     CirraError,
@@ -37,7 +37,7 @@ from cirra.github import API_VERSION, check_summary_digest, native_id, record, r
 from cirra.job_queue import AUDIT_PRIORITY, AuditQueue
 from cirra.publication_fence import PublicationFence, require_state_owner
 from cirra.publish import write_receipt
-from cirra.quorum import current_owner
+from cirra.quorum import QuorumUnavailable, current_owner
 from cirra.store import Store
 from cirra.transport import JSONClient, ReadUnavailable, RemoteUncertain, RequestNotSent, pages
 
@@ -362,6 +362,10 @@ class AuditRunner:
                 url=self.url_for(route) if self.url_for else None,
                 protocols=self.protocols,
             )
+        else:
+            repair_checkout(
+                self.directory, route.provider, route.repository, checkout, head=identity["head"]
+            )
         store = Store(self.directory)
         packet_path = audits.export_packet(
             audits.make_packet(store, attempt, checkout), self.directory
@@ -560,21 +564,40 @@ class AuditRunner:
         )
         return {"state": "imported", "audit": summary}
 
-    def cleanup(self, store):
-        """Remove worktrees of attempts that reached a final state."""
+    def cleanup(self, store, *, on_attempt=None):
+        """Reconnect restored worktrees, then remove attempts that reached a final state."""
         root = self.directory / "audit-attempts"
-        for directory in root.glob("*/checkout") if root.exists() else ():
+        failure = None
+        for directory in sorted(root.glob("*/checkout")) if root.exists() else ():
             try:
                 attempt = audits.get(store, directory.parent.name)
             except CirraError:
                 continue
-            if attempt["state"] not in FINAL:
-                continue
             identity = json.loads(attempt["identity_json"])
             for route in self.routes.values():
                 if repository_of(route) == identity["repository"]:
-                    remove_checkout(self.directory, route.provider, route.repository, directory)
+                    if on_attempt:
+                        on_attempt(attempt["attempt_id"], route.name)
+                    operation = remove_checkout if attempt["state"] in FINAL else repair_checkout
+                    try:
+                        operation(
+                            self.directory,
+                            route.provider,
+                            route.repository,
+                            directory,
+                            head=identity["head"],
+                        )
+                    except QuorumUnavailable:
+                        raise  # No further mutation after ownership becomes uncertain.
+                    except (CirraError, OSError) as exc:
+                        if failure is None:
+                            failure = attempt["attempt_id"], route.name, exc
                     break
+        if failure is not None:
+            attempt_id, route_name, error = failure
+            if on_attempt:
+                on_attempt(attempt_id, route_name)
+            raise error  # Preserve the first failure after maintaining the other attempts.
 
 
 class WindowsJob:

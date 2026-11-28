@@ -234,7 +234,13 @@ class Processor:
             # worker can turn it into pr audit requests.
             interrupt=lambda: bool(Queue(self.directory).pending(config.routes)),
         )
-        runner.cleanup(store)
+        self.audit_context = {"phase": "checkout_maintenance"}
+        runner.cleanup(
+            store,
+            on_attempt=lambda attempt, route: self.audit_context.update(
+                attempt_id=attempt, route=route
+            ),
+        )
         return job
 
     def reader_credential(self, route):
