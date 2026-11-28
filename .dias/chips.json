@@ -862,7 +862,7 @@
       "chipId": "cirra:retention-and-runner-policy",
       "projectId": "cirra",
       "title": "Choose retention, audit execution and Docker policy",
-      "summary": "Retention preview preserves referenced and unproved copies; no deletion was performed. The session runner remains; Docker release-risk acceptance awaits verified review.",
+      "summary": "Session audit runner retained; Linux rootless isolation is deployed. Permanent retention deletion is deferred and has no authorization.",
       "stage": "blocked",
       "sequence": 19,
       "prereqs": [
@@ -872,7 +872,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-28T08:05:52.462125Z",
-        "updatedAt": "2026-11-28T12:20:45.466660Z"
+        "updatedAt": "2026-11-28T18:01:57.191587Z"
       },
       "evidence": [
         {
@@ -886,6 +886,12 @@
           "at": "2026-11-28T12:20:45.466660Z",
           "kind": "note",
           "message": "Preview retained all 25 snapshots. Legacy entry points were archived. Docker release-risk acceptance awaits review V-20261128-6ae00438."
+        },
+        {
+          "entryId": "cirra:retention-and-runner-policy:isolation-and-decisions",
+          "at": "2026-11-28T18:01:57.191587Z",
+          "kind": "note",
+          "message": "Review V-20261128-6ae00438 was answered at 16:05Z. PR84 is deployed on both hosts; UID961/rootless operation, native credentials, recovery capture and Mac verification passed. PR85 integrates connector draining after five observed 502 samples. No tag, release, deletion or audit waiver performed."
         }
       ]
     },
@@ -894,7 +900,7 @@
       "chipId": "cirra:v1-release",
       "projectId": "cirra",
       "title": "Publish the verified v1.0.0 release",
-      "summary": "Resolve three release decisions, freeze one candidate, complete full and release audits, verify artifacts and publish. Daily audit admission remains enforced.",
+      "summary": "Release decisions are verified and Linux isolation is deployed. Complete the ingress correction, exact candidate artifacts, full/release audits after the UTC quota rollover, and GitHub publication.",
       "stage": "blocked",
       "sequence": 20,
       "prereqs": [
@@ -904,7 +910,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-28T12:20:45.466660Z",
-        "updatedAt": "2026-11-28T12:20:45.466660Z"
+        "updatedAt": "2026-11-28T18:01:57.191587Z"
       },
       "evidence": [
         {
@@ -912,6 +918,12 @@
           "at": "2026-11-28T12:20:45.466660Z",
           "kind": "created",
           "message": "Finite release plan and concrete license/metadata/notes are prepared. Review V-20261128-6ae00438 holds three decisions; the Nov 28 audit ledger is 10/10."
+        },
+        {
+          "entryId": "cirra:v1-release:isolation-and-decisions",
+          "at": "2026-11-28T18:01:57.191587Z",
+          "kind": "note",
+          "message": "Review V-20261128-6ae00438 was answered at 16:05Z. PR84 is deployed on both hosts; UID961/rootless operation, native credentials, recovery capture and Mac verification passed. PR85 integrates connector draining after five observed 502 samples. No tag, release, deletion or audit waiver performed."
         }
       ]
     }

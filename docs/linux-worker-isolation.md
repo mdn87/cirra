@@ -80,6 +80,15 @@ helper checks ownership before starting the unprivileged capture job. Keep
 `cirra-audit-reader` separate with read-only mounts and bearer authentication.
 Expose only the credential files each role needs.
 
+OpenSSH locates its default config through the account's registered home,
+not the service's `HOME` environment variable. Keep the daemon home masked.
+For backup and refresh, place a root-owned `ssh` wrapper first on their PATH
+that executes `/usr/bin/ssh -F /srv/lugos/services/cirra/service-home/.ssh/config "$@"`.
+Mount each role's existing scoped SSH directory read-only at that `.ssh` path;
+retain strict host-key checking. Point the health service's working directory
+at `ha-current`, since older operator-only releases are inaccessible to the
+new account.
+
 Verify native role credentials, quorum access, reader authorization and
 receiver health before resuming Linux and then Mac. Verify live worker
 health, execution, recovery and monitoring afterward. Rollback after a new
@@ -96,3 +105,16 @@ Three real observer tests passed, including in-container cgroup limits and
 timeout cleanup. Container UID 65534 mapped to host UID 362141, not root or
 the operator. A tool-free Claude response succeeded. These staging results
 precede production account cutover and do not alone establish release readiness.
+
+Production switched to the dedicated account on November 28 using candidate
+`ced95a84a06002de5197f3428240292d9afae656`. Eight copied trees retained identical
+bytes and modes; the original trees remain in a private rollback journal.
+Both native role credential checks, quorum authority comparison, authenticated
+Taskmaster audit reads, denied unauthenticated reads and both host health
+checks passed. Linux runs with no supplementary groups; the Mac remains standby.
+
+Public sampling during that rollout recorded 295 HTTP 200 responses and five
+HTTP 502 responses during the earlier Mac receiver restart. The deploy tool
+now drains the dedicated connector before receiver restart, incorporating the
+previous operator-only procedure. These samples are retained as a failed
+uninterrupted-rollout observation, not presented as continuous availability.

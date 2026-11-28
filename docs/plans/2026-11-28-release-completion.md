@@ -16,8 +16,8 @@ do not restart historical audits or wait for a soak.
 Changes to a candidate invalidate evidence for changed content. Rerun only the
 affected gates; do not repeatedly audit unrelated historical or documentation
 work. Review-count ceilings are advisory. Session audit execution remains the
-v1.0 model; a command runner and rootless Docker migration are v1.1 work unless
-the operator chooses otherwise.
+v1.0 model; a command runner is deferred. The operator required Linux isolation
+before publication, and the dedicated account/rootless engine are now deployed.
 
 ## Corrections that apply during execution
 
@@ -51,16 +51,25 @@ the operator chooses otherwise.
   carries tests, operator scripts and examples. HA deployment scripts are a
   site-specific reference installation, not a portable installer.
 
-## Remaining operator decisions
+## Approved decisions and remaining execution
 
-Prepare concrete evidence before requesting the irreversible steps together:
-exact data cleanup and automated retention scope; acceptance of the existing
-single-operator Docker privilege boundary; license and distribution choice;
-the measured availability promise and exclusions; final tag/release publication.
-No current grant approves permanent data deletion or a new license.
+The protected November 28 review approved MIT licensing, GitHub v1.0.0
+publication with wheel/sdist/checksums after the release gates, and the
+conditional availability boundary. It required Linux isolation instead of
+accepting rootful Docker. See [the recorded decisions](../release-acceptance.md).
+No further answer to those questions is pending. No grant authorizes PyPI,
+permanent data deletion, quota resets or audit waivers.
 
-Uptime cannot be guaranteed during every possible failure. The proposed v1.0
-boundary is warm single-host failover with a verified standby recovery point
-less than 24 hours old. FileVault cold boot needs local unlock; loss of quorum
-fails closed; WAN/Cloudflare outages can make the service unreachable. Present
-these explicitly rather than claiming that all such failures return HTTP 503.
+PR 84 prepared 1.0.0 and deployed a dedicated Linux account with rootless Docker.
+Native credentials, resource enforcement, quorum access, authenticated reads,
+off-host encrypted recovery and verified Mac caching passed. The rollout also
+exposed five brief public 502 responses; the deployment correction drains each
+dedicated connector before restarting its origin. Retain this failed observation
+alongside the subsequent corrected rollout evidence.
+
+Finish the corrected rollout, build and install-check the exact frozen candidate,
+then complete its full baseline and release audit before dispatching release
+evidence and publishing. November 28 audit admission is exhausted; preserve the
+counter and use the next UTC admission window. Existing historical code-audit
+requests retain their explicit dispositions. Destructive cleanup is deferred
+outside this release; its preview is not deletion authorization.

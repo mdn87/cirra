@@ -312,6 +312,84 @@ class Controller:
             run(["systemctl", "daemon-reload"])
             run(["systemctl", "restart", "cirra-ha-webhook.service", "cirra-audit-reads.service"])
 
+    def ingress(self):
+        name = "foo.newman.cirra-ingress.plist" if self.p.mac else "cirra-cloudflared.service"
+        if not (self.p.units / name).is_file():
+            return None
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:20461/ready", timeout=3) as response:
+                if response.status != 200:
+                    raise ValueError("connector is not ready")
+            with urllib.request.urlopen(
+                "http://127.0.0.1:20461/diag/tunnel", timeout=3
+            ) as response:
+                raw = response.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("connector diagnostics exceed the limit")
+            info = json.loads(raw)
+            identifier = info["tunnelID"]
+            if str(uuid.UUID(identifier)) != identifier:
+                raise ValueError("invalid tunnel identity")
+            connected = any(row.get("isConnected") is True for row in info["connections"])
+            return {"ready": connected, "tunnel_id": identifier}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return {"ready": False, "tunnel_id": None}
+
+    def connector(self, start):
+        if self.p.mac:
+            label = self.domain + "/foo.newman.cirra-ingress"
+            loaded = (
+                subprocess.run(
+                    ["launchctl", "print", label], capture_output=True, timeout=10
+                ).returncode
+                == 0
+            )
+            if loaded == start:
+                return
+            args = (
+                [
+                    "launchctl",
+                    "bootstrap",
+                    self.domain,
+                    str(self.p.units / "foo.newman.cirra-ingress.plist"),
+                ]
+                if start
+                else ["launchctl", "bootout", label]
+            )
+        else:
+            args = ["systemctl", "start" if start else "stop", "cirra-cloudflared.service"]
+        run(args, timeout=75)
+
+    @contextlib.contextmanager
+    def origin_drained(self, peer):
+        local = self.ingress()
+        if local is None:
+            yield
+            return
+        if not (
+            local["ready"]
+            and isinstance(peer, dict)
+            and peer.get("ready") is True
+            and peer.get("tunnel_id") == local["tunnel_id"]
+        ):
+            raise ValueError("verify both dedicated connectors on the same tunnel before switching")
+        try:
+            # Disconnect gracefully while the origin still serves in-flight requests.
+            self.connector(False)
+            yield
+        finally:
+            # Also recover when a stop command reports failure after taking effect.
+            # A failed rollback must not reconnect an origin that cannot serve.
+            self.ready()
+            self.connector(True)
+            deadline = time.monotonic() + 35
+            while time.monotonic() < deadline:
+                if self.ingress() == local:
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("the dedicated connector did not rejoin after the origin switch")
+
     @contextlib.contextmanager
     def maintenance_paused(self):
         """Keep scheduled readers on a single release during the short file switch."""
@@ -645,7 +723,12 @@ def _remote_action(params):
     controller = Controller(p)
     if action == "probe":
         controller.ready()
-        return {"host": p.host, "healthy": True, "worker_active": controller.active("worker")}
+        return {
+            "host": p.host,
+            "healthy": True,
+            "worker_active": controller.active("worker"),
+            "ingress": controller.ingress(),
+        }
     if action == "worker-stop":
         controller.stop_worker()
         return {"host": p.host, "worker": "paused"}
@@ -658,7 +741,7 @@ def _remote_action(params):
         identifier = params["transaction"]
         if not re.fullmatch(r"[0-9a-f]{32}", identifier):
             raise ValueError("invalid transaction")
-        with controller.maintenance_paused():
+        with controller.maintenance_paused(), controller.origin_drained(params.get("peer_ingress")):
             restore(p, p.journals / identifier / "transaction.json", controller)
         return {"host": p.host, "transaction": identifier, "state": "rolled_back"}
     sha = params.get("sha", "")
@@ -679,7 +762,7 @@ def _remote_action(params):
         }
     if action != "activate":
         raise ValueError("unknown deployment action")
-    with controller.maintenance_paused():
+    with controller.maintenance_paused(), controller.origin_drained(params.get("peer_ingress")):
         return activate(
             p, release, files, controller, peer_healthy=params.get("peer_healthy", False)
         )
@@ -754,6 +837,7 @@ def main():
         if evidence["worker_active"]:
             parser.error("pause both workers before activation or rollback")
         params["peer_healthy"] = evidence["healthy"]
+        params["peer_ingress"] = evidence["ingress"]
     print(json.dumps(dispatch(params), indent=2))
 
 

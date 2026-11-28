@@ -8,13 +8,13 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-28T12:20:45.466660Z",
+  "assessedAt": "2026-11-28T18:01:57.191587Z",
   "confidence": "authoritative",
-  "currentMilestone": "Operational release safeguards are deployed and verified on both data hosts.",
-  "remainingSummary": "Three verified release decisions, then one frozen candidate with full/release audits, final artifact checks and GitHub publication. Audit admission resumes at the UTC day boundary; destructive cleanup remains deferred.",
+  "currentMilestone": "Dedicated rootless Linux production is deployed; release decisions are verified.",
+  "remainingSummary": "Land and verify the connector-draining correction, validate exact candidate artifacts, finish full/release audits after UTC admission rollover, then publish the authorized GitHub release. No operator answer is pending; destructive cleanup stays deferred.",
   "nextChipId": "cirra:v1-release",
   "source": {
-    "label": "PRs 77\u201379, native authentication/monitoring/recovery proof and the finite release review",
+    "label": "Verified release review, PR84 native deployment/recovery evidence, and PR85 ingress correction",
     "updatedAt": "2026-11-28"
   }
 }

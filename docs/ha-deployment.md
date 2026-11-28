@@ -53,7 +53,15 @@ python scripts/deploy-ha.py activate --host lugos-host --sha <40-character-sha>
 ```
 
 Each activation verifies the other origin's health and that both workers are
-paused. It waits for scheduled backup/refresh work to finish, pauses their
+paused. When the dedicated Cirra tunnel connector is installed, it also checks
+that both connectors are ready on the same tunnel. It gracefully stops this
+host's connector while its receiver is still serving, switches the receiver,
+then rejoins the connector and verifies readiness. Rollback uses the same
+sequence. If the origin cannot recover, its connector stays disconnected so
+traffic can use the healthy peer. The unrelated shared Cloudflare service is
+never stopped.
+
+It waits for scheduled backup/refresh work to finish, pauses their
 schedulers during the switch, then restores the schedules. A host-local lock
 rejects concurrent operators. The saved transaction contains the exact previous
 files and pointer, and remains private on that host. Startup failure restores

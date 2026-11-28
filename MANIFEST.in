@@ -2,8 +2,9 @@ include LICENSE CHANGELOG.md
 recursive-include examples *.json *.yaml *.yml
 recursive-include examples *.plist
 include examples/observer.Dockerfile
+include examples/observer.Dockerfile.dockerignore
 include worker-state-version
-recursive-include examples/systemd *.service *.timer *.conf *.sh *.py *.plist
+recursive-include examples/systemd *.service *.socket *.path *.timer *.conf *.sh *.py *.plist
 recursive-include scripts *.py *.sh
 recursive-include requirements *.txt
 recursive-include eval *.json *.md
