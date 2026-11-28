@@ -124,6 +124,25 @@ def test_rollback_refuses_newer_state_without_touching_runtime(installation):
     assert control.restarts == 1
 
 
+def test_rollback_requires_latest_active_transaction_and_refuses_replay(installation):
+    p, old, new, files, control, checked, check = installation
+    first = DEPLOY["activate"](p, new, files, control, peer_healthy=True, check=check)
+    third = new.with_name("third")
+    third.mkdir()
+    second = DEPLOY["activate"](p, third, files, control, peer_healthy=True, check=check)
+    older = p.journals / first["transaction"] / "transaction.json"
+    latest = p.journals / second["transaction"] / "transaction.json"
+    with pytest.raises(ValueError, match="latest active"):
+        DEPLOY["restore"](p, older, control, check=check)
+    assert p.current.resolve() == third
+    DEPLOY["restore"](p, latest, control, check=check)
+    with pytest.raises(ValueError, match="not available"):
+        DEPLOY["restore"](p, latest, control, check=check)
+    assert p.current.resolve() == new
+    DEPLOY["restore"](p, older, control, check=check)
+    assert not p.current.exists()
+
+
 def test_stage_rejects_archive_escape(tmp_path):
     archive = io.BytesIO()
     with tarfile.open(fileobj=archive, mode="w") as bundle:

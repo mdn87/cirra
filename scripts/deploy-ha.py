@@ -337,6 +337,23 @@ def record(path, document):
 
 def restore(p, journal, controller, *, check=compatibility):
     document = json.loads(journal.read_bytes())
+    if document["phase"] not in ("prepared", "applied", "verified"):
+        raise ValueError("transaction is not available for rollback")
+    live = [
+        json.loads(path.read_bytes())
+        for path in p.journals.glob("*/transaction.json")
+        if path != journal
+    ]
+    if any(
+        row["phase"] != "rolled_back" and row["sequence"] > document["sequence"] for row in live
+    ):
+        raise ValueError("roll back the latest active transaction first")
+    pointer = str(p.current.resolve(strict=True)) if p.current.is_symlink() else None
+    allowed = [document["release"]]
+    if document["phase"] == "prepared":
+        allowed.append(document["previous_release"] if document["previous_pointer"] else None)
+    if pointer not in allowed:
+        raise ValueError("runtime selector changed outside this deployment transaction")
     previous = Path(document["previous_release"])
     check(p, previous)
     for index, row in enumerate(document["files"]):
@@ -400,6 +417,14 @@ def activate(p, release, files, controller, *, peer_healthy, check=compatibility
         )
     document = {
         "phase": "prepared",
+        "sequence": 1
+        + max(
+            (
+                json.loads(path.read_bytes())["sequence"]
+                for path in p.journals.glob("*/transaction.json")
+            ),
+            default=0,
+        ),
         "release": str(release),
         "previous_release": str(previous),
         "previous_pointer": previous_pointer,
