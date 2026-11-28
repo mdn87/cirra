@@ -1,5 +1,10 @@
 # Deploying the two Cirra data hosts
 
+For v1.0.0 Linux production, apply the [dedicated-account and rootless
+isolation procedure](linux-worker-isolation.md). The original enrollment
+templates below use `matt`; they are not the required release privilege
+boundary. Preserve the separate audit-reader identity during account cutover.
+
 The webhook receiver and worker run as separate processes. Give both the same enrolled private-state path, Cirra release, route configuration and TLS client identity for this data host. Keep their Glas manifests separate. Nodens participates in the quorum through its voter interface. It needs neither a Cirra service configuration nor any of the worker, webhook, witness or routing credentials.
 
 The November 27 production deployment runs on lugos-host and the Intel Mac with Nodens as the third voter. Both receiver/worker pairs, backup schedules and donor refreshes are enabled. The primary audit reader and health checks follow the managed state. [Deployment evidence and operational adjustments](production-rollout-2026-11-27.md)

@@ -15,6 +15,39 @@ import pytest
 DEPLOY = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/deploy-ha.py"))
 
 
+@pytest.mark.parametrize(
+    "state,busy",
+    [
+        ("active", True),
+        ("activating", True),
+        ("deactivating", True),
+        ("reloading", True),
+        ("maintenance", True),
+        ("inactive", False),
+        ("failed", False),
+    ],
+)
+def test_transitional_systemd_states_are_not_a_paused_worker(monkeypatch, state, busy):
+    controller = DEPLOY["Controller"](SimpleNamespace(mac=False))
+    monkeypatch.setitem(
+        controller.active.__globals__,
+        "run",
+        lambda *args, **kwargs: f"LoadState=loaded\nActiveState={state}\n".encode(),
+    )
+    assert controller.active("worker") is busy
+
+
+@pytest.mark.parametrize(
+    "properties",
+    [b"LoadState=not-found\nActiveState=inactive\n", b"LoadState=loaded\nActiveState=unknown\n"],
+)
+def test_unknown_systemd_state_cannot_authorize_a_switch(monkeypatch, properties):
+    controller = DEPLOY["Controller"](SimpleNamespace(mac=False))
+    monkeypatch.setitem(controller.active.__globals__, "run", lambda *args, **kwargs: properties)
+    with pytest.raises(ValueError, match="establish"):
+        controller.active("worker")
+
+
 class Controller:
     def __init__(self):
         self.running = False
