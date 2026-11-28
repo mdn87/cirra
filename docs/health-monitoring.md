@@ -86,6 +86,9 @@ python scripts/report-health.py --state-dir <selected-state> --service-config <s
 
 Each credential file contains one base URL ending in `/api/push/<token>`, without
 query parameters or a fragment. Keep it private (mode 0600 or 0400 on Unix).
+The Linux service also accepts systemd's root-owned 0440 ACL credentials,
+only inside its declared `/run/credentials/<unit>.service` mount. Ordinary
+group-readable URL files remain refused.
 Symlinks, nonregular files, oversized files, URL credentials and redirects are
 refused. HTTPS is supported with normal certificate verification; plain HTTP is
 limited to literal RFC1918 or loopback addresses. Secret URLs and receiver error

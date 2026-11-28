@@ -25,6 +25,18 @@ PRIVATE_NETWORKS = tuple(
 )
 
 
+def systemd_credential(path, info):
+    """systemd uses a root-owned 0440 ACL file in a private service mount."""
+    directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
+    return (
+        re.fullmatch(r"/run/credentials/[A-Za-z0-9_.@-]+\.service", directory) is not None
+        and path.parent == Path(directory)
+        and info.st_uid == info.st_gid == 0
+        and info.st_nlink == 1
+        and stat.S_IMODE(info.st_mode) == 0o440
+    )
+
+
 def read_push_url(path):
     """Only a private regular credential file may provide a push destination."""
     before = path.lstat()
@@ -37,7 +49,11 @@ def read_push_url(path):
         if (
             not stat.S_ISREG(current.st_mode)
             or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
-            or (os.name == "posix" and current.st_mode & 0o077)
+            or (
+                os.name == "posix"
+                and current.st_mode & 0o077
+                and not systemd_credential(path, current)
+            )
         ):
             raise ValueError("heartbeat credential file is not private")
         raw = stream.read(MAX_URL_BYTES + 1)
