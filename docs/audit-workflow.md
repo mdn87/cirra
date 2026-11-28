@@ -99,6 +99,9 @@ does this before resuming an existing checkout. It never follows the old host's
 paths or repairs another retained copy. Final-attempt cleanup then uses the
 reconnected worktree. Failures identify `phase: checkout_maintenance` and the
 affected attempt in the worker log, separately from queue execution.
+Damage to one checkout does not prevent maintenance of the others; loss of
+quorum ownership stops further mutations immediately. The state path may be
+the managed `current` symlink, but links inside attempt/cache metadata are refused.
 
 This repair does not accept, cancel, or rerun waiting reports. An exported session
 packet may still name its original host's absolute checkout path; use the

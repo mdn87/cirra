@@ -166,8 +166,13 @@ def repair_checkout(state_dir, provider, repository, destination, *, head=None):
     repair, which can follow its registered paths back into that other copy.
     Validate both ends before writing, and tolerate an interrupted two-file repair.
     """
-    root = Path(state_dir).resolve(strict=True)
+    selector = Path(state_dir).absolute()
+    root = selector.resolve(strict=True)
     destination = Path(destination).absolute()
+    if destination.is_relative_to(selector):
+        # Resolve the explicitly selected state alias, but still refuse symlinks
+        # inside its cache or attempt directories in _link_text below.
+        destination = root / destination.relative_to(selector)
     relative = destination.relative_to(root) if destination.is_relative_to(root) else Path()
     if (
         len(relative.parts) != 3

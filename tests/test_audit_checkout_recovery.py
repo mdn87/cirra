@@ -52,6 +52,14 @@ def links(copied_checkout):
     return pointer, admin, head
 
 
+def overwrite_metadata(path, value):
+    # Python 3.14 preserves Git's hidden Windows file attribute when copying.
+    # OPEN_EXISTING can edit that file; write_text's CREATE_ALWAYS cannot.
+    with path.open("r+b") as stream:
+        stream.write(value.encode("utf-8"))
+        stream.truncate()
+
+
 @pytest.mark.parametrize("interrupted", [None, "pointer", "backlink"])
 def test_reconnect_is_idempotent_and_recovers_either_interrupted_write(
     copied_checkout, interrupted
@@ -59,9 +67,9 @@ def test_reconnect_is_idempotent_and_recovers_either_interrupted_write(
     _, restored, relative, head = copied_checkout
     pointer, admin, _ = links(copied_checkout)
     if interrupted == "pointer":
-        pointer.write_text("gitdir: " + admin.as_posix() + "\n")
+        overwrite_metadata(pointer, "gitdir: " + admin.as_posix() + "\n")
     if interrupted == "backlink":
-        (admin / "gitdir").write_text(pointer.as_posix() + "\n")
+        overwrite_metadata(admin / "gitdir", pointer.as_posix() + "\n")
     assert repair_checkout(restored, "github", "example/repo", restored / relative, head=head)
     assert not repair_checkout(restored, "github", "example/repo", restored / relative, head=head)
     assert run_control(["git", "rev-parse", "HEAD"], restored / relative).decode().strip() == head
@@ -72,7 +80,7 @@ def test_reconnect_parses_another_hosts_paths_without_opening_them(copied_checko
     pointer, admin, _ = links(copied_checkout)
     for path in (pointer, admin / "gitdir"):
         value = path.read_text().replace(original.as_posix(), "/Users/matt/state/old-restore")
-        path.write_text(value)
+        overwrite_metadata(path, value)
     assert repair_checkout(restored, "github", "example/repo", restored / relative, head=head)
     assert run_control(["git", "rev-parse", "HEAD"], restored / relative).decode().strip() == head
 
@@ -83,17 +91,19 @@ def test_reconnect_refuses_unmatched_metadata_before_either_write(copied_checkou
     pointer, admin, _ = links(copied_checkout)
     backlink = admin / "gitdir"
     if damage == "attempt":
-        backlink.write_text(backlink.read_text().replace("a" * 32, "b" * 32))
+        overwrite_metadata(backlink, backlink.read_text().replace("a" * 32, "b" * 32))
     elif damage == "repository":
-        pointer.write_text(pointer.read_text().replace(admin.parents[2].name, "f" * 64))
+        overwrite_metadata(pointer, pointer.read_text().replace(admin.parents[2].name, "f" * 64))
     elif damage == "common":
-        (admin / "commondir").write_text("../../../other\n")
+        overwrite_metadata(admin / "commondir", "../../../other\n")
     elif damage == "head":
-        (admin / "HEAD").write_text("f" * 40 + "\n")
+        overwrite_metadata(admin / "HEAD", "f" * 40 + "\n")
     elif damage == "oversize":
-        backlink.write_text("/" + "x" * 4096)
+        overwrite_metadata(backlink, "/" + "x" * 4096)
     else:
-        backlink.write_text(backlink.read_text().replace(original.as_posix(), "/different/copy"))
+        overwrite_metadata(
+            backlink, backlink.read_text().replace(original.as_posix(), "/different/copy")
+        )
     before = [path.read_bytes() for path in (pointer, backlink)]
     with pytest.raises(CirraError):
         repair_checkout(restored, "github", "example/repo", restored / relative, head=head)
@@ -114,3 +124,15 @@ def test_reconnect_refuses_symlink_metadata(copied_checkout, tmp_path):
     with pytest.raises(CirraError, match="symbolic link"):
         repair_checkout(restored, "github", "example/repo", restored / relative, head=head)
     assert before == (foreign.read_bytes(), (admin / "gitdir").read_bytes())
+
+
+def test_reconnect_accepts_the_selected_state_symlink(copied_checkout, tmp_path):
+    _, restored, relative, head = copied_checkout
+    selector = tmp_path / "current"
+    try:
+        selector.symlink_to(restored, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating symbolic links is unavailable")
+    assert repair_checkout(selector, "github", "example/repo", selector / relative, head=head)
+    remove_checkout(selector, "github", "example/repo", selector / relative, head=head)
+    assert not (restored / relative).exists()

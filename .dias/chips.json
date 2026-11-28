@@ -777,7 +777,7 @@
           "entryId": "cirra:repair-restored-audit-checkouts:observed",
           "at": "2026-11-28T08:05:52.462125Z",
           "kind": "created",
-          "message": "Linux audit regressions: 97 passed. Windows and native Mac restore/worker tests: 32 passed each. See tests/test_audit_checkout_recovery.py."
+          "message": "Linux audit regressions: 100 passed. Native macOS: 35 passed. Windows selector/lease regressions: 3 passed. Restore coverage includes retained-source preservation."
         }
       ]
     },
