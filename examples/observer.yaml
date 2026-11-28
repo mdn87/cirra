@@ -9,4 +9,5 @@ commands:
   - [python, -m, ruff, check, .]
   - [python, -m, ruff, format, --check, .]
   - [python, -m, pytest, -q]
-  - [python, -m, build, --no-isolation]
+  # Test fixtures can fill /tmp; extract the sdist in the existing /work tmpfs.
+  - [python, -m, build, --no-isolation, --sdist-extract-dir, /work/sdist-build]

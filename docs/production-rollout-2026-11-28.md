@@ -71,6 +71,14 @@ and time limits. Its preflight verified the real Mac cache in 1.35 seconds;
 used the proposed code separately from the installed runtime; managed rollout
 and its final service readback remain separate evidence.
 
+The Linux test fixtures now set private receipt permissions explicitly. A
+separate isolated run passed its tests but exhausted the 128 MiB `/tmp` during
+package construction. Extracting the source distribution in the existing
+512 MiB `/work` filesystem built both artifacts even with 124 MiB of `/tmp`
+occupied. This keeps the existing sandbox resource and isolation limits.
+The observer example records that build argument; deployment pins still bind
+the exact operator-owned command definition.
+
 ## Retired components and retained data
 
 The old standalone worker and webhook units are disabled. The unused snapshot
