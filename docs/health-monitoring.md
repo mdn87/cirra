@@ -55,18 +55,38 @@ On a coordinated active worker, a missing, mismatched or 23-hour-old backup is a
 operational problem. A new authority retains the existing one-hour grace period
 to replace its donor's backup. A frozen transfer is checked through coordination.
 
-On a coordinated standby worker, a missing, mismatched or 23-hour-old verified
-restore is an operational problem. The restore must match the local donor
-authority's host, epoch and tip and contain a valid snapshot identifier and
-timezone-aware capture time. A restore more than one minute in the future is
-also refused. These checks alert before the 24-hour promotion freshness limit.
+On a coordinated standby worker, health accepts either a matching installed
+restore or the verified promotion archive selected by the supplied service
+configuration's `coordination.recovery_archive`. Refresh downloads and verifies
+that cache without replacing an eligible installed restore. The installed copy
+can therefore age while a newer recovery point remains available for promotion.
+
+The installed restore must match the local donor authority's host, epoch and tip.
+The cache's native `.receipt.json` must match the same local donor host and epoch;
+its tip can have advanced. Health requires the native `fetched` receipt, valid
+snapshot identifiers and a SHA-256 match against the archive's current bytes.
+Both paths reject captures 23 hours old, more than one minute in the future or
+without a timezone. These checks alert before the 24-hour promotion freshness
+limit. A recent file modification time does not refresh a capture's age.
+
+Cache checks refuse symlinks, hardlinks, nonregular files, replacements during
+verification and, on Unix, files owned by neither the running user nor root or
+readable by a group or others. The receipt is limited to 4 KiB; hashing reads at
+most 2 GiB in 1 MiB chunks and checks a ten-second deadline between reads. Health
+does not unpack archives, contact quorum or load transfer credentials. It relies
+on the protected receipt written by the native archive verifier. An unavailable
+or rejected cache leaves a fresh installed restore eligible. Without service
+configuration, only installed evidence is considered.
 
 `recovery_metrics` reports the worker state, the 23-hour warning threshold and
-each local backup/restore capture time and age. The active role requires its
-backup; the standby role requires its restore. The other receipt can belong to a
-previous tenure and its age alone is not an availability verdict. Local health
-does not independently prove the donor still owns quorum or that an external
-notification arrived.
+each local backup/restore capture time and age. `restore.eligible` describes the
+installed evidence; `restore_cache` reports whether a configured cache was
+checked, its capture age, eligibility and sanitized validation status.
+`standby_source` is `installed`, `cached` or null. The active role requires its
+backup and does not hash the standby cache. The other receipt can belong to a
+previous tenure and its age alone is not an availability verdict. These are local
+recovery checks: they do not independently prove the donor still owns quorum,
+that a current promotion would succeed or that an external notification arrived.
 
 Run health monitoring on both data hosts and route alerts through a path that
 survives loss of either host. Monitor receiver reachability and missing host
