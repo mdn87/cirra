@@ -8,13 +8,13 @@
   "milestonePhase": "closeout",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-27T09:22:50.737110Z",
+  "assessedAt": "2026-11-28T03:25:36.252049Z",
   "confidence": "authoritative",
-  "currentMilestone": "Production now runs on the coordinated pair; takeover, verified return, signed delivery and managed audit reads passed.",
-  "remainingSummary": "Two historical audits await the scheduled UTC admission reset. The controlled second-owner fork acceptance passed on PR 71.",
-  "nextChipId": "cirra:finish-frozen-audits",
+  "currentMilestone": "Production rollout, controlled fork acceptance and all twelve historical audits are verified.",
+  "remainingSummary": "No historical audit requests remain unfinished. The reports retain sixteen historical findings for future prioritization.",
+  "nextChipId": null,
   "source": {
-    "label": "Production delivery, authority, backup, reader and scheduling receipts",
-    "updatedAt": "2026-11-27"
+    "label": "Authoritative audit state, native GitHub checks and production recovery receipts",
+    "updatedAt": "2026-11-28"
   }
 }

@@ -696,8 +696,8 @@
       "chipId": "cirra:finish-frozen-audits",
       "projectId": "cirra",
       "title": "Finish the last two historical audits",
-      "summary": "Ten reports are complete. PR 66 and the full PR 61 audit await the daily limit reset; continuation runs November 28 at 00:05 UTC.",
-      "stage": "blocked",
+      "summary": "All twelve historical audits are complete and verified against production state and native GitHub receipts. Full PR 61 covers 117 controls; the repository baseline is unchanged.",
+      "stage": "done",
       "sequence": 14,
       "prereqs": [
         "cirra:verify-production-failover"
@@ -706,7 +706,7 @@
       "confidence": "authoritative",
       "timestamps": {
         "createdAt": "2026-11-27T08:43:21Z",
-        "updatedAt": "2026-11-27T08:43:21Z"
+        "updatedAt": "2026-11-28T03:24:53.764926Z"
       },
       "evidence": [
         {
@@ -714,6 +714,12 @@
           "at": "2026-11-27T08:43:21Z",
           "kind": "created",
           "message": "The selected production state preserves all ten receipts and the two remaining policies. The continuation rejects retired state and requires primary authority."
+        },
+        {
+          "entryId": "cirra:finish-frozen-audits:verified",
+          "at": "2026-11-28T03:24:53.764926Z",
+          "kind": "stage-change",
+          "message": "All 12 reports verified; PR 66 check 140848067185 succeeded. Full PR 61 has 117 controls. See docs/audit-continuation-recovery-2026-11-28.md."
         }
       ]
     },
