@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from cirra import audits
 from cirra.audit import select_tiers
-from cirra.audit_checkout import change_ref, prepare_checkout, remove_checkout
+from cirra.audit_checkout import change_ref, prepare_checkout, remove_checkout, repair_checkout
 from cirra.dispatch import stop_process, tool_environment
 from cirra.domain import (
     CirraError,
@@ -362,6 +362,10 @@ class AuditRunner:
                 url=self.url_for(route) if self.url_for else None,
                 protocols=self.protocols,
             )
+        else:
+            repair_checkout(
+                self.directory, route.provider, route.repository, checkout, head=identity["head"]
+            )
         store = Store(self.directory)
         packet_path = audits.export_packet(
             audits.make_packet(store, attempt, checkout), self.directory
@@ -560,20 +564,27 @@ class AuditRunner:
         )
         return {"state": "imported", "audit": summary}
 
-    def cleanup(self, store):
-        """Remove worktrees of attempts that reached a final state."""
+    def cleanup(self, store, *, on_attempt=None):
+        """Reconnect restored worktrees, then remove attempts that reached a final state."""
         root = self.directory / "audit-attempts"
         for directory in root.glob("*/checkout") if root.exists() else ():
             try:
                 attempt = audits.get(store, directory.parent.name)
             except CirraError:
                 continue
-            if attempt["state"] not in FINAL:
-                continue
             identity = json.loads(attempt["identity_json"])
             for route in self.routes.values():
                 if repository_of(route) == identity["repository"]:
-                    remove_checkout(self.directory, route.provider, route.repository, directory)
+                    if on_attempt:
+                        on_attempt(attempt["attempt_id"], route.name)
+                    operation = remove_checkout if attempt["state"] in FINAL else repair_checkout
+                    operation(
+                        self.directory,
+                        route.provider,
+                        route.repository,
+                        directory,
+                        head=identity["head"],
+                    )
                     break
 
 
