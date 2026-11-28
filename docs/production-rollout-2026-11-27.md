@@ -29,10 +29,10 @@ The webhook update initially used GitHub's general update endpoint, which reset 
 
 The previous Tailscale URL remains usable and now proxies to the coordinated receiver on port 18796. All other Tailscale handlers, including `/weir-field/`, were unchanged. Preserve the enrollment fences; returning to the old standalone worker requires reconciling subsequent state and quorum history.
 
-## Remaining acceptance work
+## Acceptance closure
 
 - Historical PR audits 56–65 have complete stored reports and matching native GitHub receipts. PRs 61 and 62 were settled by source-informed lead adjudication with the pinned validator, immutable packet checks and import/provider readback. The helper's incomplete report envelope was corrected; no independent acceptance was fabricated.
-- PR 66 and the full audit scoped to PR 61 remain unadmitted because the daily maximum of ten has been reached. Their audit policy still matches. The finite continuation is scheduled for **November 28 at 00:05 UTC** (November 27 at 7:05 p.m. Eastern), with verification at 01:05 UTC. The helper now follows the selected coordinated root and refuses a retired source or a primary without current authority. Completion still requires actual validated reports and final receipts. The full report retains the original repository baseline and requires 117 controls.
+- PR 66 and the full audit scoped to PR 61 completed on November 28 at 03:22 UTC. All twelve historical requests passed authoritative database and native provider readback. The full report covers 117 controls and preserves the original repository baseline. The scheduled continuation had refused a Linux standby; its misleading completion check was corrected. See the [audit continuation recovery and receipts](audit-continuation-recovery-2026-11-28.md).
 - The second-owner fork exercise passed later that morning using `yizzity/cirra` and PR 71. Collaborator access, signed admission, exact fork-head execution, publication to the base repository and all seven checks were verified. See the [fork acceptance evidence](github-fork-acceptance.md).
 
 Operational receipts are retained under `.lugos-audit/mobile-rollout-20261126/`, principally `production-control/`, `ingress/production-github-route.json`, `ingress/final-delivery-reconciliation.json`, and `reader/managed-reader-result.json`. Private reports and recovery archives remain on the approved data hosts. The ingress and promotion UTP grants were both recorded as `applied` with no mismatch.

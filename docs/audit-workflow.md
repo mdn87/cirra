@@ -98,6 +98,26 @@ agent session that has the skill, then import the report:
 cirra import-audit --attempt ATTEMPT --report production-audit-pr-20261017-120000.json --checkout PATH --state-dir STATE
 ```
 
+An enrolled coordinated service refuses that standalone write. On the current
+authoritative data host, pause both workers while leaving receivers and voters
+running, and use `scripts/import-coordinated-audit.py` with the installed Cirra
+runtime and its existing routing credential:
+
+```bash
+python scripts/import-coordinated-audit.py --service-config SERVICE.yaml \
+  --state-dir /srv/lugos/state/cirra-ha/current --attempt ATTEMPT \
+  --report PRIVATE_REPORT.json --expected-report-digest ACCEPTED_CANONICAL_DIGEST
+```
+
+Run this through the host's credential-loading operator environment; never put
+credentials on the command line. The command verifies the accepted report,
+locks the selected state and acquires the normal worker lease before importing.
+It refuses a standby, frozen authority, a changed selector or another owner.
+It cannot promote a restored copy. Complete any authority transfer with the
+normal worker before pausing it for import. Resume the authoritative worker
+first, then the standby, and verify the queue's final state and provider receipt.
+The import receipt alone does not prove publication.
+
 With `kind: command` the worker runs the argv in
 `audit-attempts/<attempt>/work` with the reviewer's reduced environment and
 `CIRRA_AUDIT_PACKET`, `CIRRA_AUDIT_DIR` and `CIRRA_AUDIT_CHECKOUT` set. The
