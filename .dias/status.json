@@ -8,13 +8,13 @@
   "milestonePhase": "operational-proof",
   "portfolioGroup": "developer-tools",
   "displayPriority": 500,
-  "assessedAt": "2026-11-28T08:05:52.462125Z",
+  "assessedAt": "2026-11-28T08:53:48.442010Z",
   "confidence": "authoritative",
-  "currentMilestone": "HA reliability is deployed; restored audit checkout recovery is implemented and verified on Linux, Windows and macOS.",
-  "remainingSummary": "Four current reports await import; scheduled/deferred audits remain. Independent monitoring, clock and local-read safeguards, retention approval and runner/Docker policy remain in the reviewed follow-up plan.",
-  "nextChipId": "cirra:settle-current-session-audits",
+  "currentMilestone": "HA reliability and checkout recovery are deployed; all four previously admitted session audits are imported and published.",
+  "remainingSummary": "One full audit and PRs 73\u201375 await budget admission. Monitoring, clock/read safeguards, two PR 72 findings, retention approval and runner/Docker policy remain.",
+  "nextChipId": "cirra:operational-followup",
   "source": {
-    "label": "Nov 28 live audit census, PRs 73/74, native recovery tests and the independent follow-up review",
+    "label": "Nov 28 exact audit/report/GitHub readback, healthy worker roles and the independent follow-up plan",
     "updatedAt": "2026-11-28"
   }
 }
