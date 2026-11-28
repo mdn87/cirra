@@ -1,16 +1,22 @@
 """Operator health check over the service state directory, for a timer or monitor."""
 
+import hashlib
 import json
 import math
+import os
 import shutil
 import sqlite3
+import stat
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from cirra.audits import repository_key
 from cirra.data_authority import HEX, valid_authority
 from cirra.domain import CirraError
 from cirra.job_queue import AuditQueue, Queue
+from cirra.locking import read_locked_file
 from cirra.store import Store
 
 # A bounded test run plus review can hold the loop for several minutes, during
@@ -21,6 +27,9 @@ DELIVERY_TARGET_SECONDS = 1800
 BACKUP_MAX_AGE = 23 * 3600  # Alert before the one-day recovery limit is breached.
 BACKUP_INITIAL_GRACE = 3600
 AUDIT_BACKLOG_AGE = 48 * 3600
+RECOVERY_CACHE_MAX_BYTES = 2 * 1024**3
+RECOVERY_CACHE_HASH_SECONDS = 10
+RECOVERY_RECEIPT_MAX_BYTES = 4096
 
 
 def queue_metrics(queue, *, now=None, scanned=None, history=True):
@@ -164,43 +173,197 @@ def _backup_problem(queue, status, now):
     }
 
 
-def _restore_problem(queue, status, now):
+def _restore_problem(queue, status, recovery):
     root = queue.directory.parent
     if not (root / "coordination-state.json").exists() or status.get("state") != "standby":
         return None
-    try:
-        authority = _record(queue, root / "data-authority.json")
-        restored = _record(queue, root / "data-restored.json")
-        captured = _capture_time(restored)
-        if (
-            valid_authority(authority)
-            and all(restored.get(k) == authority[k] for k in ("host", "epoch", "tip"))
-            and isinstance(restored.get("snapshot_id"), str)
-            and HEX.fullmatch(restored["snapshot_id"])
-            and captured is not None
-            and -60 <= (now - captured).total_seconds() < BACKUP_MAX_AGE
-        ):
-            return None
-    except (CirraError, OSError, ValueError, TypeError, OverflowError):
-        pass
+    if recovery["standby_source"] is not None:
+        return None
     return {
         "kind": "restore",
-        "detail": "standby has no matching verified restore less than 23 hours old",
+        "detail": "standby has no matching verified restore or cache less than 23 hours old",
     }
 
 
-def _recovery_metrics(queue, status, now):
+def _file_identity(info):
+    return tuple(
+        getattr(info, key)
+        for key in (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+            "st_nlink",
+            "st_uid",
+            "st_gid",
+        )
+    )
+
+
+@contextmanager
+def _private_recovery_file(path, limit):
+    """Never follow a final symlink or trust files replaced during validation."""
+    before = path.lstat()
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or getattr(before, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        or before.st_nlink != 1
+        or not 0 < before.st_size <= limit
+        or (
+            os.name == "posix"
+            and (before.st_mode & 0o077 or before.st_uid not in (0, os.geteuid()))
+        )
+    ):
+        raise CirraError("unavailable private recovery evidence")
+    with read_locked_file(path) as stream:
+        opened = os.fstat(stream.fileno())
+        if not os.path.samestat(before, opened):
+            raise CirraError("changed private recovery evidence")
+        yield stream
+        if _file_identity(os.fstat(stream.fileno())) != _file_identity(opened) or _file_identity(
+            path.lstat()
+        ) != _file_identity(before):
+            raise CirraError("changed private recovery evidence")
+
+
+def _capture_metrics(record, now):
+    captured = _capture_time(record)
+    return {
+        "captured_at": captured.isoformat() if captured else None,
+        "age_seconds": int((now - captured).total_seconds()) if captured else None,
+    }
+
+
+def _fresh_recovery(record, now):
+    captured = _capture_time(record)
+    return captured is not None and -60 <= (now - captured).total_seconds() < BACKUP_MAX_AGE
+
+
+def _cached_recovery(archive, authority, now):
+    result = {
+        "configured": True,
+        "checked": True,
+        "eligible": False,
+        "captured_at": None,
+        "age_seconds": None,
+        "status": "unavailable",
+    }
+    try:
+        archive = Path(archive)
+        metadata = archive.with_name(archive.name + ".receipt.json")
+        # Keep both paths stable for the whole check. refresh() replaces the
+        # archive and then its receipt; a concurrent replacement is not proof.
+        with _private_recovery_file(metadata, RECOVERY_RECEIPT_MAX_BYTES) as stream:
+            raw = stream.read(RECOVERY_RECEIPT_MAX_BYTES + 1)
+            if len(raw) > RECOVERY_RECEIPT_MAX_BYTES:
+                return result
+            receipt = json.loads(raw)
+            if not isinstance(receipt, dict):
+                return result
+            result.update(_capture_metrics(receipt, now))
+            result["status"] = "invalid_receipt"
+            if (
+                set(receipt)
+                != {
+                    "status",
+                    "restic_snapshot_id",
+                    "snapshot_id",
+                    "host",
+                    "epoch",
+                    "tip",
+                    "captured_at",
+                    "archive_digest",
+                }
+                or receipt["status"] != "fetched"
+                or any(
+                    not isinstance(receipt[key], str) or not HEX.fullmatch(receipt[key])
+                    for key in (
+                        "restic_snapshot_id",
+                        "snapshot_id",
+                        "host",
+                        "epoch",
+                        "tip",
+                        "archive_digest",
+                    )
+                )
+            ):
+                return result
+            result["status"] = "authority_mismatch"
+            # The selected restore may have an older tip from this same tenure.
+            # This is local donor evidence, not a fresh quorum ownership proof.
+            if not valid_authority(authority) or any(
+                receipt[key] != authority[key] for key in ("host", "epoch")
+            ):
+                return result
+            result["status"] = "stale"
+            if not _fresh_recovery(receipt, now):
+                return result
+            result["status"] = "unavailable"
+            with _private_recovery_file(archive, RECOVERY_CACHE_MAX_BYTES) as payload:
+                deadline = time.monotonic() + RECOVERY_CACHE_HASH_SECONDS
+                sha, count = hashlib.sha256(), 0
+                while chunk := payload.read(1024 * 1024):
+                    count += len(chunk)
+                    if count > RECOVERY_CACHE_MAX_BYTES or time.monotonic() >= deadline:
+                        return result
+                    sha.update(chunk)
+                if time.monotonic() >= deadline:
+                    return result
+                result["status"] = "digest_mismatch"
+                if sha.hexdigest() != receipt["archive_digest"]:
+                    return result
+                result["status"] = "changed"
+        result.update(eligible=True, status="verified")
+    except (CirraError, OSError, ValueError, TypeError, OverflowError, RecursionError):
+        pass  # Do not expose private paths or receipt contents in health output.
+    return result
+
+
+def _recovery_metrics(queue, status, now, service_config=None):
     result = {"worker_state": status.get("state"), "max_age_seconds": BACKUP_MAX_AGE}
+    restored, authority = {}, {}
     for label, filename in (("backup", "data-backup.json"), ("restore", "data-restored.json")):
-        captured = None
+        record = {}
         try:
-            captured = _capture_time(_record(queue, queue.directory.parent / filename))
+            record = _record(queue, queue.directory.parent / filename)
         except (CirraError, OSError, ValueError, TypeError, OverflowError):
             pass
-        result[label] = {
-            "captured_at": captured.isoformat() if captured else None,
-            "age_seconds": int((now - captured).total_seconds()) if captured else None,
-        }
+        result[label] = _capture_metrics(record, now)
+        if label == "restore":
+            restored = record
+    archive = getattr(getattr(service_config, "coordination", None), "recovery_archive", None)
+    result["restore"]["eligible"] = None
+    result["restore_cache"] = {
+        "configured": archive is not None,
+        "checked": False,
+        "eligible": False,
+        "captured_at": None,
+        "age_seconds": None,
+        "status": "unchecked",
+    }
+    result["standby_source"] = None
+    root = queue.directory.parent
+    if status.get("state") != "standby" or not (root / "coordination-state.json").exists():
+        return result
+    try:
+        authority = _record(queue, root / "data-authority.json")
+    except (CirraError, OSError, ValueError, TypeError, OverflowError):
+        pass
+    result["restore"]["eligible"] = bool(
+        valid_authority(authority)
+        and all(restored.get(key) == authority[key] for key in ("host", "epoch", "tip"))
+        and isinstance(restored.get("snapshot_id"), str)
+        and HEX.fullmatch(restored["snapshot_id"])
+        and _fresh_recovery(restored, now)
+    )
+    if archive is not None:
+        result["restore_cache"] = _cached_recovery(archive, authority, now)
+    if result["restore"]["eligible"]:
+        result["standby_source"] = "installed"
+    elif result["restore_cache"]["eligible"]:
+        result["standby_source"] = "cached"
     return result
 
 
@@ -309,6 +472,7 @@ def check(
     now=None,
     include_metrics=False,
     audit_policies=None,
+    service_config=None,
 ):
     now = now or datetime.now(UTC)
     queue = Queue(state_dir)
@@ -345,7 +509,8 @@ def check(
     backup_problem = _backup_problem(queue, status, now)
     if backup_problem:
         problems.append(backup_problem)
-    restore_problem = _restore_problem(queue, status, now)
+    recovery = _recovery_metrics(queue, status, now, service_config)
+    restore_problem = _restore_problem(queue, status, recovery)
     if restore_problem:
         problems.append(restore_problem)
 
@@ -447,7 +612,7 @@ def check(
     if include_metrics:
         result["queue_metrics"] = metrics
         result["audit_metrics"] = audit_metrics
-        result["recovery_metrics"] = _recovery_metrics(queue, status, now)
+        result["recovery_metrics"] = recovery
     return result
 
 
@@ -471,6 +636,7 @@ def main(state_dir, max_heartbeat_age, attention_window, service_config=None):
         attention_window=attention_window,
         include_metrics=True,
         audit_policies=policies,
+        service_config=service_config,
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if result["healthy"] else 1

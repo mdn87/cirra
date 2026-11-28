@@ -119,6 +119,31 @@ def test_stale_running_status_cannot_refresh_the_active_monitor(reporter, kuma, 
     assert parse_qs(urlsplit(kuma.paths[0]).query)["status"] == ["down"]
 
 
+def test_reporter_passes_loaded_service_configuration_to_native_health(
+    reporter, kuma, tmp_path, monkeypatch
+):
+    args = arguments(tmp_path, kuma)
+    args.service_config = tmp_path / "service.yaml"
+    heartbeat(Queue(tmp_path), state="standby")
+    config = SimpleNamespace(routes={}, coordination=None)
+    native_check = reporter["check"]
+    observed = []
+
+    def configured_check(*args, **kwargs):
+        observed.append(kwargs.get("service_config"))
+        return native_check(*args, **kwargs)
+
+    def load(path):
+        assert path == args.service_config
+        return config
+
+    monkeypatch.setitem(reporter["evaluate"].__globals__, "load_service", load)
+    monkeypatch.setitem(reporter["evaluate"].__globals__, "check", configured_check)
+    result = reporter["run"](args)
+    assert result["healthy"] and observed == [config]
+    assert result["host_heartbeat"] == "sent" and result["active_heartbeat"] == "skipped"
+
+
 def test_active_failure_posts_down_to_both_monitors_without_private_details(
     reporter, kuma, tmp_path
 ):

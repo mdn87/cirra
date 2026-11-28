@@ -119,9 +119,11 @@ def push(parts, healthy, timeout):
 
 def evaluate(args):
     policies = None
+    config = None
     if args.service_config is not None:
+        config = load_service(args.service_config)
         policies = {}
-        for route in load_service(args.service_config).routes.values():
+        for route in config.routes.values():
             if route.policy.audit is not None:
                 key = repository_key(
                     {
@@ -135,6 +137,7 @@ def evaluate(args):
         args.state_dir,
         max_heartbeat_age=args.max_heartbeat_age,
         audit_policies=policies,
+        service_config=config,
         include_metrics=True,
     )
 
